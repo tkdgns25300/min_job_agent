@@ -46,6 +46,8 @@
 5. **Step 1 냉정 검증** — `Workflow`로 **9개 subagent 병렬 재검증**(curl/WebFetch로 최신 공고일·로그인·교단·URL 실측) → 47건. **1차 조사의 환각·오판 다수 정정**(예: 합동총회 '회원제'→공개, 웨스트민스터 '청빙란 없음'→매우활발·초교파, 대신대 교단 확정).
 6. **docs 작성** — `SOURCES.md`(카탈로그), `CONTRACT.md`(출력 계약·정규화 맵).
 7. **자체 냉정 검수** — 두 문서를 다시 감사해 **종합 과정에서 넣은 오류 4건 정정**(집계 모순·daeshin 기술메모·정규화 용어·총신대 활동성 과장). 대신대=합동은 독립 재확인.
+8. **동작 프로토타입 데모** — `crawler-demo/minjob-crawler-demo.zip`(Python 크롤러 4어댑터 + Next.js 어드민 콘솔). 소스 선택→크롤(raw 추출)→저장(리뷰 큐)→Gemini 구조화 미리보기 전 체인 검증. 구조화 AI = Vertex **Gemini 2.5 Flash**.
+   - 구조화 호출부(`admin/src/lib/vertex.ts`)에 **429(RESOURCE_EXHAUSTED)·503·5xx 지수 백오프 재시도** 추가(rate limit 대응).
 
 > ⚠️ 4·5번의 워크플로우 결과 원본은 세션 임시폴더(`/private/tmp/...`)에 있어 **다른 컴퓨터엔 없다**. 내용은 전부 `SOURCES.md`/`CONTRACT.md`로 옮겨졌으니 그걸 정본으로 볼 것.
 
