@@ -79,16 +79,16 @@
 | `ytus` | 영남신대 | TONGHAP | A | 공개 | — |
 | `puts` | 장신대 초빙 | TONGHAP | A | 공개 | EUC-KR |
 | `htus` | 호남신대 미니스트리 | TONGHAP | A | 공개(상세 회원?) | EUC-KR |
-| `bpu` | 부산장신대 | TONGHAP | A | 공개 | — |
+| `bpu` | 부산장신대 | TONGHAP | A | 공개 | **www 호스트 필수** |
 | `pck` | 예장통합 총회 | TONGHAP | A | 공개 | — |
 | `sjs` | 서울장신대 | TONGHAP | A | 공개 | EUC-KR |
 | `pckworld` | 한국기독공보 광고검색 | TONGHAP | A | 공개 | 지면광고형 |
-| `hanil` | 한일장신대 | TONGHAP | A | JS(불명) | 헤드리스 |
+| `hanil` | 한일장신대 | TONGHAP | A | JS(불명) | 헤드리스 · **목록 URL 재확인 필요(재검증서 0건 반환)** |
 | `bu` | 백석대 대학원 정보나눔터 | BAEKSEOK | A | 공개 | — |
 | `pgak` | 백석총회 | BAEKSEOK | A | 공개 | **UA위장**, iframe |
-| `bsds` | 백석대신총회 | BAEKSEOK | A | 공개 | UA위장(저조) |
+| `bsds` | 백석대신총회 | BAEKSEOK | A | 공개 | UA위장(저조) · **백석대신=예장백석과 별개 교단(2019분열) → 재분류/드롭 후보** |
 | `mtu` | 감신대 취업게시판 | GAMLI | A | 공개 | 상세 `view.do?brdIdx=` |
-| `uhs` | 협성대 웨슬리 | GAMLI | A | 공개 | 상세 `/bbs/.../artclView.do` |
+| `uhs` | 협성대 웨슬리 | GAMLI | A | 공개 | **www 호스트 필수** · 상세 `/bbs/.../artclView.do` |
 | `mokwon` | 목원대 사역지정보 | GAMLI | A | 공개 | JS 렌더 |
 | `kmc` | 기감 총회(KMC) | GAMLI | A | **로그인** | 인증+법률게이트 |
 | `hansei` | 한세대 대학원 | SUNBOK | A | 공개 | — |
@@ -102,13 +102,15 @@
 | `kts` | 고려신학대학원(KTS) | GOSIN | A | 공개 | SSL(-k) |
 | `kosin_th` | 고신대 신학과 자유게시판 | GOSIN | **B** | 공개 | 청빙 필터+혼재 |
 | `hapdong` | 합신대 교역자초빙 | HAPSIN | A | 공개 | — |
-| `prok` | 기장 총회(PROK) | ETC | A | 공개 | 신 .NET URL |
+| `prok` | 기장 총회(PROK) | ETC | A | 공개 | 신 .NET URL · 안정 인덱스 `/Board/Index/34` 권장 |
 | `kaicam` | KAICAM 독립교회연합회 | ETC | A | 공개 | **UA위장** |
-| `kidok` | 기독신문 구인구직 | HAPDONG* | B | **로그인** | 인증+법률게이트, 범교회 |
+| `kidok` | 기독신문 구인구직 | HAPDONG* | B | **로그인** | 인증+법률게이트, 범교회 · **목록조차 전면 로그인벽 → 제외 재검토** |
 
 \* 기독신문은 교단지지만 여러 교단 교회가 이용 → 모드 B.
 
 **제외(크롤 안 함)**: 대전신대·아이굿뉴스·서울신대·성결대·한국성결신문(게시판 없음), 예수교대한하나님의성회·아신대(휴면), 고신총회(KTS 중복). **CROSS 상업**(청빙넷·제이웹·cjob·갓피플·WGST)은 "공식 게시판만" 정책으로 초기 제외.
+
+> **3차 재검증 반영(2026-07-21 · SOURCES §0·§7)**: URL 수정 `bpu`·`uhs`(www 필수) · `prok` 안정 인덱스 `/Board/Index/34` 병기 권장 · `bsds`(백석대신=별개 교단)·`kidok`(전면 로그인벽)은 재분류/제외 재검토 · `hanil`·`agk`·`csu`는 최신 활동 미확정(채택 전 재확인). **누락 재부상**: 대전신대(§3b '없음'이었으나 재부상, 재정찰)·나사렛성결회(→ETC)·서울성경신대원대 SU(→ETC)·순복음측 총회(korea-ag). **⚠️ 커버리지**: "공식만" 정책은 실 청빙 물량의 **~25~35%만 커버**(부교역자·전도사 다수 물량은 상업 애그리게이터로 유출). 상세 SOURCES §2·§7.
 
 ---
 
