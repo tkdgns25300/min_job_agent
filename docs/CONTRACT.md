@@ -23,7 +23,7 @@
 2) 크롤 시 공고 교단 = defaultDenomination.
 3) AI 구조화가 공고 본문·교회명에서 교단 신호를 읽어,
    default와 명백히 다르면 override (예: 합동 신학교 게시판의 "예장 통합 ○○교회" 공고).
-4) override 결과가 9개 key 밖이면 → ETC + 운영자 플래그(자동 게재 금지, 정통 화이트리스트).
+4) override 결과가 9개 **대형** key 밖이면 → ETC + 운영자 플래그(자동 게재 금지, 정통 화이트리스트).
 5) 항상 raw_denomination(원문 표기)을 스테이징에 보존 → 검토·향후 재매핑용.
 ```
 
@@ -74,7 +74,7 @@
 | `daeshin` | 대신대 취업정보 | HAPDONG | A | 공개 | SSL(-k), 서버렌더(curl로 확보) |
 | `calvin` | 칼빈대 사역취업정보 | HAPDONG | A | 공개 | **http 전용** |
 | `kwangshin` | 광신대 구인게시판 | HAPDONG | A | 공개 | — |
-| `csu` | 총신대 사역게시판 | HAPDONG | A | 공개 | **JS+REST API** |
+| `csu` | 총신대 사역게시판 | HAPDONG | A | 공개 | 공개 REST `getBoardContent`(board_id 178) · 활성 확정(Fable) |
 | `gapck` | 예장합동 총회 | HAPDONG | A | 공개 | `old.` 도메인, EUC-KR |
 | `ytus` | 영남신대 | TONGHAP | A | 공개 | — |
 | `puts` | 장신대 초빙 | TONGHAP | A | 공개 | EUC-KR |
@@ -83,10 +83,10 @@
 | `pck` | 예장통합 총회 | TONGHAP | A | 공개 | — |
 | `sjs` | 서울장신대 | TONGHAP | A | 공개 | EUC-KR |
 | `pckworld` | 한국기독공보 광고검색 | TONGHAP | A | 공개 | 지면광고형 |
-| `hanil` | 한일장신대 | TONGHAP | A | JS(불명) | 헤드리스 · **목록 URL 재확인 필요(재검증서 0건 반환)** |
+| `hanil` | 한일장신대 | TONGHAP | A | 공개(AJAX) | `article_list.ajax`(boardId `BBS…262`)→JSON · **매우활발(Fable가 🔸→✅)** |
 | `bu` | 백석대 대학원 정보나눔터 | BAEKSEOK | A | 공개 | — |
 | `pgak` | 백석총회 | BAEKSEOK | A | 공개 | **UA위장**, iframe |
-| `bsds` | 백석대신총회 | BAEKSEOK | A | 공개 | UA위장(저조) · **백석대신=예장백석과 별개 교단(2019분열) → 재분류/드롭 후보** |
+| `bsds` | 백석대신총회 | BAEKSEOK | A | 공개 | UA위장(저조) · 백석대신은 2019 분열했다 **2026 백석과 재결합 선언 → 유동적**(BAEKSEOK 유지·모니터링, raw 보존) |
 | `mtu` | 감신대 취업게시판 | GAMLI | A | 공개 | 상세 `view.do?brdIdx=` |
 | `uhs` | 협성대 웨슬리 | GAMLI | A | 공개 | **www 호스트 필수** · 상세 `/bbs/.../artclView.do` |
 | `mokwon` | 목원대 사역지정보 | GAMLI | A | 공개 | JS 렌더 |
@@ -110,7 +110,7 @@
 
 **제외(크롤 안 함)**: 대전신대·아이굿뉴스·서울신대·성결대·한국성결신문(게시판 없음), 예수교대한하나님의성회·아신대(휴면), 고신총회(KTS 중복). **CROSS 상업**(청빙넷·제이웹·cjob·갓피플·WGST)은 "공식 게시판만" 정책으로 초기 제외.
 
-> **3차 재검증 반영(2026-07-21 · SOURCES §0·§7)**: URL 수정 `bpu`·`uhs`(www 필수) · `prok` 안정 인덱스 `/Board/Index/34` 병기 권장 · `bsds`(백석대신=별개 교단)·`kidok`(전면 로그인벽)은 재분류/제외 재검토 · `hanil`·`agk`·`csu`는 최신 활동 미확정(채택 전 재확인). **누락 재부상**: 대전신대(§3b '없음'이었으나 재부상, 재정찰)·나사렛성결회(→ETC)·서울성경신대원대 SU(→ETC)·순복음측 총회(korea-ag). **⚠️ 커버리지**: "공식만" 정책은 실 청빙 물량의 **~25~35%만 커버**(부교역자·전도사 다수 물량은 상업 애그리게이터로 유출). 상세 SOURCES §2·§7.
+> **재검증 반영(2026-07-21 · 3차 실측 + Fable 교차감사 · 상세 SOURCES)**: URL 수정 `bpu`·`uhs`(www 필수) · `prok` 안정 인덱스 `/Board/Index/34`. **판정 변경**: `hanil` 🔸→✅(AJAX로 매우활발 확인) · `csu` 활성 확정 · `kidok`=예장합동 기관지 + 전면 로그인벽 → 제외 유력 · `bsds`=2026 백석 재결합 선언으로 유동적(BAEKSEOK 유지·모니터링, 하드 재분류 보류). **기각**: `korea-ag`(청빙판 없음). **확인 필요**: 서울신대(`stc68.net`, 기성 신학교 창구 누락·편입 유력) · 아신대 ACTS(휴면 vs 활성 충돌) · 나사렛(`na.or.kr/ccall`) · SU · `agkr` · 대전신대. **⚠️ 커버리지**: "공식만" = 실물량 일부(교단별 편차 큼, 대략 ~25~55% 범위·확정불가). 상세 SOURCES §3·§5.
 
 ---
 
