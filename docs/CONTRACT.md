@@ -102,7 +102,7 @@
 | `pck` | 예장통합 총회 | TONGHAP | A | 공개 | — |
 | `sjs` | 서울장신대 | TONGHAP | A | 공개 | EUC-KR |
 | `pckworld` | 한국기독공보 광고검색 | TONGHAP | A | 공개 | 지면광고형 |
-| `hanil` | 한일장신대 | TONGHAP | A | 공개(AJAX) | `article_list.ajax`(boardId `BBS…262`)→JSON · **매우활발(Fable가 🔸→✅)** |
+| `hanil` | 한일장신대 | TONGHAP | A | 공개(AJAX) | **www 호스트 필수**(apex 무응답) · `www.hanil.ac.kr/.../article_list.ajax`(boardId `BBS…262`)→JSON · 매우활발(Fable가 🔸→✅) |
 | `bu` | 백석대 대학원 정보나눔터 | BAEKSEOK | A | 공개 | — |
 | `pgak` | 백석총회 | BAEKSEOK | A | 공개 | **UA위장**, iframe |
 | `bsds` | 백석대신총회 | BAEKSEOK | A | 공개 | UA위장(저조) · 백석대신은 2019 분열했다 **2026 백석과 재결합 선언 → 유동적**(BAEKSEOK 유지·모니터링, raw 보존) |

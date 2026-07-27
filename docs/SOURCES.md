@@ -37,7 +37,7 @@
 | 예장통합 총회(PCK) | `pck.or.kr/bbs/board.php?bo_table=SM05_05` | 공개 | 활발(07-21) | ✅ | 교단 공식 청빙란 |
 | 서울장신대 사역구인정보 | `sjs.ac.kr/ht_ml/w_04ed/4600.php` | 공개 | 활발(07-21) | ✅ | EUC-KR · 상단 고정공지 아래로 매일 게시 |
 | 한국기독공보 광고검색 | `pckworld.com/adsearch/` | 공개 | 활발 | ✅ | 지면광고 **이미지형(OCR)** |
-| 한일장신대 청빙게시판 | `hanil.ac.kr/portal/default/bbs/list.do?menuId=M0004000500000000` | 공개(AJAX) | 매우활발(07-21, 12,480건) | ✅ | **Fable가 🔸→✅ 뒤집음**: 목록은 AJAX(`article_list.ajax`, boardId=`BBS…262`)로 본문까지 JSON. ⚠️ 에이전트 판정 엇갈려 최종 클릭 확인 권장 |
+| 한일장신대 청빙게시판 | `www.hanil.ac.kr/portal/default/bbs/list.do?menuId=M0004000500000000` | 공개(AJAX) | 매우활발(07-21, 12,480건) | ✅ | **www 필수** — apex `hanil.ac.kr`(www 없음)는 무응답 hang, `www.`는 200 (2026-07-27 확인). 목록은 AJAX(`article_list.ajax`, boardId=`BBS…262`)로 본문까지 JSON. Fable가 🔸→✅ |
 
 ### 예장백석 (BAEKSEOK)
 | 소스 | 게시판 URL | 접근 | 활동성 | 판정 | 주의 |
@@ -157,7 +157,7 @@
 - **SSL 처리**(http 또는 -k): `calvin.ac.kr`(http 전용) · `daeshin.ac.kr` · `kts.ac.kr`
 - **JS/AJAX/REST 엔드포인트**(정적 크롤 불가):
   - `csu`(총신) → 공개 REST `POST /api/board/getBoardContent`(board_id 178, 세션 불필요)
-  - `hanil`(한일장신) → `POST /portal/bbs/article_list.ajax`(boardId `BBS00000000000000262`) → 본문까지 JSON
+  - `hanil`(한일장신) → **www 필수**(apex 무응답) · `POST https://www.hanil.ac.kr/portal/bbs/article_list.ajax`(boardId `BBS00000000000000262`) → 본문까지 JSON
   - `mokwon` · godpeople → 헤드리스
 - **인코딩 EUC-KR**: `puts`(장신) · `ministry.htus`(호남) · `sjs`(서울장신) · `old.gapck`
 - **이미지 공고(OCR 후보)**: `pckworld`(한국기독공보 지면광고) · `koreabaptist` 일부
