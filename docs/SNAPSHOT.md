@@ -2,7 +2,7 @@
 
 > **이 문서 하나로 "지금 상황" 파악.** 새 세션(다른 컴퓨터 포함)에서 이어받을 때 이 파일 + `README.md` + `docs/SOURCES.md` + `docs/CONTRACT.md`만 읽으면 됨.
 >
-> **작성 시점**: 최초 2026-07-12 · **갱신 2026-07-21**(데모 · 3차 실측 · Fable 교차감사 · 초교파) · **갱신 2026-07-27**(운영자 전 게시판 실측 검수 → 크롤 tiering, §5) · **dev = prod = origin** (ff-only)
+> **작성 시점**: 최초 2026-07-12 · **갱신 2026-07-21**(데모 · 3차 실측 · Fable 교차감사 · 초교파) · **갱신 2026-07-27**(운영자 전수 실측 → 크롤 31 확정 §5·§7 · 파이프라인·Supabase 스키마 설계 §9) · **dev = prod = origin** (ff-only)
 
 ---
 
@@ -144,7 +144,7 @@
 
 0. **열린 결정 확정(§6)** — 특히 **교단 확정 방법**(신뢰성 직결이라 선행)·초교파 편입·커버리지 정책.
 1. **하네스 문서 3개** — `CLAUDE.md`(어댑터 아키텍처·가드레일: robots·rate limit·개인정보·정통 화이트리스트·로그인 게이트)·`docs/SPEC.md`(파이프라인)·`docs/ROADMAP.md`. (데모로 검증된 구조를 문서화)
-2. **데모 → 정식 `src/`** — 어댑터 **4개 → 확정 25 + 조건부 5(§5 tiering)** 확장, **교단 확정 로직(노회 lookup + evidence + 미상 처리)** 구현, `staging.json` → **Supabase**.
+2. **데모 → 정식 `src/`** — 어댑터 **4개 → 31곳(§5·§7 확정)** 확장, **교단 확정 로직(노회 lookup + evidence + 미상 처리)** 구현, `staging.json` → **Supabase(§9 스키마: `source_data`/`review_data`)**.
 3. **robots.txt·요청 rate limit 구현**(데모 미구현) · 로그인 소스 법률게이트 · 이미지 공고 OCR(pckworld 등).
 
 ---
@@ -162,3 +162,79 @@ curl -sL "https://www.ytus.ac.kr/board/list/trXXR" | head   # 영남신대(통�
 
 - **다중 에이전트 재조사가 필요하면** `Workflow` 도구 사용(사용자가 "subagent 써도 된다" 승인함). 지난 워크플로우 스크립트는 세션 임시폴더에만 있어 재사용 불가 → 필요 시 재작성.
 - **작업 대화는 한국어, 커밋·식별자는 영어.**
+
+---
+
+## 9. 크롤 파이프라인·데이터 설계 (2026-07-27 상세)
+
+> 이 세션에서 확정한 파이프라인·배포·저장 설계. §6 `[x] 파이프라인·배포 방향`의 상세본. 정식화(SPEC/CLAUDE + `src/`) 시 이 설계를 기준으로 한다.
+
+### 9.1 파이프라인 (①~⑥)
+```
+① 소스 레지스트리(repo config) ─┐
+② 시크릿(GH Secrets) ───────────┤→ [GitHub Actions 크롤 실행]
+③ 원장 조회(source_data) ───────┘   (이미 본 글번호 skip)
+      ▼ fetch → raw 최대 추출 (이미지 공고는 vision으로 텍스트화)
+④ source_data      (raw + 원장 · 불변)
+      ▼ 구조화(Gemini 2.5 Flash) + 교단 확정(규칙 엔진, LLM 아님)
+⑤ review_data      (PENDING)
+      ▼ 운영자 검수(min_job admin) — 승인/수정
+⑥ churches / jobs  (공개 · 요약 + source_url)
+   ↳ 실행 요약·에러 → crawl_run · source_health → 이상 시 경보
+```
+- ①~⑤ 자동 · ⑥ 사람 게이트. **dedup 2종**: 글번호(수집 시 skip) / 교차게시 병합(검수 시).
+
+### 9.2 트리거·배포
+- **배포 = GitHub Actions.** 크롤러 코드가 repo에 있고 `.github/workflows/crawl.yml`만 두면 GitHub이 매일 러너를 띄워 실행 후 삭제. **상시 서버 없음 · 무료 한도 내 $0.**
+- **트리거**: 매일 cron **자동**(파라미터 없음) + 수동 `workflow_dispatch`(백필 기간 input).
+- **증분**: 게시판별 `source_health.last_run_at` 이후 + **글번호(`external_id`) 원장 대조로 최종 판정**(날짜보다 정확). ⚠️ **초기 백필은 운영자가 크롤러로 수동 실행** → `source_data`에 원장이 채워져야 데일리가 중복을 안 만듦(엑셀로 jobs만 손입력 시 원장 비어 중복 발생).
+
+### 9.3 저장 위치
+- **GitHub(repo)**: 코드 + **소스 정의 config**(31곳 URL·셀렉터·flags·`enabled`). **공고 데이터는 없음.** 추가/제외 = config 커밋(`enabled:false`로 제외해도 이력 보존).
+- **Supabase**: 실제 데이터 전부(raw→검수→공개 + 운영 상태). 무료 티어.
+- **GH Secrets**: Supabase service key · Vertex 키(env — repo/DB에 노출 X).
+
+### 9.4 Supabase 스키마 (크롤러 4테이블 + 목적지)
+
+**① `source_data` — 원자료 + 원장 (불변, write-once)**
+| 컬럼 | 타입 | 비고 |
+|---|---|---|
+| `id` | uuid PK | |
+| `source_key` | text | 게시판 id(daeshin·puts…) |
+| `external_id` | text | **글번호(URL서 추출)** |
+| `source_url` | text | 원문 링크 |
+| `fetched_at` | timestamptz | 긁은 시각 |
+| `run_id` | uuid FK→crawl_run | |
+| `raw_text` | text | **최대 추출 텍스트** |
+| `raw_meta` | jsonb | 작성일·조회수·첨부목록 |
+| `content_hash` | text | 수정/재게시 감지 |
+| — | **UNIQUE(`source_key`,`external_id`)** | ← **원장** |
+
+**② `review_data` — 구조화 초안 + 검수 (가변)**
+| 그룹 | 컬럼 |
+|---|---|
+| 링크 | `id` PK · `source_data_id` FK · `run_id` |
+| 공고(jobs 미러) | `title`·`position`·`department`·`employment_type`·`qualification`·`housing_provided`·`stipend_min/max/note/period`·`work_days`·`requirements[]`·`preferred[]`·`required_docs[]`·`description`·`posted_at`·`deadline` |
+| 교회 초안 | `church_name`·`region`·`city` |
+| 교단 | `denomination`·`denomination_source`·`denomination_evidence`·`raw_denomination` |
+| 검수 메타 | `confidence`·`dedup_key`·`review_status`(PENDING/APPROVED/REJECTED)·`matched_church_id` FK→churches·`published_job_id` FK→jobs·`reviewed_by`·`reviewed_at` |
+
+**③ `source_health` — 게시판별 상태 (31행)**
+`source_key` PK · `last_run_at` · `last_success_at` · `last_new_count` · `consecutive_failures` · `last_status`(OK/FAIL/ZERO) · `last_error`
+
+**④ `crawl_run` — 실행별 요약 (admin 대시보드)**
+`id` PK · `started_at` · `finished_at` · `mode`(BACKFILL/DAILY) · `sources_ok` · `sources_failed` · `new_count` · `error_detail` jsonb(source_key→에러)
+
+**목적지 = `churches`/`jobs`** (DATA.md 스키마 · 승인 시 승격 — **요약 + `source_url` · `source=OPERATOR` · `owner_id=NULL`**, 검수 메타는 넘기지 않음).
+
+### 9.5 실패 감지
+- **하드**(접근 제한·URL 변경·타임아웃): HTTP 비2xx/000 → GitHub Actions 빨간불 + 이메일(자동).
+- **소프트**(사이트 리뉴얼로 셀렉터 깨짐): 200인데 **0건/급감** → `source_health` baseline 비교 경보 + 내용 sanity(리스트 자리에 로그인폼/에러 감지).
+
+### 9.6 admin 크롤 대시보드
+`crawl_run`(최근 실행: 언제·신규 N·실패 M·소요) + `source_health`(게시판별 마지막 성공·건수·연속실패) + `review_data` PENDING 카운트를 min_job admin이 읽어 표시. → "오늘 몇 건 추가/실패, 언제 긁었나" 가시화.
+
+### 9.7 스키마 거버넌스 ★
+- **크롤러 staging 스키마(`source_data`·`review_data`·`source_health`·`crawl_run`)는 `min_job_agent`가 소유·문서화·마이그레이션.** min_job 리포는 건드리지 않는다.
+- **`../min_job/docs/DATA.md`는 최종 output(`churches`/`jobs`) 스키마만 정본.** 크롤러는 그 output 모양에 맞춰 승격만 하고, 그 위 staging 4테이블은 이 리포 소관.
+- 물리적으로는 **min_job Supabase 프로젝트에 함께** 두되(같은 DB라 검수·승격이 단순), **정의·변경 관리는 이 리포**에서. (CONTRACT §3 "크롤러 전용 스테이징 필드"와 정합)
