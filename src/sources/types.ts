@@ -16,14 +16,20 @@ export interface SourceConfig {
   fetchTier: FetchTier;
   encoding: "utf-8" | "euc-kr";
   flags?: {
-    /** apex 무응답 등으로 www 호스트 필수(예: hanil·bpu·uhs·kwangshin) */
+    /** apex 무응답/404/인증서불일치로 www 호스트 필수(예: hanil·bpu·uhs·kwangshin·kts·mtu) */
     wwwRequired?: boolean;
-    /** https 미지원, http로만 접속(예: calvin) */
+    /** https 미지원, http로만 접속(예: calvin·wgst) */
     httpOnly?: boolean;
-    /** 기본 UA 403 → 브라우저 UA 위장(예: pgak·예성·KAICAM) */
+    /** 기본 UA 403 → 브라우저 UA 위장. (2026-07-29 검증: 현재 31곳 중 해당 없음, 대비용) */
     spoofUA?: boolean;
+    /** 자체서명/체인 오류로 TLS 검증 무시(-k) 필요. (2026-07-29 검증: 현재 해당 없음 — daeshin·kts는 정상 인증서) */
+    insecureTLS?: boolean;
   };
   listUrl: string;
+  /** 상세 URL 규칙(참고 — 실제 파싱은 어댑터). `{id}` = external_id 자리. */
+  detailPattern?: string;
+  /** board별 특이사항(2026-07-29 라이브 검수): JSON 엔드포인트·세션·soft404·공지행·pagination 등. 어댑터 구현 시 필독. */
+  fetchNote?: string;
 }
 
 /** 목록에서 뽑은 글 참조(상세 fetch 전). external_id = 소스 내 유일 글 식별자. */
