@@ -29,7 +29,8 @@
 
 **출력 필드:**
 - `denomination` — 교단 key(근거 있을 때) 또는 `UNKNOWN`(임시값 — 승격 전 운영자가 **9대형+ETC 10키 중 하나로 반드시 해소**, 공개엔 안 나감. 표시 라벨 "미상"은 min_job 소관 · **저장값은 영어 key**)
-- `denomination_source` — `stated` | `registry` | `ai_guess` | `unknown`
+- `denomination_source` — `stated` | `registry` | `ai_guess` | `unknown` | `operator`(운영자 검수 확정)
+  - 확정으로 인정: `stated`·`registry`·`operator`. **`ai_guess`는 값이 있어도 운영자 확인 대상**(SPEC §5.3)
 - `denomination_evidence` — 원문 인용 근거(운영자 3초 검증용)
 - `raw_denomination` — 원문 표기 항상 보존
 

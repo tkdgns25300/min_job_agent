@@ -99,7 +99,14 @@ def test_is_church_recruitment_matches_spec() -> None:
 
 def test_denomination_source_matches_spec() -> None:
     # SPEC이 소문자로 규정한 값 — 대문자로 "정리"하면 계약 위반.
-    assert _values(DenominationSource) == {"stated", "registry", "ai_guess", "unknown"}
+    # `operator`는 운영자가 검수에서 확정한 근거(SPEC §5.3의 "승격 전 10키로 해소").
+    assert _values(DenominationSource) == {
+        "stated",
+        "registry",
+        "ai_guess",
+        "unknown",
+        "operator",
+    }
 
 
 def test_review_status_matches_spec() -> None:

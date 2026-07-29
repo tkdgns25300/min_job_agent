@@ -71,44 +71,55 @@ pipeline → Store(프로토콜) → [Phase 1] JsonStore(로컬) → [1-6] Supab
 
 ## Directory
 
+**flat 레이아웃** — 패키지가 리포 루트에 있고 `src/` 껍데기를 두지 않는다. `src` 레이아웃은 PyPI에 올리는 **배포 라이브러리** 권장 배치이고, 우리는 **리포에서 그대로 실행하는 앱**이다(운영자가 CLI 실행 · `config/`·`data/`가 코드 옆). 앱에 `src/`를 끼우면 `config/` 경로 계산만 한 단계 깊어지고 얻는 게 없다.
+
 ```
-config/
-├── sources.json              ★ 소스 레지스트리 (전송 정본 · 라이브 검증값 · registry.ts 이식본)
-└── heresy-ref.json           이단 참고 목록 (사람이 관리 · git 이력 = 감사)
-src/minjob_agent/
+minjob_agent/                 ★ 패키지 (= import 이름)
+├── cli.py                    진입점 (운영자가 실행하는 창구)
 ├── domain.py                 enum — CONTRACT §1 계약 미러 + 크롤러 enum
 ├── models.py                 레코드 dataclass — SPEC §6 4테이블
+├── clock.py                  UTC·ISO8601·date 생성/직렬화 단일 창구
+├── paths.py                  리포 기준 경로 (한 곳에서만 계산)
 ├── settings.py               env 로딩 1곳 (import 시점 캡처 금지)
 ├── sources/{registry.py, adapters/}
 ├── fetch/{client.py, session.py}
 ├── pipeline/{run.py, collect.py, structure.py, denomination.py, dedup.py}
 ├── store/{base.py, json_store.py, supabase_store.py}
-├── lib/gemini.py             Vertex 클라이언트 + 재시도
-└── cli.py                    진입점
+└── lib/gemini.py             Vertex 클라이언트 + 재시도
+config/
+├── sources.json              ★ 소스 레지스트리 (전송 정본 · 라이브 검증값)
+└── heresy-ref.json           이단 참고 목록 (사람이 관리 · git 이력 = 감사)
 tests/{fixtures/, test_*.py}
 data/                         로컬 저장소 (gitignored)
 ```
 
-> ⚠️ 위 트리는 **목표 구조 예측**이다(이식 전). 드리프트할 수 있으니 "계약"으로 신뢰하지 말 것. 특히 어댑터 파일 구성은 실제 파싱하며 정해진다.
+> ⚠️ 위 트리에서 `sources/adapters`·`fetch`·`pipeline`·`store`·`lib`는 **아직 없는 목표 구조**다. 드리프트할 수 있으니 "계약"으로 신뢰하지 말 것.
+>
+> **커밋하지 않는 자동생성물**: `.venv/`·`__pycache__/`·`minjob_agent.egg-info/`(pip 메타데이터)·`.mypy_cache/`·`.ruff_cache/`·`.pytest_cache/`·`data/`. 전부 `.gitignore`에 있다 — 지워도 도구가 다시 만든다.
+>
+> **`src/`**(+`package.json`·`tsconfig.json`)는 **이식 대기 중인 TS 잔존물**이다. 이식이 끝난 부분은 지우고, 아직 참고가 필요한 `store/*.ts`·`lib/gemini.ts`는 0-1c까지 둔다.
 
 ## Commands
 
-**현재(TS 뼈대 · 이식 전) — 실제로 동작하는 명령**
+**셋업** (`uv`는 이 환경에 없어 표준 `venv`+`pip`를 쓴다)
 ```bash
-npm install
-npm run typecheck             # tsc --noEmit
-npm run list [KEY]            # 등록 소스 확인 (예: npm run list YTUS)
-npm run check:gemini          # Vertex 인증 스모크(실호출 1회)
+python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 ```
 
-**이식 후(Python · 목표)**
+**커밋 전 게이트 — 4개 전부 통과해야 한다**
 ```bash
-uv sync
-uv run ruff check . && uv run mypy src && uv run pytest   # 커밋 전 최소 게이트
-uv run python -m minjob_agent.cli list-sources | check-gemini | daily | backfill
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
+.venv/bin/mypy                 # strict + disallow_any_explicit
+.venv/bin/pytest -q            # fixture만 사용 · 네트워크 금지
 ```
 
-> 툴체인(uv·ruff·mypy·pytest)과 CLI 이름은 이식 시 확정한다. **위 Python 명령은 아직 존재하지 않는다** — 지금 검증은 `npm run typecheck`·`npm run list`로 한다.
+**실행**
+```bash
+.venv/bin/minjob-agent list-sources [KEY]   # 등록 소스 확인
+```
+아직 없는 명령(이후 Phase): `check-gemini`(0-1c) · `daily`·`backfill`(Phase 1).
+
+> ⚠️ TS 뼈대(`src/*.ts`·`package.json`)는 이식 완료분이라 제거 대기 상태다(0-1c). `npm run …`은 참고용.
 
 ## Layer Responsibilities
 

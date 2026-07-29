@@ -18,14 +18,9 @@ from enum import StrEnum
 from pathlib import Path
 from urllib.parse import SplitResult, urlsplit
 
-from minjob_agent.domain import Denomination, Encoding, FetchTier
+from minjob_agent.domain import Denomination, Encoding, FetchTier, normalize_source_key
+from minjob_agent.paths import DEFAULT_SOURCES_PATH
 
-#: 개발용 기본 config 위치 — <repo>/config/sources.json.
-#: 설치 배포본에서는 이 경로가 성립하지 않으므로 호출자가 경로를 넘긴다(CLI `--config`).
-DEV_SOURCES_PATH: Path = Path(__file__).resolve().parents[3] / "config" / "sources.json"
-
-#: source_key는 저장값이자 로그 키 — 영어 대문자로 시작하는 영숫자·밑줄만(CLAUDE.md Naming).
-_KEY_PATTERN = re.compile(r"[A-Z][A-Z0-9_]*")
 _ID_PLACEHOLDER = "{id}"
 _PLACEHOLDER_PATTERN = re.compile(r"\{[^}]*\}")
 
@@ -91,7 +86,7 @@ _FLAG_NAMES = frozenset(f.name for f in fields(SourceFlags))
 
 def load_sources(path: Path | None = None) -> tuple[SourceConfig, ...]:
     """config를 읽어 검증된 소스 목록을 반환한다. 위반이 하나라도 있으면 `ConfigError`."""
-    target = DEV_SOURCES_PATH if path is None else path
+    target = DEFAULT_SOURCES_PATH if path is None else path
     try:
         text = target.read_text(encoding="utf-8")
     except OSError as err:
@@ -213,10 +208,11 @@ def _row_label(row: dict[str, object], index: int) -> str:
 
 def _parse_key(row: dict[str, object], what: str) -> str:
     key = _require_str(row, "key", what)
-    # isalnum()은 유니코드 인식이라 한글도 통과한다 → 정규식으로 영문 대문자만 허용.
-    if _KEY_PATTERN.fullmatch(key) is None:
-        raise ConfigError(f"{what}.key: 영문 대문자·숫자·밑줄만 허용 (받은 값 {key!r})")
-    return key
+    # 형식 규칙은 domain에 한 벌만 둔다(레코드도 같은 규칙을 쓴다).
+    try:
+        return normalize_source_key(key)
+    except ValueError as err:
+        raise ConfigError(f"{what}.key: {err}") from err
 
 
 def _parse_hint(value: object, what: str) -> Denomination | None:

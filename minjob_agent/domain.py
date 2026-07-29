@@ -10,7 +10,25 @@ min_job과 달라지면 CONTRACT를 따르고 불일치를 보고한다(CLAUDE.m
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
+
+#: `source_key`는 저장값·config 키·로그 키로 모두 같은 문자열이 쓰인다.
+#: 영문 대문자만 허용 — `str.isalnum()`은 유니코드 인식이라 한글이 통과하고,
+#: `"영남".upper() == "영남"`이라 대문자 검사만으로도 막히지 않는다.
+SOURCE_KEY_PATTERN = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def normalize_source_key(value: str) -> str:
+    """공백을 제거하고 형식을 검증한 `source_key`를 반환한다.
+
+    저장 전에 정규화해야 `UNIQUE(source_key, external_id)`가 공백 변형으로 쪼개지지 않는다
+    (같은 공고가 두 원장 행이 되면 재수집·재구조화 비용이 발생).
+    """
+    key = value.strip()
+    if SOURCE_KEY_PATTERN.fullmatch(key) is None:
+        raise ValueError(f"source_key는 영문 대문자·숫자·밑줄만 허용 (받은 값 {value!r})")
+    return key
 
 
 class Denomination(StrEnum):
@@ -124,12 +142,15 @@ class IsChurchRecruitment(StrEnum):
 
 
 class DenominationSource(StrEnum):
-    """교단 확정 근거(SPEC §5.3). ai_guess는 확정이 아니라 운영자 검수 대상."""
+    """교단 근거(SPEC §5.3). `ai_guess`는 값이 있어도 **확정이 아니라** 운영자 검수 대상."""
 
     STATED = "stated"
     REGISTRY = "registry"
     AI_GUESS = "ai_guess"
     UNKNOWN = "unknown"
+    #: 운영자가 검수에서 직접 확정한 값. SPEC §5.3의 "승격 전 10키로 해소"가 이 근거로 남는다
+    #: (이 값이 없으면 해소된 행을 되읽을 때 근거=unknown과 모순이라 크래시한다).
+    OPERATOR = "operator"
 
 
 class ReviewStatus(StrEnum):

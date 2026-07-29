@@ -21,9 +21,12 @@
 
 ### 0-1. Python 이식 (스택 변경 후속 · Phase 1 선행)
 - [ ] `config/sources.json` — `registry.ts` 31곳 **문자 그대로** 이관(특히 `fetchNote`) + 로드 시 검증(key 대문자·유일·hint 화이트리스트·`{id}` 포함)
-- [ ] Python 뼈대 — `domain.py`·`models.py`(SPEC §6 · **snake_case 필드**)·`settings.py`·`store/{base,json_store}.py`·`lib/gemini.py`·`cli.py`
-- [ ] 툴체인 확정 — uv·ruff·mypy(strict)·pytest + `.env.example` 유지
-- [ ] TS 잔존물 제거 — `src/*.ts`·`package.json`·`tsconfig.json`
+- [x] **0-1a** 프로젝트 골격 + `config/sources.json`(31곳 기계 변환) + `domain.py` + `cli list-sources` — 검수 2회 반영
+- [x] **0-1b-1** `paths.py`·`clock.py`(UTC·date 단일 창구)·`models.py`(SPEC §6 4레코드)·`settings.py` — 검수 2회 + 검증 패스 반영
+- [x] **flat 레이아웃 확정** — 패키지를 `minjob_agent/`(리포 루트)로. `src/` 껍데기는 배포 라이브러리용이라 앱에는 불필요(CLAUDE.md Directory)
+- [ ] **0-1b-2** `store/{base,serde,json_store}.py` — Store 프로토콜 + JSON 구현(원자적 쓰기·행별 격리 읽기)
+- [ ] **0-1c** `lib/gemini.py` + `cli check-gemini` + **TS 잔존물 제거**(`src/*.ts`·`package.json`·`tsconfig.json`)
+- [x] 툴체인 — venv+pip(uv 미설치) · ruff(+DTZ·TID) · mypy strict · pytest
 
 ## Phase 1: MVP 크롤러 (수집 → review_data · JSON · 31곳 · 배포)
 

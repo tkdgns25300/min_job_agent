@@ -95,8 +95,9 @@
   - 최종 안전망: DB `UNIQUE(source_key, external_id)` + `INSERT ... ON CONFLICT DO NOTHING`.
 - **끌어올림(bump)**: 같은 글이 위로 와도 external_id 동일 → 이미 있음 → skip(중복 없음). 삭제 후 새 식별자로 재등록은 **새 글 = 재공고**(보존).
 - **구조화 재처리 = `structured_at` 기준** ⭐: `source_data`는 ③(fetch·raw 저장)에서 기록되므로, ④ 구조화가 실패(429·파싱오류 등)하면 그 행은 처리되지 않은 채 남는다. 매 run은 증분 신규분에 더해 **`structured_at IS NULL`인 `source_data` 행을 재구조화**한다(원장은 재-fetch만 막고 재구조화는 허용) → 실패 공고가 영구 유실되지 않음.
-  - ⚠️ **"`review_data`가 없는 행"을 기준으로 삼으면 안 된다** — 게이트1 탈락(개교회 아님·비채용)은 **의도적으로 review_data를 만들지 않으므로**(§1·§5.1), 그 기준으로는 "제외됨"과 "실패함"이 구분되지 않아 **제외 공고를 매 실행 Gemini로 재전송하는 비용 루프**가 된다(혼재 게시판에선 제외분이 다수). → **구조화를 시도했으면 결과와 무관하게 `structured_at`을 기록**한다.
-  - `structure_attempts`(시도 횟수)를 함께 올려 **상한(예: 3회) 초과분은 재시도 대상에서 제외**하고 운영자 리포트로 돌린다(영구 실패의 무한 재호출 방지).
+  - ⚠️ **"`review_data`가 없는 행"을 기준으로 삼으면 안 된다** — 게이트1 탈락(개교회 아님·비채용)은 **의도적으로 review_data를 만들지 않으므로**(§1·§5.1), 그 기준으로는 "제외됨"과 "실패함"이 구분되지 않아 **제외 공고를 매 실행 Gemini로 재전송하는 비용 루프**가 된다(혼재 게시판에선 제외분이 다수).
+  - **`structured_at` = 판정이 끝난 시각**이다(게이트1 `YES`→review 생성 / `NO`→제외, **둘 다 기록**). **구조화가 실패하면 기록하지 않는다**(NULL 유지) — 실패에도 시각을 찍으면 그 공고는 영구히 재시도되지 않는다(유실). 즉 "게이트 결과와 무관"하지만 "성공·실패와는 무관하지 않다".
+  - `structure_attempts`(시도 횟수)를 함께 올리고 실패 시 `last_structure_error`에 원인을 남긴다. **상한(3회) 초과분은 재시도 대상에서 제외**하고 운영자 리포트로 돌린다(영구 실패의 무한 재호출 방지). 운영자가 원인을 고치면 시도 횟수를 리셋해 재진입시킨다.
   - 재구조화 배치는 **상한을 두고**(한 run당 N건) 오래된 것부터 처리한다 — 백필 직후 대량 backlog가 한 실행을 폭주시키지 않게.
 - **백필(로컬 수동 1회)**: `mode=BACKFILL`, **게시일 최근 3개월**까지. 컷오프는 **목록 단계의 게시일**(`listPostings`가 반환하는 날짜)로 판정(구조화 전이라 posted_at 산출 이전 — 목록 날짜 사용). 목록에 날짜가 없는 소스는 **최근 N페이지**로 폴백. 이후 데일리가 이어감.
 - **데일리(GitHub Actions)**: `mode=DAILY`, 증분만.
@@ -133,7 +134,9 @@
 3. **AI 추정**(공고의 노회명·교회명·홈페이지를 근거로 Gemini가 추정) → `denomination_source=ai_guess` (**교단 신뢰도 낮음 표시** — 레코드 confidence와 별개로 이 필드가 "확정 아님"을 나타냄).
 4. 근거 없음 → **`denomination=UNKNOWN`** · `denomination_source=unknown`.
 
-- 출력: `denomination` · `denomination_source`(stated/registry/ai_guess/unknown) · `denomination_evidence`(원문 근거).
+- 출력: `denomination` · `denomination_source`(stated/registry/ai_guess/unknown/**operator**) · `denomination_evidence`(원문 근거).
+- **`operator`** = 운영자가 검수에서 직접 확정한 값. 위 "승격 전 10키로 해소"가 이 근거로 남는다 — 이 값이 없으면 해소된 행이 "교단은 있는데 근거는 unknown"이 되어 되읽을 때 모순으로 걸린다.
+- **공개 가능 판정**: `stated`·`registry`·`operator`만 확정으로 본다. **`ai_guess`는 값이 있어도 운영자 확인 대상**(확정 아님).
 - **`UNKNOWN`은 review_data 임시값**이다(표시 라벨 "미상"은 min_job admin 소관) — 승격 전 운영자가 반드시 **9대형+ETC 10키 중 하나로 해소**한다(9대형 화이트리스트 밖=`ETC`, 근거 전무해서 못 정하면 `ETC`+플래그). 공개 `churches.denomination`(교단은 churches에 저장·jobs는 JOIN)엔 `UNKNOWN`이 나가지 않는다.
 - `UNKNOWN`(근거 전무) vs `ETC`(식별됐으나 화이트리스트 밖)는 다르다 — review 단계 구분용. **저장값은 영어 key로 통일**(한글 저장 금지).
 - **노회는 저장하지 않고 매핑표도 만들지 않는다**(min_job 스키마에 노회 없음). 노회명은 위 3순위(AI 추정)의 근거로만 쓴다. → 표 유지비 0, 대신 검수 의존↑(운영자가 확정).
@@ -171,8 +174,9 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
 | `raw_text` | text | 확보 텍스트(이미지형은 얇거나 빈 것이 **정상** — config `image_only`) |
 | `image_urls` | text[] | 본문·첨부 이미지 URL. 구조화 직전 바이트 fetch용(§3). raw_meta에 섞지 않고 **별도 컬럼**(빈 배열 = 이미지 없음) |
 | `raw_meta` | jsonb | 작성일·조회수·첨부·게시판 원필드(비정형) |
-| `structured_at` | timestamptz NULL | ⭐ **구조화 시도 시각**(게이트1 탈락 포함). `NULL`=미처리 → 재구조화 대상(§4). 이 컬럼이 "제외됨"과 "실패함"을 구분한다 |
-| `structure_attempts` | int DEFAULT 0 | 구조화 시도 횟수. 상한 초과분은 재시도 제외·운영자 리포트(§4) |
+| `structured_at` | timestamptz NULL | ⭐ **판정 완료 시각**(게이트1 YES·NO **둘 다** 기록). **실패 시 NULL 유지** → 재구조화 대상(§4). 이 컬럼이 "제외됨"과 "실패함"을 구분한다 |
+| `structure_attempts` | int DEFAULT 0 | 구조화 시도 횟수. 상한(3) 초과분은 재시도 제외·운영자 리포트(§4) |
+| `last_structure_error` | text NULL | 마지막 실패 원인. 상한 초과 리포트가 "왜 실패했나"를 말할 수 있게(§4) |
 | `content_hash` | text NULL | *Phase 후반(수정감지)용 — MVP 미채움(§9 리비전 방식)* |
 | — | **UNIQUE(`source_key`,`external_id`)** | 원장(증분·중복 방지) |
 
@@ -192,9 +196,11 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
 > **UNIQUE(`source_data_id`)** — 한 원자료당 초안 1개(중복 PENDING 방지). 재구조화 시 기존 행을 교체(upsert)한다. 게시판 default 교단은 `source_key`로 유도 가능(레지스트리)하므로 별도 hint 컬럼을 두지 않는다.
 
 ### ③ `source_health` — 게시판별 상태 (약 31행 · 매 실행 UPSERT)
-`source_key` PK · `last_run_at` · `last_success_at` · `last_new_count` · `consecutive_failures` · `last_status`(OK/FAIL/ZERO) · `last_error`
+`source_key` PK · `last_run_at` · `last_success_at` · `last_new_count` · `consecutive_failures` · **`consecutive_zero_runs`** · `last_status`(OK/FAIL/ZERO) · `last_error`
 
-> ⚠️ `consecutive_failures` 누적과 `last_success_at` 보존에는 **직전 값 읽기가 필요**하다 → Store에 조회(read)가 있어야 한다. 통째 덮어쓰기(blind upsert)만 두면 실패 1회로 `last_success_at`이 지워져 §7 경보가 무의미해진다.
+> ⚠️ 누적값(`consecutive_failures`·`consecutive_zero_runs`)과 `last_success_at` 보존에는 **직전 값 읽기가 필요**하다 → Store에 조회(read)가 있어야 한다. 통째 덮어쓰기(blind upsert)만 두면 실패 1회로 `last_success_at`이 지워져 §7 경보가 무의미해진다.
+>
+> ⚠️ **`consecutive_zero_runs`가 소프트 실패 경보의 근거다**(§7). `ZERO`(200인데 신규 0건)를 완전 성공으로 취급하면 셀렉터가 깨지거나 로그인벽으로 바뀐 게시판이 영구히 "정상"으로 보인다 — `ZERO`는 성공 시각은 갱신하되 이 카운터를 올린다. 신규 유입이 있으면 0으로 리셋, 실패(FAIL)는 0건 판정 자체를 못 하므로 값을 유지한다.
 
 ### ④ `crawl_run` — 실행별 요약 (실행마다 1행 · 누적)
 `id` PK · `started_at` · `finished_at` · `mode`(BACKFILL/DAILY) · `sources_ok` · `sources_failed` · `new_count` · `error_detail` jsonb(source_key→에러)
