@@ -67,7 +67,7 @@
 | `docs/CONTRACT.md` | 크롤러 출력 계약 — 교단 enum·정규화 맵·소스별 default 교단+모드+기술요건·스테이징 필드·dedup·로그인 법률게이트 | ✅ 초안 |
 | `CLAUDE.md` | 아키텍처·가드레일·컨벤션 | ⬜ **미작성** |
 | `docs/SPEC.md` | 파이프라인 명세(스코프·게이트·staging 4테이블·정책·배포) | ✅ 작성 + 3렌즈 냉정검수·재검증 |
-| `docs/ROADMAP.md` | Phase별 작업 | ⬜ **미작성** |
+| `docs/ROADMAP.md` | Phase별 작업 단위(0~3) | ✅ 작성(min_job 스타일) |
 
 > 정식 `src/`는 아직 없음. 단 **`crawler-demo/`에 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, zip) — 전 체인(크롤→raw→저장→Gemini 구조화) 관통 검증됨.
 
@@ -130,7 +130,7 @@
 
 **대기:**
 - [ ] **크롤 로직 정식 `src/` 구현** ⭐ — 어댑터 31곳·교단 확정·`source_data`/`review_data` 적재·GH Actions.
-- [ ] **CLAUDE.md·ROADMAP.md** 작성.
+- [ ] **CLAUDE.md** 작성(어댑터 아키텍처·가드레일). *(ROADMAP.md ✅ 완료)*
 - [ ] **min_job 스키마·정책 변경**(별도 리포 · SPEC §8): ① `jobs.job_kind`(MINISTRY/GENERAL)+`role`+UI 필터(기본=사역직) ② `jobs.contact`+가드레일 #3 갱신 ③ `constants/domain.ts` `KIJANG` 제거(11→10키). (가드레일 #1·/about "수기 확인" 문구도 갱신 필요.)
 - [ ] **순복음·ETC 물량 보강 검토** — 순복음 공개 물량 얇음 → `agkdc` 확인, PROK 사망분 대체.
 - [ ] **로그인 소스 법률 게이트** — KMC·AGK·기독신문 인증 크롤 전 변호사 확인 + 계정.
@@ -144,7 +144,7 @@
 > Walking Skeleton은 **`crawler-demo`로 사실상 관통 완료**(ytus 등 4어댑터 → raw → Gemini 구조화 → 리뷰 큐). 다음은 "결정 확정 → 정식화".
 
 0. ✅ **열린 결정 확정** — 스코프·job_kind·교단·연락처·이미지·백필/크론 전부 확정(§6 "이번 세션 확정" · SPEC).
-1. **하네스 문서** — ✅ `docs/SPEC.md` 완료(3렌즈 검수). 남은 것: `CLAUDE.md`(어댑터 아키텍처·가드레일)·`docs/ROADMAP.md`.
+1. **하네스 문서** — ✅ `docs/SPEC.md`·`docs/ROADMAP.md` 완료. 남은 것: `CLAUDE.md`(어댑터 아키텍처·가드레일).
 2. **데모 → 정식 `src/`** — 어댑터 **4개 → 31곳(§5·§7 확정)** 확장, **교단 확정 로직(명시/명부/AI추정 `ai_guess` + evidence + 미상 해소)** 구현, `staging.json` → **Supabase(§9 스키마: `source_data`/`review_data`)**.
 3. **robots.txt·요청 rate limit 구현**(데모 미구현) · 로그인 소스 법률게이트 · 이미지 공고 처리(Gemini 멀티모달 — pckworld 등).
 
