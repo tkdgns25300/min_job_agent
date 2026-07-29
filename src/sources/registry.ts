@@ -25,7 +25,7 @@ export const REGISTRY: SourceConfig[] = [
     enabled: true, fetchTier: "static", encoding: "utf-8", flags: { httpOnly: true },
     listUrl: "http://calvin.ac.kr/main/boardList.do?brd_mgrno=692&menu_no=2282",
     detailPattern: "/main/boardView.do?brd_mgrno=692&menu_no=2282&brd_no={id}",
-    fetchNote: "eGov. https 연결거부→http 전용. row onclick fView('{id}')→brd_no. pagination page_now.",
+    fetchNote: "eGov. https 연결거부→http 전용. onclick fView('{id}')→brd_no. pagination page_now. ⚠️2차검증: 상세는 **세션 쿠키 필요** — 목록 GET으로 JSESSIONID 확보 후 그 쿠키로 boardView(쿠키자 없이 cold 요청은 404).",
   },
   {
     key: "KWANGSHIN", boardName: "광신대 구인게시판", denominationHint: "HAPDONG",
@@ -38,17 +38,17 @@ export const REGISTRY: SourceConfig[] = [
     key: "CSU", boardName: "총신대 사역게시판", denominationHint: "HAPDONG",
     enabled: true, fetchTier: "json", encoding: "utf-8",
     listUrl: "https://csu.ac.kr/?m1=page&menu_id=1110",
-    detailPattern: "/api/board/getBoardContent?id={id}",
-    fetchNote: "⚠️SPA(총신). '공개 REST' 아님 — 목록=POST /api/user/board/getBoardContentSummaryList(board_id)+세션쿠키 필요(페이지 GET 선확보). menu_id 1110=사역·1111=취업. 세션+POST 또는 headless 재설계.",
+    detailPattern: "POST /api/board/getBoardContent (body {id}) — GET ?id= 는 405",
+    fetchNote: "⚠️SPA(총신). '공개 REST' 아님 — 목록=POST /api/user/board/getBoardContentSummaryList(board_id)+세션쿠키(2차검증: 세션 없으면 code 22000). 상세도 POST. menu_id 1110=사역·1111=취업. 세션+POST 또는 headless.",
   },
 
   // ── 예장통합 (TONGHAP) ──
   {
     key: "YTUS", boardName: "영남신대 취업/초빙", denominationHint: "TONGHAP",
-    enabled: true, fetchTier: "static", encoding: "utf-8", flags: { wwwRequired: true },
+    enabled: true, fetchTier: "static", encoding: "utf-8",
     listUrl: "https://www.ytus.ac.kr/board/list/trXXR",
     detailPattern: "/board/view/trXXR/{id}",
-    fetchNote: ".notice-row 공지 skip. id=경로 끝 숫자. pagination /board/list/trXXR/page/{n}. (apex도 200이라 www 강제는 느슨.)",
+    fetchNote: "2차검증: apex도 200 → www 불요(flag 제거). .notice-row 공지 skip. id=경로 끝 숫자. pagination /board/list/trXXR/page/{n}.",
   },
   {
     key: "PUTS", boardName: "장신대 초빙(장신Lounge)", denominationHint: "TONGHAP",
@@ -89,8 +89,8 @@ export const REGISTRY: SourceConfig[] = [
     key: "PCKWORLD", boardName: "한국기독공보 광고검색", denominationHint: "TONGHAP",
     enabled: true, fetchTier: "static", encoding: "utf-8",
     listUrl: "https://pckworld.com/adsearch/",
-    detailPattern: "adview('{id}') JS 팝업 — 백엔드 엔드포인트 미확인",
-    fetchNote: "⚠️지면광고 이미지형. 목록=static(ul.grid>li: 제목 span + 썸네일 /upimg/adsearch/{ts}.jpg). 상세=adview() JS 팝업(엔드포인트 미확정→상세는 headless 필요 가능). 본문 이미지→Gemini 멀티모달.",
+    detailPattern: "/adsearch/ad_view.php?aid={id}",
+    fetchNote: "2차검증: 상세 = /adsearch/ad_view.php?aid={id}(adview() JS가 여는 URL, headless 불요). 본문이 **JPG 이미지**(/upimg/adsearch/…jpg)·텍스트 없음→Gemini 멀티모달 필수. 목록 ul.grid>li: 제목 span+썸네일. id=aid.",
   },
   {
     key: "HANIL", boardName: "한일장신대 청빙게시판", denominationHint: "TONGHAP",
@@ -105,8 +105,8 @@ export const REGISTRY: SourceConfig[] = [
     key: "BU", boardName: "백석대 대학원 정보나눔터", denominationHint: "BAEKSEOK",
     enabled: true, fetchTier: "static", encoding: "utf-8",
     listUrl: "https://community.bu.ac.kr/graduateschool/3938/subview.do",
-    detailPattern: "/graduateschool/1110/{id}/artclView.do",
-    fetchNote: "Konnect subview.do가 bbs 1110 래핑(서버렌더). HEAD Content-Length:0→GET 사용. 월·수·금 게재.",
+    detailPattern: "/bbs/graduateschool/1110/{id}/artclView.do",
+    fetchNote: "⚠️2차검증 정정: 상세 경로에 **/bbs 프리픽스 필요**(빼면 200 에러쉘=silent fail). Konnect subview.do가 bbs 1110 래핑. HEAD Content-Length:0→GET. 월·수·금.",
   },
   {
     key: "PGAK", boardName: "백석총회 사역자구함", denominationHint: "BAEKSEOK",
@@ -144,10 +144,10 @@ export const REGISTRY: SourceConfig[] = [
   // ── 감리교 (GAMLI) ──
   {
     key: "MTU", boardName: "감신대 취업게시판", denominationHint: "GAMLI",
-    enabled: true, fetchTier: "static", encoding: "utf-8", flags: { wwwRequired: true },
+    enabled: true, fetchTier: "static", encoding: "utf-8", flags: { wwwRequired: true, spoofUA: true },
     listUrl: "https://www.mtu.ac.kr/mtu/board/list.do?mId=162",
     detailPattern: "/mtu/board/view.do?mId=162&brdIdx={id}",
-    fetchNote: "apex 301→www. 상세에 mId=162도 필요. brdIdx=글번호.",
+    fetchNote: "⚠️2차검증: 기본 UA→보안차단 스텁(0건), **브라우저 UA 필수**(spoofUA). apex 301→www. 상세에 mId=162 필요. brdIdx=글번호.",
   },
   {
     key: "UHS", boardName: "협성대 웨슬리 교역자청빙", denominationHint: "GAMLI",
@@ -209,7 +209,7 @@ export const REGISTRY: SourceConfig[] = [
     enabled: true, fetchTier: "static", encoding: "utf-8",
     listUrl: "https://sungkyul.org/NOS-Board/bbs.php?idx=com9",
     detailPattern: "https://www.sungkyul.org/NOS-Board/bbs.php?uid={id}&idx=com9&retype=view",
-    fetchNote: "⚠️문서 spoofUA 오류(불요). 예수교대한성결교회(예성). uid=DB고유. 상세는 www 절대경로. 공지행. 2026.07 활성.",
+    fetchNote: "2차검증: 빈 UA→403이라 **UA 문자열 필수**(아무 UA나 OK·브라우저 위장까진 불요). 예수교대한성결교회(예성). uid=DB고유. 상세 www 절대경로. 공지행. 2026.07 활성.",
   },
 
   // ── 기타 (ETC) ──
@@ -218,7 +218,7 @@ export const REGISTRY: SourceConfig[] = [
     enabled: true, fetchTier: "static", encoding: "utf-8",
     listUrl: "https://home.kaicam.org/webchon.layout/board/white2022/list.asp?boardid=D9537",
     detailPattern: "/webchon.layout/board/white2022/view.asp?boardid=D9537&boardmasterseq=2726&boarddetailseq={id}",
-    fetchNote: "⚠️soft-404: HTTP 404지만 31행 본문 정상 서빙 → 상태코드로 실패 판정 금지(본문 필수 확인). spoofUA 불요(문서 오류). webchon ASP. 공지 pinned. 2026 활성.",
+    fetchNote: "2차검증: soft-404 아님 — 목록 HTTP 200 정상(31행). 빈 UA→520이라 UA 필수. ⚠️view.asp는 잘못된 id에도 200→상세 성공을 **본문 내용**으로 검증(상태코드 신뢰 금지). webchon ASP. 공지 pinned. boardmasterseq=2726 고정.",
   },
   {
     key: "NAZARENE", boardName: "나사렛성결회 목회자청빙", denominationHint: "ETC",
@@ -238,10 +238,10 @@ export const REGISTRY: SourceConfig[] = [
   },
   {
     key: "ACTS", boardName: "아세아연합신대(아신대) 사역정보", denominationHint: null,
-    enabled: true, fetchTier: "headless", encoding: "euc-kr",
-    listUrl: "https://www.acts.ac.kr/modules/board/bd_jobInfo.asp?id=acts_csrd_guide",
-    detailPattern: "(렌더 후 확정 — 추정 bd_view.asp?no={id}&id=acts_csrd_guide)",
-    fetchNote: "⚠️HEADLESS 필수. 정적 HTML의 tbody 비어있음(외부 JS가 행 주입)→정적크롤 0건 함정. 헤더·페이징(Pagecount=68)만 서버렌더. 상세 URL은 렌더 후 확정.",
+    enabled: true, fetchTier: "static", encoding: "euc-kr",
+    listUrl: "https://www.acts.ac.kr/modules/board/bd_list.asp?id=acts_csrd_guide&ca_no=1",
+    detailPattern: "/modules/board/bd_view.asp?no={id}&id=acts_csrd_guide",
+    fetchNote: "⚠️2차검증 대정정: 올바른 게시판 = **bd_list.asp?…&ca_no=1(사역정보 탭)** — 정적 12행. 기존 bd_jobInfo.asp(ca_no=6 '실시간채용정보')는 headless+일반채용(사역 아님)이라 폐기 → headless 불요. no=글번호. EUC-KR.",
   },
   {
     key: "WGST", boardName: "웨스트민스터신대원 교역자청빙", denominationHint: null,
