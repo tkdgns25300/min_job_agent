@@ -7,14 +7,14 @@
 >
 > **작업 원칙**: **걷는 뼈대(1소스 전 구간 관통) 먼저 → 어댑터 대량 확장은 뒤.** fetch→구조화→review_data 계약이 실제로 연결되는지 **31곳 만들기 전에** 검증한다.
 
-## Phase 0: 뼈대 (골격)
+## Phase 0: 뼈대 (골격)  ✅ 착수 완료(2026-07-28)
 
-> "빈 파이프" — 코드 골격 + 저장 seam + 외부 연결(Gemini) 검증. 로직은 Phase 1.
-- [ ] 부트스트랩 — `package.json`·`tsconfig`(strict)·Prettier·`.env.example`·폴더 구조
-- [ ] **Store seam(인터페이스) + JSON 구현** — 파이프라인이 저장소를 모르게(나중 Supabase 스왑용)
-- [ ] `types/domain.ts` — min_job enum 미러(교단 10키·region·position·department·employment_type…)
-- [ ] **Gemini(Vertex) 인증 실호출 1번 성공** — service-account(PROJECT_ID·CLIENT_EMAIL·PRIVATE_KEY) + API 활성 검증(**알려진 셋업 함정 먼저 제거**)
-- [ ] 소스 레지스트리 스캐폴드 — `sources/registry.ts` 1칸(`YTUS`) + `SourceAdapter` 인터페이스(SPEC §10)
+> "빈 파이프" — 코드 골격 + 저장 seam + 외부 연결(Gemini) 검증. 로직은 Phase 1. **`npm run typecheck` 통과 · `npm run list` 실행 확인.**
+- [x] 부트스트랩 — `package.json`·`tsconfig`(strict·bundler)·`.env.example`·`src/` 구조 (Prettier 미도입)
+- [x] **Store seam + JSON 구현** — `src/store/{types,json-store}.ts`(파이프라인이 저장소 모름 → Supabase 스왑용)
+- [x] `types/domain.ts` — min_job enum 미러(교단 10키·region·position…) + 크롤러 enum(job_kind·denomination_source 등)
+- [~] **Gemini(Vertex) 인증** — 래퍼(`src/lib/gemini.ts`)·스모크(`src/scripts/check-gemini.ts`) 완성·타입 통과. **실호출 검증은 creds로 `npm run check:gemini`**(운영자)
+- [x] 소스 레지스트리 스캐폴드 — `src/sources/{types,registry}.ts`(`YTUS` 1칸) + `SourceAdapter` 인터페이스(SPEC §10)
 
 ## Phase 1: MVP 크롤러 (수집 → review_data · JSON · 31곳 · 배포)
 

@@ -8,7 +8,7 @@
 
 ## 0. 한 문장 요약
 
-`min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·staging 4테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). CLAUDE.md·ROADMAP·정식 `src/`는 아직 없음. 현재 열린 핵심 = **크롤 로직(정식 `src/`) 착수 · min_job 스키마 변경(job_kind·contact·KIJANG)**. (이 리포 문서 정합은 2026-07-28 갱신 완료.)
+`min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·staging 4테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). **`docs/ROADMAP.md` 작성 완료**(Phase 0~3 작업 단위)·CLAUDE.md 미작성. 정식 `src/`는 **Phase 0 뼈대 착수**(TS 스켈레톤: Store seam·`types/domain`·Gemini 래퍼·레지스트리 — `typecheck` 통과·`list` 실행 확인, Gemini 실호출만 creds 대기). 현재 열린 핵심 = **Phase 1(수집→구조화 파이프라인) 구현** · min_job 스키마 변경(별도). (이 리포 문서 정합은 2026-07-28 갱신 완료.)
 
 ---
 
