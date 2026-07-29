@@ -94,6 +94,7 @@
   - ⚠️ "처음 본(이미 아는) 글에서 멈추기" **금지** — 고정공지·끌어올림 때문에 아래 새 글을 놓친다. 페이지를 훑고 **unseen만** 가져온다.
   - 최종 안전망: DB `UNIQUE(source_key, external_id)` + `INSERT ... ON CONFLICT DO NOTHING`.
 - **끌어올림(bump)**: 같은 글이 위로 와도 external_id 동일 → 이미 있음 → skip(중복 없음). 삭제 후 새 식별자로 재등록은 **새 글 = 재공고**(보존).
+- **구조화 실패 재처리**: `source_data`는 ③(fetch·raw 저장)에서 기록되므로, ④ 구조화가 실패(429·파싱오류·이미지 fetch 실패 등)하면 그 행은 **`review_data` 없이** 남는다. 매 run은 증분 신규분에 더해 **`review_data`가 없는 `source_data` 행을 재구조화**한다(원장은 재-fetch만 막고 재구조화는 허용) → **실패 공고가 영구 유실되지 않음**.
 - **백필(로컬 수동 1회)**: `mode=BACKFILL`, **게시일 최근 3개월**까지. 컷오프는 **목록 단계의 게시일**(`listPostings`가 반환하는 날짜)로 판정(구조화 전이라 posted_at 산출 이전 — 목록 날짜 사용). 목록에 날짜가 없는 소스는 **최근 N페이지**로 폴백. 이후 데일리가 이어감.
 - **데일리(GitHub Actions)**: `mode=DAILY`, 증분만.
 - **수정 감지 없음(MVP)**: 한 번 수집한 스냅샷 사용. 재게시/삭제/수정 추적은 Phase 후반(§9).
@@ -128,7 +129,7 @@
 4. 근거 없음 → **`denomination=미상`** · `denomination_source=unknown`.
 
 - 출력: `denomination` · `denomination_source`(stated/registry/ai_guess/unknown) · `denomination_evidence`(원문 근거).
-- **`미상`은 review_data 임시값**이다 — 승격 전 운영자가 반드시 **9대형+ETC 10키 중 하나로 해소**한다(9대형 화이트리스트 밖=`ETC`, 근거 전무해서 못 정하면 `ETC`+플래그). 공개 `jobs.denomination`엔 미상이 나가지 않는다.
+- **`미상`은 review_data 임시값**이다 — 승격 전 운영자가 반드시 **9대형+ETC 10키 중 하나로 해소**한다(9대형 화이트리스트 밖=`ETC`, 근거 전무해서 못 정하면 `ETC`+플래그). 공개 `churches.denomination`(교단은 churches에 저장·jobs는 JOIN)엔 미상이 나가지 않는다.
 - `미상`(근거 전무) vs `ETC`(식별됐으나 화이트리스트 밖)는 다르다 — review 단계 구분용.
 - **노회는 저장하지 않고 매핑표도 만들지 않는다**(min_job 스키마에 노회 없음). 노회명은 위 3순위(AI 추정)의 근거로만 쓴다. → 표 유지비 0, 대신 검수 의존↑(운영자가 확정).
 
@@ -243,4 +244,4 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
   - `listPostings(opts) → PostingRef[]` — 목록에서 **external_id**(소스 내 유일 식별자·유일성 어댑터 책임) · url · 제목 · **게시일**(백필 컷오프용).
   - `fetchPosting(ref) → RawPosting` — 상세에서 raw_text + 이미지 URL + 메타.
 - 공통 로직(fetch·인코딩·샘플 폴백·본문 추출·이미지 바이트 fetch)은 base/common으로. 신규 소스 = 어댑터 1파일 + 레지스트리 등록.
-- fetch 계층이 UA·SSL·EUC-KR·rate limit·robots를 흡수(어댑터는 파싱만). `crawl_mode(A/B)` 개념은 폐기 — 교단은 항상 공고에서 판정(§5.3)하므로 어댑터는 `denomination_hint`(참고)만 제공한다.
+- fetch 계층이 UA·SSL·EUC-KR·rate limit·robots를 흡수(어댑터는 파싱만). 어댑터 분기용 `crawl_mode(A/B)`는 쓰지 않는다 — 교단은 항상 공고에서 판정(§5.3), 어댑터는 `denomination_hint`(참고)만 제공. (SOURCES/CONTRACT의 "모드 B"는 '초교파=공고별 판정' **라벨**로만 잔존.)

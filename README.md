@@ -2,9 +2,9 @@
 
 `../min_job`(교회 사역자 청빙 채용 플랫폼)을 위한 **공고 수집 크롤러**.
 
-공식 게시판(신학교·교단·노회)에서 청빙 공고를 수집 → AI로 구조화 → **리뷰 큐**에 적재하면, 운영자가 min_job admin에서 검토·승인 후 게재한다. (min_job 본체는 in-repo 크롤러를 금지하므로 수집기를 별도 리포로 분리.)
+공식 게시판(신학교·교단 총회, 공개 31곳)에서 청빙 공고를 수집 → AI로 구조화 → **리뷰 큐**에 적재하면, 운영자가 min_job admin에서 검토·승인 후 게재한다. (min_job 본체는 in-repo 크롤러를 금지하므로 수집기를 별도 리포로 분리.)
 
-> ⚠️ **초기 세팅 중.** 아키텍처·컨벤션·데이터 계약 등 문서는 **소스 정찰(`docs/SOURCES.md`) 이후** 작성 예정.
+> 📄 **문서 정본**: 파이프라인 = [`docs/SPEC.md`](docs/SPEC.md) · 소스 카탈로그 = [`docs/SOURCES.md`](docs/SOURCES.md) · 출력 계약·교단 = [`docs/CONTRACT.md`](docs/CONTRACT.md) · 시점 핸드오프 = [`docs/SNAPSHOT.md`](docs/SNAPSHOT.md). (`CLAUDE.md`·`docs/ROADMAP.md`·정식 `src/`는 미작성.)
 
 ## 브랜치 / Git
 
@@ -16,4 +16,4 @@
 
 ## 스키마 정본
 
-출력 스키마·enum의 정본(canonical)은 `../min_job/docs/DATA.md`. 이 리포는 참조·미러링만 한다(enum 드리프트 주의).
+**출력(공개)** 스키마·enum 정본 = `../min_job/docs/DATA.md`(`churches`/`jobs`). **크롤러 staging 스키마**(`source_data`·`review_data`·`source_health`·`crawl_run`)는 **이 리포가 소유·마이그레이션**한다(SPEC §6·§8). enum 드리프트 주의.

@@ -1,6 +1,6 @@
 # SNAPSHOT — min_job_agent 작업 시점 핸드오프
 
-> **이 문서 하나로 "지금 상황" 파악.** 새 세션(다른 컴퓨터 포함)에서 이어받을 때 이 파일 + `README.md` + `docs/SOURCES.md` + `docs/CONTRACT.md`만 읽으면 됨.
+> **이 문서 하나로 "지금 상황" 파악.** 새 세션(다른 컴퓨터 포함)에서 이어받을 때 이 파일 + `README.md` + `docs/SPEC.md`(파이프라인 정본) + `docs/SOURCES.md` + `docs/CONTRACT.md`만 읽으면 됨.
 >
 > **작성 시점**: 최초 2026-07-12 · **갱신 2026-07-21**(데모 · 3차 실측 · Fable 교차감사 · 초교파) · **갱신 2026-07-27**(운영자 전수 실측 → 크롤 31 확정 §5·§7 · 파이프라인·Supabase 스키마 설계 §9) · **dev = prod = origin** (ff-only)
 
@@ -8,7 +8,7 @@
 
 ## 0. 한 문장 요약
 
-`min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·5테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). CLAUDE.md·ROADMAP·정식 `src/`는 아직 없음. 현재 열린 핵심 = **크롤 로직(정식 `src/`) 착수 · min_job 스키마 변경(job_kind·contact·KIJANG)**. (이 리포 문서 정합은 2026-07-28 갱신 완료.)
+`min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·staging 4테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). CLAUDE.md·ROADMAP·정식 `src/`는 아직 없음. 현재 열린 핵심 = **크롤 로직(정식 `src/`) 착수 · min_job 스키마 변경(job_kind·contact·KIJANG)**. (이 리포 문서 정합은 2026-07-28 갱신 완료.)
 
 ---
 
@@ -27,13 +27,13 @@
 | **스택** | TypeScript/Node (min_job enum·타입 공유해 드리프트 최소화) |
 | **출력** | **리뷰 큐** — 크롤러는 스테이징에만 적재, 운영자가 min_job admin에서 승인 후 게재 |
 | **소스 범위** | **공식 게시판만**(신학교·교단·노회). 상업 청빙사이트(청빙넷 등)는 초기 제외 |
-| **교단 enum** | **9개 대형 + 기타(ETC)**: HAPDONG·TONGHAP·BAEKSEOK·GAMLI·SUNBOK·BAPTIST·SEONGGYUL·GOSIN·**HAPSIN** + ETC. **기장(KIJANG)은 ETC**로 (총회 게시판은 크롤하되 ETC 태깅) |
+| **교단 enum** | **9개 대형 + 기타(ETC)**: HAPDONG·TONGHAP·BAEKSEOK·GAMLI·SUNBOK·BAPTIST·SEONGGYUL·GOSIN·**HAPSIN** + ETC. **기장(KIJANG)은 ETC**로 (기장 교회 공고는 ETC 태깅 · 기장 총회 PROK 게시판은 2026-07-27 크롤 제외) |
 | **교단 태깅** | **공고에서 확정**(①교단 명시 ②교회 명부 ③AI 추정=`ai_guess` ④미상). 근거 없으면 `미상`+운영자 해소. 게시판 교단은 힌트만. **노회 미사용**(SPEC §5.3·CONTRACT §2). `raw_denomination` 보존 |
 | **로그인 소스** | **인증 크롤 대상에 포함**(사용자 결정). 단 **실행 전 변호사 확인 게이트** + 계정은 운영자 제공 |
 | **커뮤니티**(카페·밴드·페북) | 나중(Phase 후반). 지금은 공식 게시판만 |
 | **브랜치** | `prod`(배포)·`dev`(작업). 릴리스 dev→prod ff-only. commit/push/merge는 명시 요청 시만 |
 
-> 교단 8→9 변경 이유: 검증에서 **합신대 청빙 게시판이 매우 활발**(누적 ~11,000)로 확인돼 기타→독립 key로 복구.
+> 교단 8→9 변경 이유: 검증에서 **합신대 청빙 게시판이 활발**(운영자 실측 ann 30)로 확인돼 기타→독립 key로 복구.
 
 ---
 
@@ -66,7 +66,7 @@
 | `docs/SOURCES.md` | 소스 카탈로그(교단별 URL·접근·활동성·판정) — 3차 실측 + Fable 감사 반영 | ✅ 재작성본 |
 | `docs/CONTRACT.md` | 크롤러 출력 계약 — 교단 enum·정규화 맵·소스별 default 교단+모드+기술요건·스테이징 필드·dedup·로그인 법률게이트 | ✅ 초안 |
 | `CLAUDE.md` | 아키텍처·가드레일·컨벤션 | ⬜ **미작성** |
-| `docs/SPEC.md` | 파이프라인 명세(스코프·게이트·5테이블·정책·배포) | ✅ 작성 + 3렌즈 냉정검수·재검증 |
+| `docs/SPEC.md` | 파이프라인 명세(스코프·게이트·staging 4테이블·정책·배포) | ✅ 작성 + 3렌즈 냉정검수·재검증 |
 | `docs/ROADMAP.md` | Phase별 작업 | ⬜ **미작성** |
 
 > 정식 `src/`는 아직 없음. 단 **`crawler-demo/`에 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, zip) — 전 체인(크롤→raw→저장→Gemini 구조화) 관통 검증됨.
@@ -177,17 +177,17 @@ curl -sL "https://www.ytus.ac.kr/board/list/trXXR" | head   # 영남신대(통�
 ③ 원장 조회(source_data) ───────┘   (이미 본 글번호 skip)
       ▼ fetch → raw 최대 추출 (이미지 공고는 vision으로 텍스트화)
 ④ source_data      (raw + 원장 · 불변)
-      ▼ 구조화(Gemini 2.5 Flash) + 교단 확정(규칙 엔진, LLM 아님)
+      ▼ 구조화(Gemini 2.5 Flash) + 교단 확정(명시·명부=규칙 / 그 외 AI추정 ai_guess)
 ⑤ review_data      (PENDING)
       ▼ 운영자 검수(min_job admin) — 승인/수정
 ⑥ churches / jobs  (공개 · 요약 + source_url)
-   ↳ 실행 요약·에러 → crawl_run · source_health → 이상 시 경보
+   ↳ crawl_run: 시작에 INSERT(run_id 확보) → 종료에 요약·에러 UPDATE · source_health UPSERT → 이상 시 경보
 ```
 - ①~⑤ 자동 · ⑥ 사람 게이트. **dedup 2종**: 글번호(수집 시 skip) / 교차게시 병합(검수 시).
 
 ### 9.2 트리거·배포
 - **배포 = GitHub Actions.** 크롤러 코드가 repo에 있고 `.github/workflows/crawl.yml`만 두면 GitHub이 매일 러너를 띄워 실행 후 삭제. **상시 서버 없음 · 무료 한도 내 $0.**
-- **트리거**: 매일 cron **자동**(파라미터 없음) + 수동 `workflow_dispatch`(백필 기간 input).
+- **트리거**: 매일 cron **자동**(DAILY·파라미터 없음) + 수동 `workflow_dispatch`(DAILY 즉시 재실행). **백필은 로컬 수동**(mode=BACKFILL·최근 3개월 · SPEC §7).
 - **증분**: 게시판별 `source_health.last_run_at` 이후 + **글번호(`external_id`) 원장 대조로 최종 판정**(날짜보다 정확). ⚠️ **초기 백필은 운영자가 크롤러로 수동 실행** → `source_data`에 원장이 채워져야 데일리가 중복을 안 만듦(엑셀로 jobs만 손입력 시 원장 비어 중복 발생).
 
 ### 9.3 저장 위치
