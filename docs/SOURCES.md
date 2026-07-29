@@ -161,14 +161,18 @@
 ---
 
 ## 6. 크롤 기술 요건 (어댑터 설계)
-- **UA 위장 필요**(기본 UA 403): `pgak.net` · `bsds.kr` · `sungkyul.org`(예성) · `home.kaicam.org` · cjob · jcweb
-- **SSL 처리**(http 또는 -k): `calvin.ac.kr`(http 전용) · `daeshin.ac.kr` · `kts.ac.kr`
-- **JS/AJAX/REST 엔드포인트**(정적 크롤 불가):
-  - `csu`(총신) → 공개 REST `POST /api/board/getBoardContent`(board_id 178, 세션 불필요)
-  - `hanil`(한일장신) → **www 필수**(apex 무응답) · `POST https://www.hanil.ac.kr/portal/bbs/article_list.ajax`(boardId `BBS00000000000000262`) → 본문까지 JSON
-  - `mokwon` · godpeople → 헤드리스
-- **인코딩 EUC-KR**: `puts`(장신) · `ministry.htus`(호남) · `sjs`(서울장신) · `old.gapck`
-- **이미지 공고(Gemini 멀티모달로 추출 — 별도 OCR 파이프라인 없음)**: `pckworld`(한국기독공보 지면광고) · `koreabaptist` 일부. 상세에서 이미지 URL 확보 → 구조화 직전 바이트 fetch → Gemini에 텍스트와 함께 전달(SPEC §3).
+
+> **전송(tier·encoding·flags·상세URL) 정본 = `src/sources/registry.ts`** — 2026-07-29 **라이브 2차 검증**(각 게시판 fetch + detailPattern을 실제 글번호로 실증). 아래는 요약이며, 초기 문서-추정과 달랐던 부분을 정정한 것.
+
+- **UA**: **브라우저 UA 필수** `mtu`(기본 UA→보안차단 스텁). **UA 문자열만 있으면 됨**(빈 UA만 차단) `sungkyul`(403)·`kaicam`(520). → 크롤러가 **모든 요청에 브라우저 UA 기본 송신**하면 전부 해결. (⚠️ 문서의 `pgak`·`bsds` UA위장은 오류 — 불요.)
+- **http 전용**: `calvin` · `wgst`. (⚠️ `daeshin`·`kts`의 `-k`는 불요 — 인증서 정상.)
+- **www 호스트 필수**: `kwangshin`·`bpu`·`hanil`·`kts`·`mtu`·`uhs`(apex 무응답/404/인증서불일치). (`ytus`는 apex도 되어 불요.)
+- **tier=json**: `hanil`(www필수 · `POST /portal/bbs/article_list.ajax` boardId `BBS…262` → 목록 JSON에 `contents`까지, 상세 불요) · `csu`(총신 **세션 필요** SPA · 목록 `POST getBoardContentSummaryList`+세션쿠키 · '공개 REST' 아님).
+- **세션 쿠키(상세)**: `calvin`(목록 GET으로 JSESSIONID 확보 후 상세) · `csu`.
+- **헤드리스: 없음.** (⚠️ `mokwon`=완전 정적, `acts`=사역정보 탭 `bd_list.asp?ca_no=1`이 정적 — 둘 다 headless 아님. 31곳에 headless 0.)
+- **인코딩 EUC-KR**: `puts`·`htus`·`sjs`·`acts`. 나머지 UTF-8. (⚠️ `kbtus`는 HEAD가 EUC-KR로 오보고하나 GET 본문 UTF-8.)
+- **이미지 공고(Gemini 멀티모달 — OCR 없음)**: `pckworld`(상세 `/adsearch/ad_view.php?aid={id}`가 JPG) · `koreabaptist`. 상세 이미지 URL 확보→구조화 직전 바이트 fetch→Gemini(SPEC §3).
+- **상세 검증 주의**: `kaicam` view.asp는 잘못된 id에도 200 → 성공을 **본문 내용**으로 판정(상태코드 신뢰 금지). `bu` 상세는 `/bbs` 프리픽스 필수(빼면 200 에러쉘=silent fail).
 
 ---
 
