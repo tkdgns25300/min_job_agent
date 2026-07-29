@@ -11,12 +11,13 @@
 
 `HAPDONG` 예장합동 · `TONGHAP` 예장통합 · `BAEKSEOK` 예장백석 · `GAMLI` 감리교 · `SUNBOK` 순복음 · `BAPTIST` 침례교 · `SEONGGYUL` 성결교 · `GOSIN` 예장고신 · `HAPSIN` 예장합신 · `ETC` 기타
 
-- **min_job `constants/domain.ts` 정합 작업**: 현재 11개(합신·기장 포함)에서 **`KIJANG` 제거**만 하면 10키(=9대형+ETC)로 일치. (합신은 그대로 유지)
+- ✅ **min_job 정합 완료(2026-07-29 확인)**: min_job `constants/domain.ts`가 **10키**(9대형+ETC, `KIJANG` 제거됨)로 이 계약과 일치. **이 표가 크롤러의 허용값 정본**이며, min_job과 달라지면 이 계약을 따르고 불일치를 보고한다(드리프트 테스트 대상).
+- **`UNKNOWN`** — 교단 근거가 없을 때 `review_data`에만 쓰는 임시값(§2). 10키에 포함되지 않으며 **공개로 나가지 않는다**(승격 전 운영자가 해소). 표시 라벨 "미상"은 min_job 소관.
 - **기장·예장군소분파·나사렛·루터·그리스도의교회 등 → `ETC`** (+ 매핑 실패 시 운영자 플래그)
 
 ---
 
-## 2. 교단 태깅 규칙 — 공고에서 확정, 근거 없으면 "미상" (신뢰성 우선)
+## 2. 교단 태깅 규칙 — 공고에서 확정, 근거 없으면 `UNKNOWN`(표시 "미상") (신뢰성 우선)
 
 > **핵심 원칙: 게시판 교단 ≠ 공고 교단.** 신학교/총회 게시판이라도 타 교단 교회·교차게시가 섞이고, **초교파 게시판(횃불·아신대 등)은 애초에 여러 교단이 혼재**한다. 따라서 교단은 **게시판이 아니라 공고 하나하나에서 확정**한다. 게시판 교단은 "추정 힌트"일 뿐 확정 근거가 아니다. → **소스 포함 기준도 "무슨 교단이냐"가 아니라 "활성이고 정당한 청빙 게시판이냐".**
 
@@ -24,10 +25,10 @@
 1. **교단 직접 명시** — "예장합동", "통합측", "기독교대한성결교회" 등 → §2c alias 맵으로 확정 · `denomination_source=stated`.
 2. **교회 명부/홈페이지 대조**(가능 시) — 교회명+지역을 총회 교회검색/홈페이지와 대조 → `denomination_source=registry`.
 3. **AI 추정** — 공고의 노회명·교회명·홈페이지를 근거로 Gemini가 추정 → `denomination_source=ai_guess`(**확정 아님** 표시 · 운영자 검수 필수).
-4. **근거 없음** → **`denomination = 미상`** · `denomination_source=unknown` → 운영자 게이트에서 해소.
+4. **근거 없음** → **`denomination = UNKNOWN`** · `denomination_source=unknown` → 운영자 게이트에서 해소.
 
 **출력 필드:**
-- `denomination` — 교단 key(근거 있을 때) 또는 `미상`(임시값 — 승격 전 운영자가 **9대형+ETC 10키 중 하나로 반드시 해소**, 공개엔 미상 안 나감)
+- `denomination` — 교단 key(근거 있을 때) 또는 `UNKNOWN`(임시값 — 승격 전 운영자가 **9대형+ETC 10키 중 하나로 반드시 해소**, 공개엔 안 나감. 표시 라벨 "미상"은 min_job 소관 · **저장값은 영어 key**)
 - `denomination_source` — `stated` | `registry` | `ai_guess` | `unknown`
 - `denomination_evidence` — 원문 인용 근거(운영자 3초 검증용)
 - `raw_denomination` — 원문 표기 항상 보존
@@ -75,47 +76,48 @@
 
 ---
 
-## 4. 소스 → default 교단 + 크롤 모드 + 기술요건
+## 4. 소스 → default 교단 (참고 hint)
 
-> ⚠️ **`모드 A/B` 컬럼은 폐기**(SPEC §10) — 교단은 항상 **공고에서 판정**(§2)하므로 `default 교단`은 참고 hint일 뿐. `source_key`는 **DB에 대문자 정규화 저장**(`YTUS`…), 아래 소문자는 가독용 라벨(SPEC §8-4). 상세 활동성은 SOURCES.md.
+> ⚠️ **이 표의 역할은 `source_key` → default 교단(참고 hint) + 접근성뿐이다.**
+> - **전송 요건(tier·encoding·flags·상세URL·세션·이미지)은 `src/sources/registry.ts`가 정본**(라이브 2차 검증 2026-07-29). 과거 이 표의 "기술요건" 열은 실측에서 **다수 오류로 확인돼 삭제**했다(예: `DAESHIN`·`KTS` `-k` 불요 · `PGAK`·`SUNGKYUL`·`KAICAM` UA위장 불요 · `MOKWON`·`ACTS` 정적 · `CSU` 세션 필요 · `HTUS` 상세 공개 · `KWANGSHIN`·`MTU` www 필수).
+> - **`모드 A/B` 열도 폐기**(SPEC §10) — 교단은 항상 **공고에서 판정**(§2)하므로 default는 힌트일 뿐이다.
+> - **`source_key`는 대문자가 저장값**(`YTUS`).
 >
-> **2026-07-27 크롤 확정 = 31곳**: 아래 표의 공개 소스 28(로그인 `kmc`·`agk`·`kidok` 3 제외) + 초교파 3(`ttgu`·`acts`·`wgst`). 제외 6곳은 아래 "제외" 줄.
+> **2026-07-27 크롤 확정 = 31곳**: 아래 공개 28 + 초교파 3(`TTGU`·`ACTS`·`WGST`). 로그인 3(`KMC`·`AGK`·`KIDOK`)은 **범위 밖**(§6 게이트 후 별도).
 
-| source_key | 소스 | default 교단 | 모드 | 접근 | 기술요건 |
-|---|---|:--:|:--:|:--:|---|
-| `daeshin` | 대신대 취업정보 | HAPDONG | A | 공개 | SSL(-k), 서버렌더(curl로 확보) |
-| `calvin` | 칼빈대 사역취업정보 | HAPDONG | A | 공개 | **http 전용** |
-| `kwangshin` | 광신대 구인게시판 | HAPDONG | A | 공개 | — |
-| `csu` | 총신대 사역게시판 | HAPDONG | A | 공개 | 공개 REST `getBoardContent`(board_id 178) · 활성 확정(Fable) |
-| `ytus` | 영남신대 | TONGHAP | A | 공개 | — |
-| `puts` | 장신대 초빙 | TONGHAP | A | 공개 | EUC-KR |
-| `htus` | 호남신대 미니스트리 | TONGHAP | A | 공개(상세 회원?) | EUC-KR |
-| `bpu` | 부산장신대 | TONGHAP | A | 공개 | **www 호스트 필수** |
-| `pck` | 예장통합 총회 | TONGHAP | A | 공개 | — |
-| `sjs` | 서울장신대 | TONGHAP | A | 공개 | EUC-KR |
-| `pckworld` | 한국기독공보 광고검색 | TONGHAP | A | 공개 | 지면광고형 |
-| `hanil` | 한일장신대 | TONGHAP | A | 공개(AJAX) | **www 호스트 필수**(apex 무응답) · `www.hanil.ac.kr/.../article_list.ajax`(boardId `BBS…262`)→JSON · 매우활발(Fable가 🔸→✅) |
-| `bu` | 백석대 대학원 정보나눔터 | BAEKSEOK | A | 공개 | — |
-| `pgak` | 백석총회 | BAEKSEOK | A | 공개 | **UA위장**, iframe |
-| `mtu` | 감신대 취업게시판 | GAMLI | A | 공개 | 상세 `view.do?brdIdx=` |
-| `uhs` | 협성대 웨슬리 | GAMLI | A | 공개 | **www 호스트 필수** · 상세 `/bbs/.../artclView.do` |
-| `mokwon` | 목원대 사역지정보 | GAMLI | A | 공개 | JS 렌더 |
-| `kmc` | 기감 총회(KMC) | GAMLI | A | **로그인** | 인증+법률게이트 |
-| `hansei` | 한세대 대학원 | SUNBOK | A | 공개 | — |
-| `sts` | 순복음대학원대 | SUNBOK | A | 공개 | — |
-| `agk` | 하나님의성회 총회 | SUNBOK | A | **로그인** | 인증+법률게이트 |
-| `kbtus` | 침신대 취업지원 | BAPTIST | A | 공개 | 롤링(최신만) |
-| `koreabaptist` | 침례회 총회 | BAPTIST | A | 공개 | — |
-| `kehc` | 기성 총회 | SEONGGYUL | A | 공개 | — |
-| `sungkyul` | 예성 총회 | SEONGGYUL | A | 공개 | **UA위장** |
-| `kts` | 고려신학대학원(KTS) | GOSIN | A | 공개 | SSL(-k) |
-| `kosin_th` | 고신대 신학과 자유게시판 | GOSIN | **B** | 공개 | 청빙 필터+혼재 |
-| `hapdong` | 합신대 교역자초빙 | HAPSIN | A | 공개 | — |
-| `kaicam` | KAICAM 독립교회연합회 | ETC | A | 공개 | **UA위장** |
-| `nazarene` | 나사렛성결회 목회자청빙 | ETC | A | 공개 | `na.or.kr/ccall` · 저물량이나 운영자 채택(2026-07-27) |
-| `kidok` | 기독신문 구인구직 | HAPDONG* | B | **로그인** | 인증+법률게이트, 범교회 · **목록조차 전면 로그인벽 → 제외 재검토** |
+| source_key | 소스 | default 교단 | 접근 |
+|---|---|:--:|:--:|
+| `DAESHIN` | 대신대 취업정보 | HAPDONG | 공개 |
+| `CALVIN` | 칼빈대 사역취업정보 | HAPDONG | 공개 |
+| `KWANGSHIN` | 광신대 구인게시판 | HAPDONG | 공개 |
+| `CSU` | 총신대 사역게시판 | HAPDONG | 공개 |
+| `YTUS` | 영남신대 취업/초빙 | TONGHAP | 공개 |
+| `PUTS` | 장신대 초빙 | TONGHAP | 공개 |
+| `HTUS` | 호남신대 미니스트리 | TONGHAP | 공개 |
+| `BPU` | 부산장신대 | TONGHAP | 공개 |
+| `PCK` | 예장통합 총회 | TONGHAP | 공개 |
+| `SJS` | 서울장신대 | TONGHAP | 공개 |
+| `PCKWORLD` | 한국기독공보 광고검색 | TONGHAP | 공개 |
+| `HANIL` | 한일장신대 | TONGHAP | 공개 |
+| `BU` | 백석대 대학원 정보나눔터 | BAEKSEOK | 공개 |
+| `PGAK` | 백석총회 | BAEKSEOK | 공개 |
+| `MTU` | 감신대 취업게시판 | GAMLI | 공개 |
+| `UHS` | 협성대 웨슬리 | GAMLI | 공개 |
+| `MOKWON` | 목원대 사역지정보 | GAMLI | 공개 |
+| `HANSEI` | 한세대 대학원 | SUNBOK | 공개 |
+| `STS` | 순복음대학원대 | SUNBOK | 공개 |
+| `KBTUS` | 침신대 취업지원 | BAPTIST | 공개 |
+| `KOREABAPTIST` | 침례회 총회 | BAPTIST | 공개 |
+| `KEHC` | 기성 총회 | SEONGGYUL | 공개 |
+| `SUNGKYUL` | 예성 총회 | SEONGGYUL | 공개 |
+| `KTS` | 고려신학대학원(KTS) | GOSIN | 공개 |
+| `KOSIN_TH` | 고신대 신학과 자유게시판 | GOSIN† | 공개 |
+| `HAPSHIN` | 합신대 교역자초빙 | HAPSIN | 공개 |
+| `KAICAM` | KAICAM 독립교회연합회 | ETC | 공개 |
+| `NAZARENE` | 나사렛성결회 목회자청빙 | ETC | 공개 |
+| — 로그인(범위 밖) — | `KMC`(GAMLI) · `AGK`(SUNBOK) · `KIDOK`(HAPDONG·범교회) | | **로그인** |
 
-\* 기독신문은 교단지지만 여러 교단 교회가 이용 → 모드 B.
+† `KOSIN_TH`는 타 교단 교회 공고가 섞이는 자유게시판 → hint를 신뢰하지 말고 공고에서 판정(§2).
 
 **제외(크롤 안 함)**: 대전신대·아이굿뉴스·서울신대(기성 flagship `stu.ac.kr`, 게시판 미확인)·성결대·한국성결신문(게시판 없음), 예수교대한하나님의성회(휴면), 고신총회(KTS 중복). **CROSS 상업**(청빙넷·제이웹·cjob·갓피플)은 "공식 게시판만" 정책으로 초기 제외. ※ **아신대·WGST는 초교파로 편입**(아래 초교파 표).
 
@@ -124,7 +126,7 @@
 > **재검증 반영(2026-07-21 · 3차 실측 + Fable 교차감사 + 초교파 조사 · 상세 SOURCES)**: URL 수정 `bpu`·`uhs`(www) · `prok` `/Board/Index/34`. **판정 변경**: `hanil` 🔸→✅(AJAX) · `csu` 활성확정 · `kidok`=합동 기관지+전면 로그인벽→제외 유력 · `bsds`=2026 백석 재결합 유동(BAEKSEOK 유지·모니터링). **기각**: `korea-ag`(청빙판 없음). **확인 필요**: 서울신대(`stc68.net`, 기성 신학교 창구·편입 유력) · 나사렛(→ETC) · SU(→ETC·저물량) · `agkr` · 대전신대(근거 약함). **⚠️ 커버리지**: "공식만" = 실물량 일부(교단별 편차, ~25~55%·확정불가). 상세 SOURCES §3·§5.
 
 ### 초교파 소스 (모드 B — default 교단 없음, 공고별 확정)
-> 여러 교단 교회 공고가 섞이므로 default 교단이 없다 → 전부 §2 규칙(공고에서 확정, 없으면 미상). **포함 기준 = 활성 청빙 게시판**(교단 여부 아님).
+> 여러 교단 교회 공고가 섞이므로 default 교단이 없다 → 전부 §2 규칙(공고에서 확정, 없으면 `UNKNOWN`). **포함 기준 = 활성 청빙 게시판**(교단 여부 아님).
 
 | source_key | 소스 | 모드 | 접근 | 기술요건 |
 |---|---|:--:|:--:|---|

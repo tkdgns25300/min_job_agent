@@ -7,8 +7,11 @@ import type { SourceConfig } from "./types";
  * 추가/제외 = 이 배열 편집(제외는 enabled:false로 이력 보존). 셀렉터·상세 파싱은 어댑터(Phase 1-4).
  *
  * ⚠️ 라이브 검수로 드러난 문서 정정:
- *  - spoofUA / insecureTLS(-k)는 **현재 31곳 중 필요한 곳 없음**(daeshin·kts 인증서 정상, pgak·예성·kaicam UA 불요).
- *  - MOKWON = 정적(문서의 headless 의심 오류) · ACTS = headless 확정 · KBTUS = utf-8(euc-kr 아님).
+ *  - insecureTLS(-k)는 **필요한 곳 없음**(daeshin·kts 인증서 정상). spoofUA는 **MTU 한 곳만**
+ *    (기본 UA→보안차단 스텁 0건). pgak·예성·kaicam은 브라우저 위장까진 불요하나 **빈 UA는 403/520**
+ *    → fetch 층이 **항상 UA를 보낸다**(CLAUDE.md fetch 규칙).
+ *  - MOKWON = 정적(문서의 headless 의심 오류) · ACTS = **정적**(사역정보 탭 `ca_no=1` — 최초 판정한 headless 탭은 일반채용판이라 폐기) · KBTUS = utf-8(euc-kr 아님).
+ *  - → **31곳 중 headless 0**. Phase 1에 브라우저 자동화 불필요.
  *  - CSU = '공개 REST' 아님(세션 필요) · KAICAM = soft-404(본문 정상) · PCKWORLD 상세 = JS 팝업.
  */
 export const REGISTRY: SourceConfig[] = [
@@ -22,7 +25,7 @@ export const REGISTRY: SourceConfig[] = [
   },
   {
     key: "CALVIN", boardName: "칼빈대 사역취업정보", denominationHint: "HAPDONG",
-    enabled: true, fetchTier: "static", encoding: "utf-8", flags: { httpOnly: true },
+    enabled: true, fetchTier: "static", encoding: "utf-8", flags: { httpOnly: true, needsSession: true },
     listUrl: "http://calvin.ac.kr/main/boardList.do?brd_mgrno=692&menu_no=2282",
     detailPattern: "/main/boardView.do?brd_mgrno=692&menu_no=2282&brd_no={id}",
     fetchNote: "eGov. https 연결거부→http 전용. onclick fView('{id}')→brd_no. pagination page_now. ⚠️2차검증: 상세는 **세션 쿠키 필요** — 목록 GET으로 JSESSIONID 확보 후 그 쿠키로 boardView(쿠키자 없이 cold 요청은 404).",
@@ -36,10 +39,9 @@ export const REGISTRY: SourceConfig[] = [
   },
   {
     key: "CSU", boardName: "총신대 사역게시판", denominationHint: "HAPDONG",
-    enabled: true, fetchTier: "json", encoding: "utf-8",
+    enabled: true, fetchTier: "json", encoding: "utf-8", flags: { needsSession: true },
     listUrl: "https://csu.ac.kr/?m1=page&menu_id=1110",
-    detailPattern: "POST /api/board/getBoardContent (body {id}) — GET ?id= 는 405",
-    fetchNote: "⚠️SPA(총신). '공개 REST' 아님 — 목록=POST /api/user/board/getBoardContentSummaryList(board_id)+세션쿠키(2차검증: 세션 없으면 code 22000). 상세도 POST. menu_id 1110=사역·1111=취업. 세션+POST 또는 headless.",
+    fetchNote: "⚠️SPA(총신) · URL 템플릿이 아니라 API 호출이라 detailPattern 없음. 목록=POST `/api/user/board/getBoardContentSummaryList`(body board_id+page) + **세션쿠키 필요**(페이지 GET 선확보 · 없으면 code 22000). 상세=POST `/api/board/getBoardContent`(body id · GET ?id=는 405). menu_id 1110=사역·1111=취업. board_id는 세션 확보 후 확인 필요.",
   },
 
   // ── 예장통합 (TONGHAP) ──
@@ -90,7 +92,8 @@ export const REGISTRY: SourceConfig[] = [
     enabled: true, fetchTier: "static", encoding: "utf-8",
     listUrl: "https://pckworld.com/adsearch/",
     detailPattern: "/adsearch/ad_view.php?aid={id}",
-    fetchNote: "2차검증: 상세 = /adsearch/ad_view.php?aid={id}(adview() JS가 여는 URL, headless 불요). 본문이 **JPG 이미지**(/upimg/adsearch/…jpg)·텍스트 없음→Gemini 멀티모달 필수. 목록 ul.grid>li: 제목 span+썸네일. id=aid.",
+    flags: { imageOnly: true },
+    fetchNote: "2차검증: 상세 = /adsearch/ad_view.php?aid={id}(adview() JS가 여는 URL, headless 불요). 본문이 **JPG 이미지**(/upimg/adsearch/…jpg)·텍스트 없음→**빈 raw_text가 정상**·Gemini 멀티모달 필수. 목록 ul.grid>li: 제목 span+썸네일. id=aid.",
   },
   {
     key: "HANIL", boardName: "한일장신대 청빙게시판", denominationHint: "TONGHAP",
@@ -106,7 +109,8 @@ export const REGISTRY: SourceConfig[] = [
     enabled: true, fetchTier: "static", encoding: "utf-8",
     listUrl: "https://community.bu.ac.kr/graduateschool/3938/subview.do",
     detailPattern: "/bbs/graduateschool/1110/{id}/artclView.do",
-    fetchNote: "⚠️2차검증 정정: 상세 경로에 **/bbs 프리픽스 필요**(빼면 200 에러쉘=silent fail). Konnect subview.do가 bbs 1110 래핑. HEAD Content-Length:0→GET. 월·수·금.",
+    flags: { soft200: true },
+    fetchNote: "⚠️2차검증 정정: 상세 경로에 **/bbs 프리픽스 필요**(빼면 200 에러쉘=silent fail → soft200). Konnect subview.do가 bbs 1110 래핑. HEAD Content-Length:0→GET. 월·수·금.",
   },
   {
     key: "PGAK", boardName: "백석총회 사역자구함", denominationHint: "BAEKSEOK",
@@ -169,8 +173,8 @@ export const REGISTRY: SourceConfig[] = [
     key: "HANSEI", boardName: "한세대 대학원(영산) 모집/채용", denominationHint: "SUNBOK",
     enabled: true, fetchTier: "static", encoding: "utf-8",
     listUrl: "https://graduate.hansei.ac.kr/graduated/644/subview.do",
-    detailPattern: "/bbs/graduated/{catId}/{id}/artclView.do",
-    fetchNote: "Konnect subview(서버렌더). graduate. 서브도메인 필수. id=artclNo(경로). catId 카테고리별 상이.",
+    detailPattern: "(목록 링크에서 추출 — 경로에 카테고리 id가 끼어 템플릿 불가: /bbs/graduated/{catId}/{id}/artclView.do)",
+    fetchNote: "Konnect subview(서버렌더). graduate. 서브도메인 필수. ⚠️상세 URL의 catId가 카테고리별로 달라 **detailPattern 치환 불가 → 목록 href를 그대로 사용**(id=artclNo).",
   },
   {
     key: "STS", boardName: "순복음대학원대 청빙및취업", denominationHint: "SUNBOK",
@@ -218,7 +222,8 @@ export const REGISTRY: SourceConfig[] = [
     enabled: true, fetchTier: "static", encoding: "utf-8",
     listUrl: "https://home.kaicam.org/webchon.layout/board/white2022/list.asp?boardid=D9537",
     detailPattern: "/webchon.layout/board/white2022/view.asp?boardid=D9537&boardmasterseq=2726&boarddetailseq={id}",
-    fetchNote: "2차검증: soft-404 아님 — 목록 HTTP 200 정상(31행). 빈 UA→520이라 UA 필수. ⚠️view.asp는 잘못된 id에도 200→상세 성공을 **본문 내용**으로 검증(상태코드 신뢰 금지). webchon ASP. 공지 pinned. boardmasterseq=2726 고정.",
+    flags: { soft200: true },
+    fetchNote: "2차검증: soft-404 아님 — 목록 HTTP 200 정상(31행). 빈 UA→520이라 UA 필수. ⚠️view.asp는 잘못된 id에도 200→상세 성공을 **본문 내용**으로 검증(soft200). webchon ASP. 공지 pinned. boardmasterseq=2726 고정.",
   },
   {
     key: "NAZARENE", boardName: "나사렛성결회 목회자청빙", denominationHint: "ETC",

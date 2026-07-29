@@ -39,8 +39,8 @@ export type StipendPeriod = (typeof STIPEND_PERIODS)[number];
 export const JOB_KINDS = ["MINISTRY", "GENERAL"] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 
-/** 게이트1: 개교회 채용인가 (SPEC §5.1). uncertain은 낮은 confidence로 운영자에게. */
-export const IS_CHURCH_RECRUITMENT = ["yes", "no", "uncertain"] as const;
+/** 게이트1: 개교회 채용인가 (SPEC §5.1). UNCERTAIN은 낮은 confidence로 운영자에게. */
+export const IS_CHURCH_RECRUITMENT = ["YES", "NO", "UNCERTAIN"] as const;
 export type IsChurchRecruitment = (typeof IS_CHURCH_RECRUITMENT)[number];
 
 export const DENOMINATION_SOURCES = ["stated", "registry", "ai_guess", "unknown"] as const;
@@ -58,6 +58,13 @@ export type CrawlMode = (typeof CRAWL_MODES)[number];
 export const FETCH_TIERS = ["static", "json", "headless"] as const;
 export type FetchTier = (typeof FETCH_TIERS)[number];
 
-/** review_data 임시 교단값 — 승격 전 운영자가 10키 중 하나로 해소(SPEC §5.3). 공개엔 안 나감. */
-export const DENOMINATION_UNKNOWN = "미상";
+/** source_health 상태 (SPEC §6 ③). ZERO = 200인데 신규 0건(소프트 실패 후보). */
+export const SOURCE_HEALTH_STATUSES = ["OK", "FAIL", "ZERO"] as const;
+export type SourceHealthStatus = (typeof SOURCE_HEALTH_STATUSES)[number];
+
+/**
+ * review_data 임시 교단값 — 승격 전 운영자가 10키 중 하나로 해소(SPEC §5.3). 공개엔 안 나감.
+ * 저장값은 영어 key로 통일(표시 라벨 "미상"은 min_job 소관).
+ */
+export const DENOMINATION_UNKNOWN = "UNKNOWN";
 export type DenominationOrUnknown = Denomination | typeof DENOMINATION_UNKNOWN;

@@ -8,13 +8,13 @@
 
 ## 0. 한 문장 요약
 
-`min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·staging 4테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). **`docs/ROADMAP.md` 작성 완료**(Phase 0~3 작업 단위)·CLAUDE.md 미작성. 정식 `src/`는 **Phase 0 뼈대 착수**(TS 스켈레톤: Store seam·`types/domain`·Gemini 래퍼·레지스트리 — `typecheck` 통과·`list` 실행 확인, Gemini 실호출만 creds 대기). 현재 열린 핵심 = **Phase 1(수집→구조화 파이프라인) 구현** · min_job 스키마 변경(별도). (이 리포 문서 정합은 2026-07-28 갱신 완료.)
+`min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·staging 4테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). **`docs/ROADMAP.md`·`CLAUDE.md` 작성 완료**(CLAUDE.md는 3렌즈 검수 반영). **Phase 0 뼈대 완료** — TS 스켈레톤(Store seam·`domain`·Gemini 래퍼·**31곳 레지스트리 라이브 2차검증**), `typecheck` 통과 · **Gemini 실호출 성공**(운영자 확인). ⚠️ **스택을 Python으로 교체(2026-07-29)** — 현 `src/*.ts`는 이식 대기. 현재 열린 핵심 = **Python 이식 + Phase 1(수집→구조화) 구현**.
 
 ---
 
 ## 1. 프로젝트 정체 (왜 별도 리포인가)
 
-- `../min_job` 본체는 CLAUDE.md 가드레일 #1로 **in-repo 크롤러를 금지**한다. 크롤링 법적 검토를 사용자가 통과시켜, 수집기를 **별도 리포로 분리**해 만든다.
+- `../min_job` 본체는 **in-repo 크롤러 코드를 두지 않는다**(min_job CLAUDE.md Ingest 레이어 규칙). 자동 수집 자체는 min_job 가드레일 #1로 **허용**(공개 공식 게시판 한정·운영자 검수 전제·법률 검토 완료 2026-07-28)되며, 그 구현체를 **별도 리포로 분리**한 것이 이 리포다.
 - 이 크롤러는 min_job 기존 파이프라인("사람 수집 → AI 구조화 → 운영자 검토")에서 **fetch 한 단계만 자동화**하는 델타다. 나머지 가드레일(개인정보 금지·정통 화이트리스트·운영자 리뷰 게이트)은 승계.
 - **스키마 정본**: 최종 공개(`churches`/`jobs`) = `../min_job/docs/DATA.md`. **크롤러 staging(`source_data`·`review_data`·`source_health`·`crawl_run`)은 이 리포 소유·마이그레이션**(SPEC §6·§8). 파이프라인 동작 정본 = `SPEC.md`.
 
@@ -24,12 +24,12 @@
 
 | 항목 | 결정 |
 |---|---|
-| **스택** | TypeScript/Node (min_job enum·타입 공유해 드리프트 최소화) |
+| **스택** | **Python 3.12+** — 2026-07-29 변경. *(이전 결정 "TypeScript/Node, min_job 타입 공유" **철회**: 별도 리포·별도 프로세스라 타입 공유가 실제로 불가했고, 크롤 생태계 성숙도 + 운영자 직접 실행이 우선. enum 정합은 **CONTRACT §1 계약 + 드리프트 테스트**로 지킨다.)* |
 | **출력** | **리뷰 큐** — 크롤러는 스테이징에만 적재, 운영자가 min_job admin에서 승인 후 게재 |
 | **소스 범위** | **공식 게시판만**(신학교·교단·노회). 상업 청빙사이트(청빙넷 등)는 초기 제외 |
 | **교단 enum** | **9개 대형 + 기타(ETC)**: HAPDONG·TONGHAP·BAEKSEOK·GAMLI·SUNBOK·BAPTIST·SEONGGYUL·GOSIN·**HAPSIN** + ETC. **기장(KIJANG)은 ETC**로 (기장 교회 공고는 ETC 태깅 · 기장 총회 PROK 게시판은 2026-07-27 크롤 제외) |
-| **교단 태깅** | **공고에서 확정**(①교단 명시 ②교회 명부 ③AI 추정=`ai_guess` ④미상). 근거 없으면 `미상`+운영자 해소. 게시판 교단은 힌트만. **노회 미사용**(SPEC §5.3·CONTRACT §2). `raw_denomination` 보존 |
-| **로그인 소스** | **인증 크롤 대상에 포함**(사용자 결정). 단 **실행 전 변호사 확인 게이트** + 계정은 운영자 제공 |
+| **교단 태깅** | **공고에서 확정**(①교단 명시 ②교회 명부 ③AI 추정=`ai_guess` ④`UNKNOWN`). 근거 없으면 `UNKNOWN`+운영자 해소. 게시판 교단은 힌트만. **노회 미사용**(SPEC §5.3·CONTRACT §2). `raw_denomination` 보존 |
+| **로그인 소스** | **현재 크롤 31곳에서 제외**(2026-07-27 · 공개 게시판만). 인증 크롤은 **변호사 게이트 통과 후 별도 단계**로만 검토(계정은 운영자 제공 · 크롤러가 로그인 자동화 금지) |
 | **커뮤니티**(카페·밴드·페북) | 나중(Phase 후반). 지금은 공식 게시판만 |
 | **브랜치** | `prod`(배포)·`dev`(작업). 릴리스 dev→prod ff-only. commit/push/merge는 명시 요청 시만 |
 
@@ -65,11 +65,11 @@
 | `docs/SNAPSHOT.md` | 이 파일 (시점 핸드오프) | ✅ |
 | `docs/SOURCES.md` | 소스 카탈로그(교단별 URL·접근·활동성·판정) — 3차 실측 + Fable 감사 반영 | ✅ 재작성본 |
 | `docs/CONTRACT.md` | 크롤러 출력 계약 — 교단 enum·정규화 맵·소스별 default 교단+모드+기술요건·스테이징 필드·dedup·로그인 법률게이트 | ✅ 초안 |
-| `CLAUDE.md` | 아키텍처·가드레일·컨벤션 | ⬜ **미작성** |
+| `CLAUDE.md` | 아키텍처·레이어 책임·가드레일·컨벤션 | ✅ 작성 + 3렌즈 검수(일반 2 + Fable) 반영 |
 | `docs/SPEC.md` | 파이프라인 명세(스코프·게이트·staging 4테이블·정책·배포) | ✅ 작성 + 3렌즈 냉정검수·재검증 |
 | `docs/ROADMAP.md` | Phase별 작업 단위(0~3) | ✅ 작성(min_job 스타일) |
 
-> 정식 `src/`는 아직 없음. 단 **`crawler-demo/`에 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, zip) — 전 체인(크롤→raw→저장→Gemini 구조화) 관통 검증됨.
+> **정식 `src/` = Phase 0 뼈대 존재**(TS · 이식 대기): `types/domain.ts`·`store/{types,json-store}.ts`·`sources/{types,registry}.ts`(31곳)·`lib/gemini.ts`·`scripts/check-gemini.ts`·`index.ts`. 별도로 **`crawler-demo/`에 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, zip) — 전 체인 관통 검증됨(참고용).
 
 ---
 
@@ -113,7 +113,7 @@
 - **기장(ETC) 총회 소스 `PROK` 사망** → ETC 총회급 공개 소스 없음(KAICAM은 독립연합). ETC 물량은 KAICAM + 공고별 감지 의존.
 - **물량 대들보 = 장신(230)·총신(240)** 압도적, 그 뒤 영남·호남·부산장신·KTS·기성.
 
-**크롤 기술 주의**(상세 SOURCES §6): www 필수(hanil·bpu·uhs·kwangshin) · SSL(calvin=http전용·daeshin·kts) · JSON엔드포인트(csu `getBoardContent`·hanil `article_list.ajax`) · 헤드리스(mokwon·acts) · UA위장(pgak·bsds·예성·KAICAM) · EUC-KR(puts·sjs·구형 ASP) · 이미지형 Gemini 멀티모달(pckworld).
+**크롤 기술 주의** — 전송 정본은 **`src/sources/registry.ts`**(라이브 2차검증). 요약: www 필수(hanil·bpu·uhs·kwangshin·kts·mtu) · http 전용(calvin·wgst) · **`-k` 불요**(daeshin·kts 인증서 정상) · 브라우저 UA 필수는 **mtu만**(그 외는 UA 문자열만 있으면 됨) · JSON(csu=세션 필요·hanil=`article_list.ajax`) · **헤드리스 0** · EUC-KR(puts·htus·sjs·acts → cp949 디코드) · 이미지형(pckworld·koreabaptist → Gemini 멀티모달).
 
 ---
 
@@ -130,8 +130,8 @@
 
 **대기:**
 - [ ] **크롤 로직 정식 `src/` 구현** ⭐ — 어댑터 31곳·교단 확정·`source_data`/`review_data` 적재·GH Actions.
-- [ ] **CLAUDE.md** 작성(어댑터 아키텍처·가드레일). *(ROADMAP.md ✅ 완료)*
-- [ ] **min_job 스키마·정책 변경**(별도 리포 · SPEC §8): ① `jobs.job_kind`(MINISTRY/GENERAL)+`role`+UI 필터(기본=사역직) ② `jobs.contact`+가드레일 #3 갱신 ③ `constants/domain.ts` `KIJANG` 제거(11→10키). (가드레일 #1·/about "수기 확인" 문구도 갱신 필요.)
+- [ ] **Python 이식** — `registry.ts`(31곳 검증값·`fetchNote`) → `config/sources.json` 문자 그대로 · 뼈대 재작성 · TS 잔존물 제거. *(CLAUDE.md·ROADMAP ✅ 작성 완료)*
+- [~] **min_job 연동**(별도 리포 · SPEC §8) — 2026-07-29 확인: ✅ `job_kind`·`role`·`contact` 타입 반영 · ✅ `KIJANG` 제거(**10키 완료**) · ✅ 가드레일 #1·#3 재정의 + **법률 검토 완료(2026-07-28)** · ✅ min_job ROADMAP 1-10 트랙 생성. **남은 것**: 마이그레이션 SQL · 목록 UI 필터 · `review_data` 검수 브릿지(전부 min_job 소관).
 - [ ] **순복음·ETC 물량 보강 검토** — 순복음 공개 물량 얇음 → `agkdc` 확인, PROK 사망분 대체.
 - [ ] **로그인 소스 법률 게이트** — KMC·AGK·기독신문 인증 크롤 전 변호사 확인 + 계정.
 - [ ] **커버리지/상업 CROSS**(청빙넷·cjob·갓피플·WGST) — 법적 검토 후 재결정.
@@ -144,7 +144,7 @@
 > Walking Skeleton은 **`crawler-demo`로 사실상 관통 완료**(ytus 등 4어댑터 → raw → Gemini 구조화 → 리뷰 큐). 다음은 "결정 확정 → 정식화".
 
 0. ✅ **열린 결정 확정** — 스코프·job_kind·교단·연락처·이미지·백필/크론 전부 확정(§6 "이번 세션 확정" · SPEC).
-1. **하네스 문서** — ✅ `docs/SPEC.md`·`docs/ROADMAP.md` 완료. 남은 것: `CLAUDE.md`(어댑터 아키텍처·가드레일).
+1. **하네스 문서** — ✅ `CLAUDE.md`·`docs/SPEC.md`·`docs/ROADMAP.md` 완료(전부 다중 검수 반영).
 2. **데모 → 정식 `src/`** — 어댑터 **4개 → 31곳(§5·§7 확정)** 확장, **교단 확정 로직(명시/명부/AI추정 `ai_guess` + evidence + 미상 해소)** 구현, `staging.json` → **Supabase(§9 스키마: `source_data`/`review_data`)**.
 3. **robots.txt·요청 rate limit 구현**(데모 미구현) · 로그인 소스 법률게이트 · 이미지 공고 처리(Gemini 멀티모달 — pckworld 등).
 
@@ -153,7 +153,10 @@
 ## 8. 실행 / 재개 방법
 
 ```bash
-# 현재 코드 없음. 문서만.
+# Phase 0 뼈대(TS · 이식 대기). Python 이식 후 명령이 바뀐다 — CLAUDE.md Commands 참조.
+npm install && npm run typecheck   # 타입 검사
+npm run list [KEY]                 # 등록 소스 31곳 확인
+npm run check:gemini               # Vertex 인증 스모크(.env 필요)
 git branch -vv            # prod / dev 확인
 git log --oneline         # 히스토리
 
@@ -196,7 +199,7 @@ curl -sL "https://www.ytus.ac.kr/board/list/trXXR" | head   # 영남신대(통�
 - **GH Secrets**: Supabase service key · Vertex 키(env — repo/DB에 노출 X).
 
 ### 9.4 Supabase 스키마 (크롤러 4테이블 + 목적지)
-> ⚠️ **`SPEC.md` §6가 스키마 정본** — 최신 `review_data` 필드(`is_church_recruitment`·`job_kind`·`role`·`contact`·`heresy_flag`)는 SPEC §6 참조. 아래는 요약.
+> ⚠️ **`SPEC.md` §6가 스키마 정본** — 아래 요약은 이미 뒤처져 있다. `source_data`의 **`structured_at`·`structure_attempts`·`image_urls`**(비용 루프 방지·이미지 fetch)와 `review_data`의 `is_church_recruitment`·`job_kind`·`role`·`contact`·`heresy_flag`·`created_at`은 **SPEC §6 참조**.
 
 **① `source_data` — 원자료 + 원장 (불변, write-once)**
 | 컬럼 | 타입 | 비고 |

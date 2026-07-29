@@ -95,7 +95,7 @@
 > \* mtu·kts의 "누적 게시물 수"는 3차 문서에서 둘 다 `10,955`로 잘못 복제돼 있던 것을 제거했다(Fable 지적). 정확 누적치는 재실측 전까지 표기하지 않는다.
 
 ### 초교파 (모드 B — 특정 교단 아님 · 공고별 교단 감지)
-> 게시판이 여러 교단 교회 공고를 받아 default 교단이 없다. **CONTRACT §2 규칙대로 공고에서 교단 확정, 근거 없으면 "미상".** 채택 기준 = 활성 청빙 게시판.
+> 게시판이 여러 교단 교회 공고를 받아 default 교단이 없다. **CONTRACT §2 규칙대로 공고에서 교단 확정, 근거 없으면 `UNKNOWN`.** 채택 기준 = 활성 청빙 게시판.
 
 | 소스 | 게시판 URL | 접근 | 활동성 | 판정 | 주의 |
 |---|---|:--:|---|:--:|---|
@@ -164,7 +164,7 @@
 
 > **전송(tier·encoding·flags·상세URL) 정본 = `src/sources/registry.ts`** — 2026-07-29 **라이브 2차 검증**(각 게시판 fetch + detailPattern을 실제 글번호로 실증). 아래는 요약이며, 초기 문서-추정과 달랐던 부분을 정정한 것.
 
-- **UA**: **브라우저 UA 필수** `mtu`(기본 UA→보안차단 스텁). **UA 문자열만 있으면 됨**(빈 UA만 차단) `sungkyul`(403)·`kaicam`(520). → 크롤러가 **모든 요청에 브라우저 UA 기본 송신**하면 전부 해결. (⚠️ 문서의 `pgak`·`bsds` UA위장은 오류 — 불요.)
+- **UA**: **브라우저 UA 필수** `mtu`(기본 UA→보안차단 스텁 · config `spoof_ua`). **UA 문자열만 있으면 됨**(빈 UA만 차단) `sungkyul`(403)·`kaicam`(520). → 크롤러는 **항상 비어있지 않은 UA를 보내고**, 브라우저 위장은 `spoof_ua` 소스에만 적용한다(SPEC §3). (⚠️ 문서의 `pgak`·`bsds` UA위장은 오류 — 불요.)
 - **http 전용**: `calvin` · `wgst`. (⚠️ `daeshin`·`kts`의 `-k`는 불요 — 인증서 정상.)
 - **www 호스트 필수**: `kwangshin`·`bpu`·`hanil`·`kts`·`mtu`·`uhs`(apex 무응답/404/인증서불일치). (`ytus`는 apex도 되어 불요.)
 - **tier=json**: `hanil`(www필수 · `POST /portal/bbs/article_list.ajax` boardId `BBS…262` → 목록 JSON에 `contents`까지, 상세 불요) · `csu`(총신 **세션 필요** SPA · 목록 `POST getBoardContentSummaryList`+세션쿠키 · '공개 REST' 아님).

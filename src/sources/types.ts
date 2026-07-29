@@ -20,10 +20,16 @@ export interface SourceConfig {
     wwwRequired?: boolean;
     /** https 미지원, http로만 접속(예: calvin·wgst) */
     httpOnly?: boolean;
-    /** 기본 UA 403 → 브라우저 UA 위장. (2026-07-29 검증: 현재 31곳 중 해당 없음, 대비용) */
+    /** 기본 UA로는 차단/빈 응답 → 브라우저 UA 필수(2026-07-29 검증: mtu). */
     spoofUA?: boolean;
-    /** 자체서명/체인 오류로 TLS 검증 무시(-k) 필요. (2026-07-29 검증: 현재 해당 없음 — daeshin·kts는 정상 인증서) */
+    /** 자체서명/체인 오류로 TLS 검증 무시(-k) 필요. (2026-07-29 검증: 해당 없음 — daeshin·kts 인증서 정상) */
     insecureTLS?: boolean;
+    /** 상세가 세션 쿠키를 요구 → 목록 GET으로 쿠키 확보 후 상세(calvin·csu). */
+    needsSession?: boolean;
+    /** 본문이 이미지뿐 → 빈/얇은 raw_text가 **정상**(파싱 실패로 오판 금지). 멀티모달 필수(pckworld). */
+    imageOnly?: boolean;
+    /** 잘못된 요청·없는 글에도 200을 준다 → 성공을 본문으로 판정(kaicam·bu). */
+    soft200?: boolean;
   };
   listUrl: string;
   /** 상세 URL 규칙(참고 — 실제 파싱은 어댑터). `{id}` = external_id 자리. */

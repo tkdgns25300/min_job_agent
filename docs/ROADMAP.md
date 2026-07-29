@@ -3,7 +3,9 @@
 > 파이프라인 명세는 [`SPEC.md`](./SPEC.md), 소스 카탈로그는 [`SOURCES.md`](./SOURCES.md), 출력 계약·교단은 [`CONTRACT.md`](./CONTRACT.md), 시점 핸드오프는 [`SNAPSHOT.md`](./SNAPSHOT.md).
 > 브랜치: `prod`(배포) / `dev`(작업), dev→prod **ff-only**. commit·push·merge는 사용자 명시 요청 시에만.
 >
-> **스택 = TypeScript/Node**(min_job enum·타입 공유해 드리프트 최소화). **저장은 JSON 먼저 → 스키마 굳으면 Supabase 스왑**(1-6). 크롤러는 `review_data`까지만 만들고, **공개 게재(`churches`/`jobs`)는 min_job 측**(min_job ROADMAP 1-10).
+> **스택 = Python 3.12+**(2026-07-29 변경 · 이전 TS/Node 결정 철회 — 근거는 CLAUDE.md Stack). **저장은 JSON 먼저 → 스키마 굳으면 Supabase 스왑**(1-6). 크롤러는 `review_data`까지만 만들고, **공개 게재(`churches`/`jobs`)는 min_job 측**(min_job ROADMAP 1-10).
+>
+> 아키텍처·레이어 책임·가드레일·컨벤션은 [`../CLAUDE.md`](../CLAUDE.md).
 >
 > **작업 원칙**: **걷는 뼈대(1소스 전 구간 관통) 먼저 → 어댑터 대량 확장은 뒤.** fetch→구조화→review_data 계약이 실제로 연결되는지 **31곳 만들기 전에** 검증한다.
 
@@ -13,12 +15,27 @@
 - [x] 부트스트랩 — `package.json`·`tsconfig`(strict·bundler)·`.env.example`·`src/` 구조 (Prettier 미도입)
 - [x] **Store seam + JSON 구현** — `src/store/{types,json-store}.ts`(파이프라인이 저장소 모름 → Supabase 스왑용)
 - [x] `types/domain.ts` — min_job enum 미러(교단 10키·region·position…) + 크롤러 enum(job_kind·denomination_source 등)
-- [~] **Gemini(Vertex) 인증** — 래퍼(`src/lib/gemini.ts`)·스모크(`src/scripts/check-gemini.ts`) 완성·타입 통과. **실호출 검증은 creds로 `npm run check:gemini`**(운영자)
-- [x] 소스 레지스트리 스캐폴드 — `src/sources/{types,registry}.ts`(`YTUS` 1칸) + `SourceAdapter` 인터페이스(SPEC §10)
+- [x] **Gemini(Vertex) 인증 실호출 성공**(운영자 확인 2026-07-29) — 래퍼 `src/lib/gemini.ts`·스모크 `check-gemini`
+- [x] 소스 레지스트리 — `src/sources/{types,registry}.ts`에 **31곳 전부**(라이브 2차 검증: tier·encoding·flags·detailPattern·fetchNote) + `SourceAdapter` 인터페이스(SPEC §10)
+- [x] **CLAUDE.md 작성 + 3렌즈 검수 반영**(설계 결함 `structured_at` 발견·SPEC 정정 포함)
+
+### 0-1. Python 이식 (스택 변경 후속 · Phase 1 선행)
+- [ ] `config/sources.json` — `registry.ts` 31곳 **문자 그대로** 이관(특히 `fetchNote`) + 로드 시 검증(key 대문자·유일·hint 화이트리스트·`{id}` 포함)
+- [ ] Python 뼈대 — `domain.py`·`models.py`(SPEC §6 · **snake_case 필드**)·`settings.py`·`store/{base,json_store}.py`·`lib/gemini.py`·`cli.py`
+- [ ] 툴체인 확정 — uv·ruff·mypy(strict)·pytest + `.env.example` 유지
+- [ ] TS 잔존물 제거 — `src/*.ts`·`package.json`·`tsconfig.json`
 
 ## Phase 1: MVP 크롤러 (수집 → review_data · JSON · 31곳 · 배포)
 
 > 동작 명세 = SPEC. 여기는 작업 단위. Phase 1이 끝나면 **매일 자동으로 31곳을 긁어 구조화 → `review_data`(PENDING)까지** 쌓인다.
+
+> **구현 주의(2026-07-29 코드 검수 반영 — 이식 시 반드시 반영)**
+> - **`structured_at` 기록 필수**(게이트1 탈락 포함) — 없으면 제외 공고가 매 실행 Gemini로 재전송되는 비용 루프(SPEC §4).
+> - **EUC-KR 소스는 `cp949`로 디코드** — 순정 EUC-KR 코덱은 확장 한글에서 예외 → 페이지 전체 유실.
+> - **JSON 저장은 원자적**(임시파일→rename) + 병렬 시 직렬화/JSONL — 전체 배열 read-modify-write는 레코드 유실·파일 손상.
+> - **Store에 읽기 포함** — 원장 bulk 조회 + `source_health` 조회(연속 실패 누적·마지막 성공 보존).
+> - **재시도 판정**에 소켓 오류(`cause.code`)·gRPC 코드 포함, **빈 AI 응답은 실패 처리**, 요청 타임아웃 필수.
+> - **실패를 조용히 넘기지 않기** — 알 수 없는 `run_id`·손상 파일은 예외로.
 
 ### 1-1. 수집 (fetch → source_data)  ← 플로우 앞단
 - [ ] `YTUS` 어댑터 — 목록→상세→`raw_text`+이미지 URL 확보
@@ -27,24 +44,24 @@
 
 ### 1-2. 구조화 (source_data → review_data)  ← ★ 1소스 전 구간 관통(뼈대 완성)
 - [ ] Gemini 구조화 호출 + **출력 JSON 계약**(필드·타입) + 한글→enum 매핑(position·region 등)
-- [ ] 게이트1(개교회 채용? `true`/`false`/`uncertain`) · 게이트2(`job_kind` MINISTRY/GENERAL·`role`)
+- [ ] 게이트1(개교회 채용? `YES`/`NO`/`UNCERTAIN`) · 게이트2(`job_kind` MINISTRY/GENERAL·`role`)
 - [ ] 교단·`contact`·`confidence` 산출 → `review_data`(PENDING) 적재
 - [ ] 이미지 공고 = 이미지 바이트를 Gemini에 함께(멀티모달 · 별도 OCR 없음)
 
 ### 1-3. 판정 견고화
-- [ ] 교단 확정 — alias(**긴 표현 우선**)·명부 대조(가능 시)·AI 추정(`ai_guess`)·`미상`
+- [ ] 교단 확정 — alias(**긴 표현 우선**)·명부 대조(가능 시)·AI 추정(`ai_guess`)·`UNKNOWN`
 - [ ] `dedup_key`(교차게시 병합 후보) · 이단 플래그(`config/heresy-ref.json`)
-- [ ] **재구조화 pass** — `review_data` 없는 `source_data` 재처리(구조화 실패 공고 유실 방지)
+- [ ] **재구조화 pass** — **`structured_at IS NULL`**인 `source_data` 재처리(+`structure_attempts` 상한). ⚠️ "review_data 없는 행" 기준 금지 — 게이트1 탈락과 실패가 구분되지 않아 비용 루프(SPEC §4)
 
 ### 1-4. 소스 확장 (1 → 31곳)
 - [ ] **유형 다른 2~3개로 어댑터 틀 먼저 검증** — `PUTS`(EUC-KR)·`CSU`/`HANIL`(JSON 엔드포인트)
 - [ ] CMS 계열별 어댑터 — 그누보드·대학 `.do`·`/Board/Index`·webchon 등(정적 일괄)
 - [ ] JSON 엔드포인트(`CSU` getBoardContent·`HANIL` article_list.ajax)
-- [ ] 헤드리스(`MOKWON`·`ACTS`) — 최후수단
+- ~~헤드리스~~ — **불필요**(31곳 중 headless 0 · MOKWON·ACTS 모두 정적으로 확인). 새 소스가 JS 렌더면 그때 도입
 - [ ] 각 어댑터 **HTML fixture + 파서 테스트**(사이트 변동 대비)
 
 ### 1-5. 오케스트레이션·운영
-- [ ] `run.ts` — 소스 간 병렬·소스 내 순차·**에러 격리**(한 소스 실패해도 계속)
+- [ ] `pipeline/run.py` — 소스 간 병렬·소스 내 순차·**에러 격리**(한 소스 실패해도 계속)
 - [ ] `crawl_run`(시작 INSERT → 종료 UPDATE) · `source_health`(UPSERT)
 - [ ] rate-limit·timeout·지수 백오프·robots.txt·UA 정책
 - [ ] 백필 CLI(`mode=BACKFILL`·최근 3개월·로컬) + 데일리(증분)
@@ -55,7 +72,8 @@
 - [ ] 마이그레이션 — `source_data`·`review_data`·`source_health`·`crawl_run`(+ RLS 운영자 전용)
 - [ ] Store를 Supabase 구현으로 스왑(파이프라인 코드 불변) + 스모크 테스트
 
-### 1-7. 배포 (GitHub Actions)
+### 1-7. 배포 (GitHub Actions) — ⚠️ **1-6 이후에만**
+> ephemeral 러너 + JsonStore 조합은 매 실행 원장을 잃어 **전량 재크롤·재구조화·산출물 유실**을 만든다. `crawl.yml`은 **Supabase 전환(1-6) 완료 후** 작성한다(CLAUDE.md 순서 제약).
 - [ ] `.github/workflows/crawl.yml` — 매일 **07:00 KST** cron(DAILY) + `workflow_dispatch`(수동 재실행)
 - [ ] GH Secrets — Vertex·Supabase service key
 - [ ] 첫 자동 실행 검증 + crawl_run/source_health 확인
