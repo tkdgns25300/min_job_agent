@@ -216,10 +216,10 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
 2. `jobs`에 **`contact`(지원 연락처)** 추가 + **가드레일 #3 갱신**("지원용 공개 연락처는 공개").
 3. `constants/domain.ts`에서 **`KIJANG` 제거**(11→10키 = 9대형+ETC).
 
-### ★ 이 리포 문서 갱신 (pending — SPEC이 최신 정본, 아래는 뒤따라 맞춰야)
-4. **`source_key` 대문자 통일**: SPEC은 대문자(YTUS)인데 CONTRACT §4·SOURCES §7·SNAPSHOT §9.4·데모는 소문자(ytus) → 정본을 대문자로 통일하거나 어댑터에서 대문자 정규화 저장 규칙 명문화.
-5. **CONTRACT.md 갱신**: §3 "연락처 미추출"→"지원 연락처 추출·공개" · §2b "노회 매핑표"→"폐기(교단만)" · §2 `denomination_source` enum(`nohoe` 제거·`ai_guess` 추가) 및 "교단 매핑은 LLM 금지" 원칙 완화(근거 없을 때 AI 추정 허용, ai_guess 표시).
-6. **SOURCES.md 갱신**: `pckworld`·`koreabaptist`의 "OCR" 기술요건 표기 폐기 → "Gemini 멀티모달로 대체".
+### 이 리포 문서 갱신 (✅ 완료 2026-07-28 — SPEC 정본에 맞춰 반영)
+4. ✅ **`source_key`**: DB 저장은 **대문자 정규화**(`YTUS`)로 규칙 명문화(CONTRACT §4 노트), 문서의 소문자는 가독용 라벨로 유지.
+5. ✅ **CONTRACT.md**: §2 hierarchy(`stated`/`registry`/`ai_guess`/`unknown`) · §2b 노회 매핑표 폐기 · §3 "연락처 추출·공개"로 갱신 · §4 모드 A/B 폐기 노트.
+6. ✅ **SOURCES.md**: `pckworld`·`koreabaptist` "OCR" 표기 → "Gemini 멀티모달"(§1·§6·범례). **SNAPSHOT** §2·§5·§6·§9.4도 정합.
 
 ---
 

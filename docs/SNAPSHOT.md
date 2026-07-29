@@ -8,7 +8,7 @@
 
 ## 0. 한 문장 요약
 
-`min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·5테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). CLAUDE.md·ROADMAP·정식 `src/`는 아직 없음. 현재 열린 핵심 = **크롤 로직(정식 `src/`) 착수 · min_job 스키마 변경(job_kind·contact·KIJANG) · 이 리포 문서 정합 갱신(SPEC §8)**.
+`min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·5테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). CLAUDE.md·ROADMAP·정식 `src/`는 아직 없음. 현재 열린 핵심 = **크롤 로직(정식 `src/`) 착수 · min_job 스키마 변경(job_kind·contact·KIJANG)**. (이 리포 문서 정합은 2026-07-28 갱신 완료.)
 
 ---
 
@@ -16,7 +16,7 @@
 
 - `../min_job` 본체는 CLAUDE.md 가드레일 #1로 **in-repo 크롤러를 금지**한다. 크롤링 법적 검토를 사용자가 통과시켜, 수집기를 **별도 리포로 분리**해 만든다.
 - 이 크롤러는 min_job 기존 파이프라인("사람 수집 → AI 구조화 → 운영자 검토")에서 **fetch 한 단계만 자동화**하는 델타다. 나머지 가드레일(개인정보 금지·정통 화이트리스트·운영자 리뷰 게이트)은 승계.
-- **스키마 정본(canonical) = `../min_job/docs/DATA.md`.** 이 리포는 참조·미러링만. (min_job 자체 파악은 그쪽 `docs/` 참조.)
+- **스키마 정본**: 최종 공개(`churches`/`jobs`) = `../min_job/docs/DATA.md`. **크롤러 staging(`source_data`·`review_data`·`source_health`·`crawl_run`)은 이 리포 소유·마이그레이션**(SPEC §6·§8). 파이프라인 동작 정본 = `SPEC.md`.
 
 ---
 
@@ -28,7 +28,7 @@
 | **출력** | **리뷰 큐** — 크롤러는 스테이징에만 적재, 운영자가 min_job admin에서 승인 후 게재 |
 | **소스 범위** | **공식 게시판만**(신학교·교단·노회). 상업 청빙사이트(청빙넷 등)는 초기 제외 |
 | **교단 enum** | **9개 대형 + 기타(ETC)**: HAPDONG·TONGHAP·BAEKSEOK·GAMLI·SUNBOK·BAPTIST·SEONGGYUL·GOSIN·**HAPSIN** + ETC. **기장(KIJANG)은 ETC**로 (총회 게시판은 크롤하되 ETC 태깅) |
-| **교단 태깅** | **공고에서 확정**(①노회/연회 ②교단 명시 ③교회 명부), 근거 없으면 `미상`+운영자 게이트. 게시판 교단은 힌트만. AI는 신호 추출·매핑은 표/명부(CONTRACT §2). `raw_denomination` 보존 |
+| **교단 태깅** | **공고에서 확정**(①교단 명시 ②교회 명부 ③AI 추정=`ai_guess` ④미상). 근거 없으면 `미상`+운영자 해소. 게시판 교단은 힌트만. **노회 미사용**(SPEC §5.3·CONTRACT §2). `raw_denomination` 보존 |
 | **로그인 소스** | **인증 크롤 대상에 포함**(사용자 결정). 단 **실행 전 변호사 확인 게이트** + 계정은 운영자 제공 |
 | **커뮤니티**(카페·밴드·페북) | 나중(Phase 후반). 지금은 공식 게시판만 |
 | **브랜치** | `prod`(배포)·`dev`(작업). 릴리스 dev→prod ff-only. commit/push/merge는 명시 요청 시만 |
@@ -113,39 +113,29 @@
 - **기장(ETC) 총회 소스 `PROK` 사망** → ETC 총회급 공개 소스 없음(KAICAM은 독립연합). ETC 물량은 KAICAM + 공고별 감지 의존.
 - **물량 대들보 = 장신(230)·총신(240)** 압도적, 그 뒤 영남·호남·부산장신·KTS·기성.
 
-**크롤 기술 주의**(상세 SOURCES §6): www 필수(hanil·bpu·uhs·kwangshin) · SSL(calvin=http전용·daeshin·kts) · JSON엔드포인트(csu `getBoardContent`·hanil `article_list.ajax`) · 헤드리스(mokwon·acts) · UA위장(pgak·bsds·예성·KAICAM) · EUC-KR(puts·sjs·구형 ASP) · 이미지형 OCR(pckworld).
+**크롤 기술 주의**(상세 SOURCES §6): www 필수(hanil·bpu·uhs·kwangshin) · SSL(calvin=http전용·daeshin·kts) · JSON엔드포인트(csu `getBoardContent`·hanil `article_list.ajax`) · 헤드리스(mokwon·acts) · UA위장(pgak·bsds·예성·KAICAM) · EUC-KR(puts·sjs·구형 ASP) · 이미지형 Gemini 멀티모달(pckworld).
 
 ---
 
 ## 6. 미해결 / 대기
 
 **결정됨:**
-- [x] **교단 확정 방법** ⭐ — 게시판 default는 힌트일 뿐 → **공고에서 확정(①노회/연회 ②교단 명시 ③교회 명부), 근거 없으면 "미상" + 운영자 게이트.** AI는 신호 추출만·매핑은 테이블/명부가(LLM 환각 방지). `denomination`+`source`+`evidence` 3필드. → **CONTRACT §2 명문화 완료**(노회 매핑표는 §2b 초안, 리서치로 완성 예정).
-- [x] **초교파 축 편입** — 포함 기준을 "활성 청빙 게시판"으로 재정의 → **횃불트리니티·아신대 채택**(모드 B), WGST/에스라 조건부, CTS 로그인. (SOURCES §1 초교파 · CONTRACT §4 반영)
-- [x] **크롤 타깃 tiering** (2026-07-27 운영자 전수 실측) — 확정 25 · 조건부 5 · 드롭/휴면 7. §5.
-- [x] **크롤 대상 최종 확정 + 문서 반영** (2026-07-27) — **크롤 31곳 · 제외 6곳** 운영자 sign-off. SOURCES §1·§4·§7 + CONTRACT §4에 ✅/❌ 반영 완료. 제외 6 = `gapck`·`bsds`·`kcc`·**`prok`**·`ezra`·`SU`. **나사렛(`nazarene`) 신규 채택**(ETC). → 어댑터 구현 대상 = 이 31곳.
-- [x] **파이프라인·배포 방향** (2026-07-27 논의) — 트리거: **매일 cron 자동**(파라미터 없음, 글번호 원장으로 증분) + 첫 백필만 수동(기간 파라미터). 배포: **GitHub Actions**(무료 한도·상시서버 X). 저장: **`source_data`**(불변 원자료+원장) → **`review_data`**(구조화 초안+검수) → 승인 시 **churches/jobs**(Supabase 무료 티어). raw=이미지 저장 아닌 **최대 추출 텍스트**. 교차게시 dedup=적재/검수 단계. → 정식화는 SPEC/CLAUDE 작성 시.
+- [x] **크롤 대상 최종 확정 (2026-07-27)** — **크롤 31 · 제외 6**(`gapck`·`bsds`·`kcc`·`PROK`·`ezra`·`SU`) 운영자 sign-off. 나사렛 신규 채택(ETC). SOURCES §7·CONTRACT §4 반영 → 어댑터 대상 = 31곳. (tiering 상세 §5)
+- [x] **스코프 = 개교회 채용 허브** — 게이트1(개교회 채용?) → 게이트2(`job_kind` MINISTRY/GENERAL). 사역직+일반직 모두 수집, 방송사(CTS)·기관·비채용 제외. 판정=업무 내용, 경계=운영자(uncertain·low). (SPEC §1)
+- [x] **교단 확정** — ① 교단 명시(stated) → ② 교회 명부(registry) → ③ AI 추정(`ai_guess`·확정 아님) → ④ 미상(승격 전 운영자가 10키로 해소). **노회 저장·매핑표 폐기.** (CONTRACT §2·SPEC §5.3)
+- [x] **초교파 편입** — 기준 "활성 청빙 게시판". 횃불·아신대·WGST 채택(교단은 공고서 판정). (SOURCES §1·CONTRACT §4)
+- [x] **연락처 = 지원용 명시 연락처(전화·이메일·링크) 추출·공개** — 가드레일 #3 완화. ⚠️ 개인정보·약관은 **정식 오픈 전 법률 검토 항목**. (SPEC §5.5)
+- [x] **파이프라인·저장·배포** — `source_data`(불변 원자료+원장) → `review_data`(검수) → 승인 시 `churches`/`jobs`. 이미지=Gemini 멀티모달(OCR 없음). 증분=글번호 원장. 교차게시 dedup=검수 단계. **GH Actions 매일 07:00 KST(DAILY)** + 백필 로컬 수동(최근 3개월). Supabase 생성됨. `source_key` 대문자 enum. (SPEC §2~§7·§9)
+- [x] **SPEC.md 작성**(3렌즈 냉정검수) **+ 이 리포 문서 정합 갱신(2026-07-28)** — CONTRACT/SOURCES/SNAPSHOT을 SPEC 정본에 맞춤.
 
 **대기:**
-- [ ] **순복음·ETC 물량 보강 검토** — 실측상 순복음 공개 물량 얇음 → `agkdc`(공개 청빙판) 확인, 기장 PROK 사망분 대체 검토.
-- [ ] **커버리지 정책** — "공식만" ~25~55%. 물량 우선이면 상업 애그리게이터(청빙넷·cjob·갓피플)는 **법적 검토(가드레일 #4) 후** 재결정.
-- [ ] ~~노회→교단 매핑표~~ — **폐기(SPEC §5.3): 교단만·AI 추정+검수.** (필요 시 Phase 후반)
-
-**이번 세션 확정 (SPEC.md 반영):**
-- [x] **스코프 = 개교회 채용 허브** — 게이트1(개교회 채용?) → 게이트2(**job_kind** MINISTRY/GENERAL). 사역직 + 일반직(방송·행정 등) 모두 수집, 방송사(CTS)·기관·비채용은 제외. 판정=업무 내용, 경계=운영자(uncertain·low confidence).
-- [x] **교단** = 명시 > 명부 > AI추정(ai_guess·low) > 미상(승격 전 해소). **노회 저장·매핑표 폐기.**
-- [x] **지원 연락처 공개**(contact) · **이미지 = Gemini 멀티모달**(OCR 없음) · **백필 최근 3개월(로컬)** · **크론 매일 07:00 KST(GH Actions, DAILY)** · **Supabase 생성됨 → 직접 적재** · **source_key 대문자 enum**.
-- [x] **SPEC.md 작성 + 3렌즈 냉정검수·재검증.**
-
-**추가 대기:**
-- [ ] **min_job 스키마·정책 변경**: `jobs`에 `job_kind`·`role`·`contact` + UI 필터, `KIJANG` 제거, 가드레일 #3 갱신(지원 연락처 공개). (SPEC §8)
-- [ ] **이 리포 문서 정합 갱신**(SPEC이 최신 정본, 뒤따라): `source_key` 대문자 통일(CONTRACT §4·SOURCES §7) · CONTRACT §2(denomination_source enum·LLM 매핑 원칙 완화)·§3(연락처)·§2b(노회) · SOURCES OCR 표기 폐기.
-
-**기존 대기:**
-- [ ] **min_job 정합**: `../min_job/src/constants/domain.ts`에서 **`KIJANG` 제거**(11→10키=9대형+ETC). min_job 리포 변경이라 별도 진행. (min_job 가드레일 #1·R7·/about "수기 확인" 문구도 크롤러 전략 반영해 갱신 필요 — 별도)
-- [ ] **로그인 소스 법률 게이트**: KMC·AGK·기독신문 인증 크롤 실행 전 변호사 확인 + 계정 확보.
-- [ ] CROSS 상업(청빙넷·제이웹·cjob·갓피플·WGST)은 참고용 보관, 정책 재검토 시 포함 여부 재논의.
-- [ ] 커뮤니티(카페·밴드·페북) 조사는 Phase 후반.
+- [ ] **크롤 로직 정식 `src/` 구현** ⭐ — 어댑터 31곳·교단 확정·`source_data`/`review_data` 적재·GH Actions.
+- [ ] **CLAUDE.md·ROADMAP.md** 작성.
+- [ ] **min_job 스키마·정책 변경**(별도 리포 · SPEC §8): ① `jobs.job_kind`(MINISTRY/GENERAL)+`role`+UI 필터(기본=사역직) ② `jobs.contact`+가드레일 #3 갱신 ③ `constants/domain.ts` `KIJANG` 제거(11→10키). (가드레일 #1·/about "수기 확인" 문구도 갱신 필요.)
+- [ ] **순복음·ETC 물량 보강 검토** — 순복음 공개 물량 얇음 → `agkdc` 확인, PROK 사망분 대체.
+- [ ] **로그인 소스 법률 게이트** — KMC·AGK·기독신문 인증 크롤 전 변호사 확인 + 계정.
+- [ ] **커버리지/상업 CROSS**(청빙넷·cjob·갓피플·WGST) — 법적 검토 후 재결정.
+- [ ] **커뮤니티**(카페·밴드·페북) — Phase 후반.
 
 ---
 
@@ -155,8 +145,8 @@
 
 0. ✅ **열린 결정 확정** — 스코프·job_kind·교단·연락처·이미지·백필/크론 전부 확정(§6 "이번 세션 확정" · SPEC).
 1. **하네스 문서** — ✅ `docs/SPEC.md` 완료(3렌즈 검수). 남은 것: `CLAUDE.md`(어댑터 아키텍처·가드레일)·`docs/ROADMAP.md`.
-2. **데모 → 정식 `src/`** — 어댑터 **4개 → 31곳(§5·§7 확정)** 확장, **교단 확정 로직(노회 lookup + evidence + 미상 처리)** 구현, `staging.json` → **Supabase(§9 스키마: `source_data`/`review_data`)**.
-3. **robots.txt·요청 rate limit 구현**(데모 미구현) · 로그인 소스 법률게이트 · 이미지 공고 OCR(pckworld 등).
+2. **데모 → 정식 `src/`** — 어댑터 **4개 → 31곳(§5·§7 확정)** 확장, **교단 확정 로직(명시/명부/AI추정 `ai_guess` + evidence + 미상 해소)** 구현, `staging.json` → **Supabase(§9 스키마: `source_data`/`review_data`)**.
+3. **robots.txt·요청 rate limit 구현**(데모 미구현) · 로그인 소스 법률게이트 · 이미지 공고 처리(Gemini 멀티모달 — pckworld 등).
 
 ---
 
@@ -206,6 +196,7 @@ curl -sL "https://www.ytus.ac.kr/board/list/trXXR" | head   # 영남신대(통�
 - **GH Secrets**: Supabase service key · Vertex 키(env — repo/DB에 노출 X).
 
 ### 9.4 Supabase 스키마 (크롤러 4테이블 + 목적지)
+> ⚠️ **`SPEC.md` §6가 스키마 정본** — 최신 `review_data` 필드(`is_church_recruitment`·`job_kind`·`role`·`contact`·`heresy_flag`)는 SPEC §6 참조. 아래는 요약.
 
 **① `source_data` — 원자료 + 원장 (불변, write-once)**
 | 컬럼 | 타입 | 비고 |
