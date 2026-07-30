@@ -1,0 +1,500 @@
+"""JsonStore 테스트 — 원장·격리·write-once·검수 상태 보존.
+
+실제 파일을 쓰지만 전부 `tmp_path`다(네트워크·리포 `data/` 미접촉).
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import fields, replace
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Final
+from uuid import UUID
+
+import pytest
+
+from minjob_agent.domain import (
+    Confidence,
+    CrawlMode,
+    Denomination,
+    DenominationSource,
+    IsChurchRecruitment,
+    ReviewStatus,
+    SourceHealthStatus,
+)
+from minjob_agent.models import MAX_STRUCTURE_ATTEMPTS, ReviewData, SourceData, SourceHealth, new_id
+from minjob_agent.store.base import Store, StoreError
+from minjob_agent.store.json_store import _MUTABLE_STATE_FIELDS, FILE_VERSION, JsonStore
+from minjob_agent.store.serde import SerdeError, to_row
+
+FIXED_NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def data_dir(tmp_path: Path) -> Path:
+    return tmp_path / "data"
+
+
+@pytest.fixture
+def store(data_dir: Path) -> JsonStore:
+    return JsonStore(data_dir)
+
+
+@pytest.fixture
+def corruption_log() -> list[str]:
+    return []
+
+
+@pytest.fixture
+def lenient_store(data_dir: Path, corruption_log: list[str]) -> JsonStore:
+    """손상 행 보고를 모아 확인할 수 있는 store."""
+    return JsonStore(
+        data_dir, on_corrupt_row=lambda source, err: corruption_log.append(f"{source}: {err}")
+    )
+
+
+def _source_data(external_id: str = "25553", *, run_id: object = None) -> SourceData:
+    return SourceData(
+        source_key="YTUS",
+        external_id=external_id,
+        source_url=f"https://www.ytus.ac.kr/board/view/trXXR/{external_id}",
+        run_id=run_id if run_id is not None else new_id(),  # type: ignore[arg-type]
+        fetched_at=FIXED_NOW,
+        raw_text="오천중앙교회에서 부목사님을 모십니다.",
+    )
+
+
+def _review_data(source_data_id: object) -> ReviewData:
+    return ReviewData(
+        source_data_id=source_data_id,  # type: ignore[arg-type]
+        run_id=new_id(),
+        is_church_recruitment=IsChurchRecruitment.YES,
+        confidence=Confidence.HIGH,
+        denomination_source=DenominationSource.STATED,
+        denomination=Denomination.TONGHAP,
+    )
+
+
+def _read_raw(store_dir: Path, file_name: str) -> list[dict[str, object]]:
+    document = json.loads((store_dir / file_name).read_text(encoding="utf-8"))
+    records: list[dict[str, object]] = document["records"]
+    return records
+
+
+def _write_raw(
+    store_dir: Path, file_name: str, records: list[object], version: int = FILE_VERSION
+) -> None:
+    store_dir.mkdir(parents=True, exist_ok=True)
+    (store_dir / file_name).write_text(
+        json.dumps({"version": version, "records": records}, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+# ── 프로토콜 준수 ────────────────────────────────────────────────
+
+
+def test_json_store_satisfies_store_protocol(store: JsonStore) -> None:
+    def accepts(candidate: Store) -> Store:
+        return candidate
+
+    assert accepts(store) is store
+
+
+# ── 원장(증분) ───────────────────────────────────────────────────
+
+
+def test_empty_store_reports_nothing_seen(store: JsonStore) -> None:
+    assert store.seen_external_ids("YTUS", ["1", "2"]) == set()
+
+
+def test_seen_ids_are_scoped_by_source(store: JsonStore) -> None:
+    store.save_source_data(_source_data("100"))
+    # 같은 글번호를 다른 게시판이 써도 별개다(UNIQUE는 두 컬럼 조합).
+    assert store.seen_external_ids("YTUS", ["100", "200"]) == {"100"}
+    assert store.seen_external_ids("PUTS", ["100"]) == set()
+
+
+def test_save_is_idempotent_on_ledger_key(store: JsonStore) -> None:
+    first = store.save_source_data(_source_data("100"))
+    # 같은 글을 다시 넣으면 새 레코드(id 다름)여도 원장 키가 같아 무시된다.
+    second = store.save_source_data(_source_data("100"))
+    assert (first, second) == (True, False)
+    assert len(store.list_unstructured(limit=10)) == 1
+
+
+def test_duplicate_save_keeps_the_first_evidence(store: JsonStore) -> None:
+    # DO NOTHING이어야 한다 — 덮어쓰면 최초 수집 원문(증거)이 재수집본으로 갈린다.
+    original = _source_data("100")
+    store.save_source_data(original)
+    store.save_source_data(replace(_source_data("100"), raw_text="나중에 수정된 본문"))
+    stored = store.list_unstructured(limit=10)
+    assert len(stored) == 1
+    assert stored[0].raw_text == original.raw_text
+    assert stored[0].id == original.id
+
+
+def test_seen_ids_with_empty_request_does_not_read(store: JsonStore) -> None:
+    assert store.seen_external_ids("YTUS", []) == set()
+
+
+def test_seen_ids_normalizes_the_lookup_key(store: JsonStore) -> None:
+    # 저장 때는 모델이 정규화하므로 조회도 같은 정규화를 거쳐야 원장이 빗나가지 않는다.
+    store.save_source_data(_source_data("100"))
+    assert store.seen_external_ids(" YTUS ", ["100"]) == {"100"}
+    # 반환값은 호출자가 넘긴 원본이어야 한다 — 호출자가 이 집합으로 자기 목록을 걸러낸다.
+    assert store.seen_external_ids("YTUS", [" 100"]) == {" 100"}
+
+
+# ── 구조화 대상 조회 ─────────────────────────────────────────────
+
+
+def test_lists_only_unstructured_oldest_first(store: JsonStore) -> None:
+    old = replace(_source_data("1"), fetched_at=FIXED_NOW - timedelta(days=2))
+    new = replace(_source_data("2"), fetched_at=FIXED_NOW)
+    done = replace(_source_data("3"), fetched_at=FIXED_NOW).with_verdict_recorded()
+    for record in (new, done, old):
+        store.save_source_data(record)
+    assert [r.external_id for r in store.list_unstructured(limit=10)] == ["1", "2"]
+
+
+def test_list_unstructured_respects_limit(store: JsonStore) -> None:
+    for index in range(5):
+        store.save_source_data(_source_data(str(index)))
+    assert len(store.list_unstructured(limit=2)) == 2
+
+
+def test_list_unstructured_rejects_zero_limit(store: JsonStore) -> None:
+    # 상한 없는 배치는 백필 직후 backlog로 실행을 폭주시킨다.
+    with pytest.raises(ValueError, match="limit"):
+        store.list_unstructured(limit=0)
+
+
+def test_exhausted_rows_drop_out_of_the_queue(store: JsonStore) -> None:
+    record = _source_data("1")
+    store.save_source_data(record)
+    for _ in range(MAX_STRUCTURE_ATTEMPTS):
+        record = record.with_failed_attempt("HTTP 429")
+        store.update_structure_state(record)
+    assert store.list_unstructured(limit=10) == ()
+
+
+def test_failed_attempt_stays_in_the_queue(store: JsonStore) -> None:
+    # 실패는 structured_at을 남기지 않으므로 다음 run이 다시 집어야 한다(SPEC §4).
+    record = _source_data("1")
+    store.save_source_data(record)
+    store.update_structure_state(record.with_failed_attempt("일시 오류"))
+    queued = store.list_unstructured(limit=10)
+    assert len(queued) == 1
+    assert queued[0].structure_attempts == 1
+    assert queued[0].last_structure_error == "일시 오류"
+
+
+# ── write-once 강제 ─────────────────────────────────────────────
+
+
+#: 상태 3필드 **말고 전부**가 write-once다. `id`는 조회 키라 제외(바꾸면 다른 레코드다).
+_EVIDENCE_TAMPERINGS: Final = {
+    "source_key": "PUTS",
+    "external_id": "9999",
+    "source_url": "https://elsewhere.example/1",
+    "run_id": UUID("00000000-0000-4000-8000-00000000ffff"),
+    "fetched_at": FIXED_NOW - timedelta(days=1),
+    "raw_text": "바꿔치기",
+    "image_urls": ("https://x/injected.png",),
+    "raw_meta": {"injected": True},
+    "content_hash": "deadbeef",
+}
+
+
+def test_evidence_tampering_cases_cover_every_immutable_field() -> None:
+    """필드가 추가되면 이 테스트가 먼저 깨진다 — 새 필드가 조용히 보호에서 빠지는 걸 막는다."""
+    immutable = {f.name for f in fields(SourceData)} - set(_MUTABLE_STATE_FIELDS) - {"id"}
+    assert immutable == set(_EVIDENCE_TAMPERINGS)
+
+
+@pytest.mark.parametrize("field_name", list(_EVIDENCE_TAMPERINGS))
+def test_state_update_rejects_changed_evidence(store: JsonStore, field_name: str) -> None:
+    record = _source_data("1")
+    store.save_source_data(record)
+    # `replace(**{...})`는 필드마다 타입이 달라 정적으로 못 쓴다 → 검증을 우회해 직접 심는다.
+    # 어차피 "생성자를 통과하지 못할 값이 들어온 레코드"까지 store가 막아야 한다.
+    tampered = replace(record.with_verdict_recorded())
+    object.__setattr__(tampered, field_name, _EVIDENCE_TAMPERINGS[field_name])
+    with pytest.raises(StoreError, match="원문 증거"):
+        store.update_structure_state(tampered)
+
+
+def test_state_update_rejects_erasing_a_recorded_verdict(store: JsonStore) -> None:
+    # 낡은 in-memory 레코드로 갱신하면 판정이 지워져 Gemini에 재과금된다(SPEC §4).
+    record = _source_data("1")
+    store.save_source_data(record)
+    store.update_structure_state(record.with_verdict_recorded(FIXED_NOW))
+    with pytest.raises(StoreError, match="판정"):
+        store.update_structure_state(record)
+    assert store.list_unstructured(limit=10) == ()
+
+
+def test_state_update_rejects_lowering_attempts(store: JsonStore) -> None:
+    # 시도 횟수가 줄면 상한에 영원히 도달하지 못해 영구 실패 공고를 무한 재호출한다.
+    record = _source_data("1")
+    store.save_source_data(record)
+    store.update_structure_state(record.with_failed_attempt("HTTP 429"))
+    with pytest.raises(StoreError, match="시도 횟수"):
+        store.update_structure_state(record.with_attempts_reset())
+
+
+def test_state_update_rejects_unknown_record(store: JsonStore) -> None:
+    with pytest.raises(StoreError, match="없음"):
+        store.update_structure_state(_source_data("1").with_verdict_recorded())
+
+
+def test_state_update_persists_verdict(store: JsonStore) -> None:
+    record = _source_data("1")
+    store.save_source_data(record)
+    store.update_structure_state(record.with_verdict_recorded(FIXED_NOW))
+    assert store.list_unstructured(limit=10) == ()
+
+
+# ── review_data upsert: 검수 상태 보존 ───────────────────────────
+
+
+def test_first_upsert_inserts(store: JsonStore) -> None:
+    assert store.upsert_review_data(_review_data(new_id())) is True
+
+
+def test_restructure_replaces_pending_draft_and_keeps_identity(
+    store: JsonStore, data_dir: Path
+) -> None:
+    source_id = new_id()
+    original = _review_data(source_id)
+    store.upsert_review_data(original)
+    redraft = replace(_review_data(source_id), title="다시 구조화한 제목")
+    assert store.upsert_review_data(redraft) is True
+
+    rows = _read_raw(data_dir, "review_data.json")
+    assert len(rows) == 1  # UNIQUE(source_data_id)
+    assert rows[0]["id"] == str(original.id)  # admin 참조가 끊기지 않는다
+    assert rows[0]["title"] == "다시 구조화한 제목"
+
+
+def test_restructure_does_not_overwrite_reviewed_draft(store: JsonStore, data_dir: Path) -> None:
+    # 재구조화가 운영자 승인을 PENDING으로 되돌리면 안 된다.
+    source_id = new_id()
+    approved = replace(
+        _review_data(source_id),
+        review_status=ReviewStatus.APPROVED,
+        reviewed_by="operator@minjob",
+        reviewed_at=FIXED_NOW,
+    )
+    store.upsert_review_data(approved)
+    assert store.upsert_review_data(_review_data(source_id)) is False
+
+    rows = _read_raw(data_dir, "review_data.json")
+    assert rows[0]["review_status"] == "APPROVED"
+    assert rows[0]["reviewed_by"] == "operator@minjob"
+
+
+def test_restructure_does_not_erase_operator_edits_on_a_pending_draft(
+    store: JsonStore, data_dir: Path
+) -> None:
+    """운영자가 고쳐놓고 승인 전에 멈춘 행 — 이어받는 필드는 검수 메타뿐이라 나머지는 덮인다.
+
+    `review_status`만 보고 판단하면 손으로 확정한 교단이 AI 초안(UNKNOWN)으로 되돌아가고
+    `reviewed_by`만 남아 "봤는데 고친 흔적이 없는" 모순 행이 된다.
+    """
+    source_id = new_id()
+    corrected = replace(
+        _review_data(source_id),
+        denomination=Denomination.TONGHAP,
+        denomination_source=DenominationSource.OPERATOR,
+        church_name="오천중앙교회",
+        review_status=ReviewStatus.PENDING,
+    )
+    store.upsert_review_data(corrected)
+
+    # AI가 교단을 못 알아낸 초안(근거 unknown이라 값 없음이 허용된다).
+    ai_redraft = replace(
+        _review_data(source_id),
+        denomination=None,
+        denomination_source=DenominationSource.UNKNOWN,
+        church_name=None,
+    )
+    assert store.upsert_review_data(ai_redraft) is False
+
+    rows = _read_raw(data_dir, "review_data.json")
+    assert rows[0]["denomination"] == "TONGHAP"
+    assert rows[0]["denomination_source"] == "operator"
+    assert rows[0]["church_name"] == "오천중앙교회"
+
+
+def test_restructure_replaces_untouched_pending_draft(store: JsonStore, data_dir: Path) -> None:
+    # 반대편 경계: 운영자가 손대지 않은 PENDING 초안은 그대로 교체돼야 한다.
+    source_id = new_id()
+    store.upsert_review_data(replace(_review_data(source_id), church_name="옛 초안"))
+    assert store.upsert_review_data(replace(_review_data(source_id), church_name="새 초안")) is True
+    assert _read_raw(data_dir, "review_data.json")[0]["church_name"] == "새 초안"
+
+
+# ── crawl_run ───────────────────────────────────────────────────
+
+
+def test_start_run_returns_persisted_record(store: JsonStore) -> None:
+    run = store.start_run(CrawlMode.DAILY)
+    assert run.is_finished is False
+    store.finish_run(run.finish(sources_ok=30, sources_failed=1, new_count=42))
+
+
+def test_finish_run_keeps_id_and_records_totals(store: JsonStore, data_dir: Path) -> None:
+    run = store.start_run(CrawlMode.BACKFILL)
+    # 시작 시각은 store가 실제 now로 찍으므로 종료 시각을 고정값으로 주면 안 된다(과거가 됨).
+    store.finish_run(run.finish(sources_ok=31, sources_failed=0, new_count=8))
+    rows = _read_raw(data_dir, "crawl_run.json")
+    assert len(rows) == 1
+    assert rows[0]["id"] == str(run.id)
+    assert rows[0]["new_count"] == 8
+    assert rows[0]["finished_at"] is not None
+
+
+def test_finish_run_rejects_unknown_run(store: JsonStore, data_dir: Path) -> None:
+    # 조용히 넘기면 실행이 영구 "진행중"으로 남아 대시보드가 거짓말을 한다.
+    orphan = store.start_run(CrawlMode.DAILY)
+    other = JsonStore(data_dir / "elsewhere")
+    with pytest.raises(StoreError, match="없음"):
+        other.finish_run(orphan.finish(sources_ok=0, sources_failed=0, new_count=0))
+
+
+# ── source_health ───────────────────────────────────────────────
+
+
+def test_health_is_absent_before_first_run(store: JsonStore) -> None:
+    assert store.get_health("YTUS") is None
+
+
+def test_get_health_normalizes_the_lookup_key(store: JsonStore) -> None:
+    """조회가 빗나가면 previous=None이 되고, 누적 카운터가 매 실행 초기화된다(§7 경보 사망)."""
+    store.upsert_health(
+        SourceHealth.advance(
+            previous=None,
+            source_key="YTUS",
+            run_at=FIXED_NOW,
+            status=SourceHealthStatus.FAIL,
+            error="timeout",
+        )
+    )
+    found = store.get_health(" YTUS ")
+    assert found is not None
+    assert found.consecutive_failures == 1
+
+
+def test_health_roundtrip_and_upsert_replaces(store: JsonStore, data_dir: Path) -> None:
+    first = SourceHealth.advance(
+        previous=None,
+        source_key="YTUS",
+        run_at=FIXED_NOW,
+        status=SourceHealthStatus.OK,
+        new_count=8,
+    )
+    store.upsert_health(first)
+    assert store.get_health("YTUS") == first
+
+    second = SourceHealth.advance(
+        previous=store.get_health("YTUS"),
+        source_key="YTUS",
+        run_at=FIXED_NOW + timedelta(days=1),
+        status=SourceHealthStatus.FAIL,
+        error="HTTP 500",
+    )
+    store.upsert_health(second)
+    stored = store.get_health("YTUS")
+    assert stored is not None
+    assert stored.consecutive_failures == 1
+    assert stored.last_success_at == FIXED_NOW  # 실패가 마지막 성공을 지우지 않는다
+    rows = _read_raw(data_dir, "source_health.json")
+    assert len(rows) == 1  # source_key PK
+
+
+# ── 손상 행 격리 ────────────────────────────────────────────────
+
+
+def test_corrupt_row_is_skipped_not_fatal(
+    lenient_store: JsonStore, corruption_log: list[str], data_dir: Path
+) -> None:
+    # 한 행이 깨졌다고 전체 로드를 실패시키면 원장을 잃고 31곳을 다시 긁는다(가드레일 #7).
+    good = to_row(_source_data("1"))
+    _write_raw(data_dir, "source_data.json", [good, {"broken": True}])
+
+    queued = lenient_store.list_unstructured(limit=10)
+    assert [r.external_id for r in queued] == ["1"]
+    assert len(corruption_log) == 1
+    assert "source_data.json" in corruption_log[0]
+
+
+def test_ledger_ignores_corrupt_row(
+    lenient_store: JsonStore, corruption_log: list[str], data_dir: Path
+) -> None:
+    good = to_row(_source_data("1"))
+    _write_raw(data_dir, "source_data.json", [good, {"external_id": 5}])
+    assert lenient_store.seen_external_ids("YTUS", ["1"]) == {"1"}
+    assert corruption_log
+
+
+def test_corrupt_health_row_is_not_silently_none(store: JsonStore, data_dir: Path) -> None:
+    # None으로 삼키면 누적 카운터가 초기화돼 §7 경보가 무의미해진다.
+    _write_raw(data_dir, "source_health.json", [{"source_key": "YTUS"}])
+    with pytest.raises(SerdeError):
+        store.get_health("YTUS")
+
+
+# ── 파일 형식·원자성 ────────────────────────────────────────────
+
+
+def test_written_file_has_version_and_records(store: JsonStore, data_dir: Path) -> None:
+    store.save_source_data(_source_data("1"))
+    document = json.loads((data_dir / "source_data.json").read_text(encoding="utf-8"))
+    assert document["version"] == FILE_VERSION
+    assert len(document["records"]) == 1
+
+
+def test_unknown_file_version_is_rejected(store: JsonStore, data_dir: Path) -> None:
+    # 백필 후 스키마가 바뀌면 "컬럼 누락"이 아니라 버전 불일치로 원인이 드러나야 한다.
+    _write_raw(data_dir, "source_data.json", [], version=99)
+    with pytest.raises(StoreError, match="버전"):
+        store.list_unstructured(limit=1)
+
+
+def test_broken_json_file_is_rejected(store: JsonStore, data_dir: Path) -> None:
+    target = data_dir / "source_data.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("{ not json", encoding="utf-8")
+    with pytest.raises(StoreError, match="파싱 실패"):
+        store.list_unstructured(limit=1)
+
+
+def test_write_leaves_no_temp_file(store: JsonStore, data_dir: Path) -> None:
+    store.save_source_data(_source_data("1"))
+    assert list(data_dir.glob("*.tmp")) == []
+
+
+def test_failed_write_keeps_the_old_file_and_cleans_up(
+    store: JsonStore, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """쓰기 도중 실패(디스크 풀 등) — 기존 원장은 온전하고 부분 파일은 남지 않아야 한다."""
+    store.save_source_data(_source_data("1"))
+    before = (data_dir / "source_data.json").read_text(encoding="utf-8")
+
+    def disk_full(_descriptor: int) -> None:
+        raise OSError("디스크가 꽉 찼다")
+
+    monkeypatch.setattr("minjob_agent.store.json_store.os.fsync", disk_full)
+    with pytest.raises(OSError, match="디스크"):
+        store.save_source_data(_source_data("2"))
+
+    assert list(data_dir.glob("*.tmp")) == []
+    assert (data_dir / "source_data.json").read_text(encoding="utf-8") == before
+
+
+def test_missing_file_reads_as_empty(store: JsonStore) -> None:
+    # 첫 실행에는 파일이 없다 — 이때 예외가 나면 크롤이 시작조차 못 한다.
+    assert store.list_unstructured(limit=5) == ()
+    assert store.get_health("YTUS") is None

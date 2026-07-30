@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from enum import StrEnum
+from math import isfinite
 from types import MappingProxyType
 from uuid import UUID, uuid4
 
@@ -65,6 +66,19 @@ _CONFIRMED_DENOMINATION_SOURCES = frozenset(
     {DenominationSource.STATED, DenominationSource.REGISTRY, DenominationSource.OPERATOR}
 )
 
+#: **운영자(min_job admin)가 쓰는 컬럼.** 재구조화 upsert가 덮어써선 안 되는 집합이며,
+#: Supabase `ON CONFLICT (source_data_id) DO UPDATE`의 갱신 대상은 이 집합의 **여집합**이다.
+#: `carrying_review_state_of`가 이 목록에서 파생된다(두 곳에 적어 어긋나지 않게).
+REVIEW_STATE_FIELDS: tuple[str, ...] = (
+    "id",
+    "created_at",
+    "review_status",
+    "matched_church_id",
+    "published_job_id",
+    "reviewed_by",
+    "reviewed_at",
+)
+
 
 def new_id() -> UUID:
     """레코드 id. DB의 `gen_random_uuid()`와 같은 역할을 애플리케이션에서 한다."""
@@ -100,28 +114,34 @@ def _as_optional_enum[E: StrEnum](value: object, enum_type: type[E], field_name:
     return None if value is None else _as_enum(value, enum_type, field_name)
 
 
-def _as_json_value(value: object, where: str) -> JsonValue:
+def as_json_value(value: object, where: str) -> JsonValue:
     """JSON으로 나갈 수 있는 값인지 재귀 검증하고, 컨테이너는 복사한다.
 
     복사 덕에 호출자가 나중에 원본을 바꿔도 "원문 증거" 레코드가 변조되지 않는다.
     """
-    if value is None or isinstance(value, str | bool | int | float):
+    if value is None or isinstance(value, str | bool | int):
+        return value
+    if isinstance(value, float):
+        # NaN·Infinity는 `json.dumps`가 그대로 뱉지만 **유효한 JSON이 아니고**
+        # Postgres jsonb가 거부한다 → 저장 시점이 아니라 여기서 막는다.
+        if not isfinite(value):
+            raise ValueError(f"{where}: 유한한 수여야 함 ({value!r})")
         return value
     if isinstance(value, Mapping):
         snapshot: dict[str, JsonValue] = {}
         for key, item in value.items():
             if not isinstance(key, str):
                 raise ValueError(f"{where}: 키는 문자열이어야 함 ({key!r})")
-            snapshot[key] = _as_json_value(item, f"{where}.{key}")
+            snapshot[key] = as_json_value(item, f"{where}.{key}")
         return snapshot
     if isinstance(value, list | tuple):
-        return [_as_json_value(item, f"{where}[]") for item in value]
+        return [as_json_value(item, f"{where}[]") for item in value]
     raise ValueError(f"{where}: JSON으로 저장할 수 없는 값 ({type(value).__name__})")
 
 
 def _freeze_json_mapping(value: Mapping[str, object], field_name: str) -> Mapping[str, JsonValue]:
     """읽기전용 스냅샷. serde는 `dict(...)`로 되꺼내 직렬화한다."""
-    checked = _as_json_value(value, field_name)
+    checked = as_json_value(value, field_name)
     if not isinstance(checked, dict):
         raise ValueError(f"{field_name}: 객체여야 함")
     return MappingProxyType(checked)
@@ -150,7 +170,7 @@ class SourceData:
     실패에도 시각을 찍으면 그 공고는 영구히 재시도되지 않는다.
 
     ⚠️ `raw_meta`는 읽기전용 스냅샷이라 `dataclasses.asdict`·`json.dumps`가 바로 먹지 않는다 —
-    serde가 `dict(record.raw_meta)`로 변환한다. 같은 이유로 이 레코드는 해시 불가이니
+    serde가 재귀 인코딩으로 평범한 dict로 바꿔 준다. 같은 이유로 이 레코드는 해시 불가이니
     집합·dict 키에는 `ledger_key`나 `id`를 쓴다.
     """
 
@@ -222,7 +242,12 @@ class SourceData:
         )
 
     def with_attempts_reset(self) -> SourceData:
-        """운영자가 실패 원인을 고친 뒤 재시도 대상으로 되돌린다(상한 소진 행의 재진입 경로)."""
+        """운영자가 실패 원인을 고친 뒤 재시도 대상으로 되돌린다(상한 소진 행의 재진입 경로).
+
+        ⚠️ 이 결과를 `Store.update_structure_state`로 저장할 수는 없다 — 그 경로는 시도 횟수
+        감소를 거부한다(낡은 레코드로 판정을 지우는 사고를 막기 위해). 리셋은 운영자 리포트와
+        함께 전용 store 메서드로 들어온다(ROADMAP 1-6).
+        """
         return replace(self, structure_attempts=0, last_structure_error=None)
 
 
@@ -415,6 +440,19 @@ class ReviewData:
             and not self.needs_operator_review
         )
 
+    @property
+    def is_operator_touched(self) -> bool:
+        """운영자가 이 행을 손댔는가 — 재구조화가 덮어써도 되는지 판단하는 기준.
+
+        `review_status`만 보면 부족하다. 운영자가 교단·교회명 등을 고쳐놓고 승인 전(PENDING)에
+        멈춘 행을 재구조화가 AI 초안으로 되돌리면, **손으로 한 교정이 조용히 사라진다**
+        (`reviewed_by`만 남아 "봤는데 고친 흔적이 없는" 모순 행이 된다).
+        `denomination_source=operator`가 SPEC §5.3의 운영자 확정 표시다.
+        """
+        return (
+            self.reviewed_by is not None or self.denomination_source is DenominationSource.OPERATOR
+        )
+
     def carrying_review_state_of(self, previous: ReviewData) -> ReviewData:
         """재구조화 초안이 기존 행을 대체할 때 **식별자·검수 상태를 이어받는다**.
 
@@ -422,16 +460,8 @@ class ReviewData:
         `id`·`created_at`이 새로 생기고 운영자 승인 상태(`review_status`·매칭·게재 링크)가
         지워진다 → admin 참조가 끊기고 승인이 PENDING으로 되돌아간다.
         """
-        return replace(
-            self,
-            id=previous.id,
-            created_at=previous.created_at,
-            review_status=previous.review_status,
-            matched_church_id=previous.matched_church_id,
-            published_job_id=previous.published_job_id,
-            reviewed_by=previous.reviewed_by,
-            reviewed_at=previous.reviewed_at,
-        )
+        carried = {name: getattr(previous, name) for name in REVIEW_STATE_FIELDS}
+        return replace(self, **carried)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
