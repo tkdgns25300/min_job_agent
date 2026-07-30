@@ -1,6 +1,6 @@
 # CLAUDE.md — min_job_agent
 
-> **이 파일은 HOW** — 아키텍처·레이어 책임·코드 컨벤션·가드레일. 파이프라인 동작·판정 규칙·스키마는 [`docs/SPEC.md`](./docs/SPEC.md), 크롤 대상 소스는 [`docs/SOURCES.md`](./docs/SOURCES.md), 출력 계약·교단 정규화는 [`docs/CONTRACT.md`](./docs/CONTRACT.md), 작업 단위는 [`docs/ROADMAP.md`](./docs/ROADMAP.md), 시점 핸드오프는 [`docs/SNAPSHOT.md`](./docs/SNAPSHOT.md).
+> **이 파일은 HOW** — 아키텍처·레이어 책임·코드 컨벤션·가드레일. **운영자가 타이핑하는 명령은 [`docs/RUNBOOK.md`](./docs/RUNBOOK.md)**. 파이프라인 동작·판정 규칙·스키마는 [`docs/SPEC.md`](./docs/SPEC.md), 크롤 대상 소스는 [`docs/SOURCES.md`](./docs/SOURCES.md), 출력 계약·교단 정규화는 [`docs/CONTRACT.md`](./docs/CONTRACT.md), 작업 단위는 [`docs/ROADMAP.md`](./docs/ROADMAP.md), 시점 핸드오프는 [`docs/SNAPSHOT.md`](./docs/SNAPSHOT.md).
 >
 > **문서 책임 분리** — 같은 사실을 두 곳에 쓰지 않는다. **여기는 "코드를 어떻게 쓰는가"만** 담고, 정책·판정 규칙·소스 목록·스키마 필드는 위 문서를 **가리킨다**(복사하지 않는다).
 >
@@ -117,7 +117,9 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/minjob-ingest list-sources [KEY]   # 등록 소스 확인 (네트워크 없음)
 .venv/bin/minjob-ingest check-gemini         # Vertex 인증·연결 (유료 API 실호출 1회)
 ```
-아직 없는 명령(Phase 1): `daily`·`backfill`.
+아직 없는 명령(Phase 1): `collect`·`structure`·`daily`·`backfill`·`status`.
+
+> ⚠️ **CLI 명령을 추가·변경하면 `docs/RUNBOOK.md`를 같이 고친다.** 운영자는 그 파일만 보고 실행한다 — 여기에만 적으면 전달되지 않는다.
 
 
 ## Layer Responsibilities
@@ -163,7 +165,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 ### Runner (`pipeline/run.py`) · CLI (`cli.py`)
 - 소스 **간 병렬 · 소스 내 순차**(SPEC §3). **에러 격리** — 한 소스 실패가 나머지를 멈추지 않는다.
 - 실행 요약(`crawl_run`)·소스 상태(`source_health`) 기록, **0건·급감 경보 판정도 여기**(기준은 SPEC §7).
-- CLI 모드: `daily`(증분) · `backfill`(로컬 1회 · 범위는 SPEC §4) · `check-gemini` · `list-sources`.
+- CLI 모드: `daily`(증분) · `backfill`(로컬 1회 · 범위는 SPEC §4) · `collect`/`structure`(단계별) · `status` · `check-gemini` · `list-sources`. **운영자용 사용법은 RUNBOOK에 기록한다.**
 
 ## 저장소·비밀 규칙
 

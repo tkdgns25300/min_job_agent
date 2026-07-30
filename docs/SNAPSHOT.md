@@ -68,6 +68,7 @@
 | `CLAUDE.md` | 아키텍처·레이어 책임·가드레일·컨벤션 | ✅ 작성 + 3렌즈 검수(일반 2 + Fable) 반영 |
 | `docs/SPEC.md` | 파이프라인 명세(스코프·게이트·staging 4테이블·정책·배포) | ✅ 작성 + 3렌즈 냉정검수·재검증 |
 | `docs/ROADMAP.md` | Phase별 작업 단위(0~3) | ✅ 작성(min_job 스타일) |
+| `docs/RUNBOOK.md` | **운영자 실행 매뉴얼**(명령·저장위치·장애대응) | ✅ 작성 — 명령 추가 시 갱신 의무 |
 
 > **코드 = `minjob_ingest/`**(flat 패키지 · TS 잔재는 0-1c에서 삭제, 필요하면 git 이력): `domain.py`·`models.py`·`clock.py`·`paths.py`·`settings.py`·`cli.py`·`sources/registry.py`·`store/{base,serde,json_store}.py`·`lib/gemini.py`. 전송 정본은 **`config/sources.json`(31곳)**. 별도로 **`crawler-demo/`에 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, zip) — 전 체인 관통 검증됨(참고용).
 

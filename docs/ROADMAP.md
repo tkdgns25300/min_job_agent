@@ -1,6 +1,6 @@
 # min_job_agent — 작업 로드맵
 
-> 파이프라인 명세는 [`SPEC.md`](./SPEC.md), 소스 카탈로그는 [`SOURCES.md`](./SOURCES.md), 출력 계약·교단은 [`CONTRACT.md`](./CONTRACT.md), 시점 핸드오프는 [`SNAPSHOT.md`](./SNAPSHOT.md).
+> 실행 명령은 [`RUNBOOK.md`](./RUNBOOK.md), 파이프라인 명세는 [`SPEC.md`](./SPEC.md), 소스 카탈로그는 [`SOURCES.md`](./SOURCES.md), 출력 계약·교단은 [`CONTRACT.md`](./CONTRACT.md), 시점 핸드오프는 [`SNAPSHOT.md`](./SNAPSHOT.md).
 > 브랜치: `prod`(배포) / `dev`(작업), dev→prod **ff-only**. commit·push·merge는 사용자 명시 요청 시에만.
 >
 > **스택 = Python 3.12+**(2026-07-29 변경 · 이전 TS/Node 결정 철회 — 근거는 CLAUDE.md Stack). **저장은 JSON 먼저 → 스키마 굳으면 Supabase 스왑**(1-6). 크롤러는 `review_data`까지만 만들고, **공개 게재(`churches`/`jobs`)는 min_job 측**(min_job ROADMAP 1-10).
@@ -42,9 +42,14 @@
 > - **실패를 조용히 넘기지 않기** — 알 수 없는 `run_id`·손상 파일은 예외로.
 
 ### 1-1. 수집 (fetch → source_data)  ← 플로우 앞단
+> **작업 순서(2026-07-30 확정)**: 게시판 하나씩 **`--dry-run`으로 파싱·id 유일성 확인 → 통과분만 실제 수집(3개월) → 그 다음 `structure`(유료)**. 수집과 구조화를 다른 명령으로 나눈 이유 = 파싱이 틀린 채로 수백 건을 AI에 보내면 되돌릴 수 없다.
+- [ ] `fetch/client.py` — UA·인코딩(config 우선·EUC-KR→cp949)·타임아웃·재시도·소스별 간격·robots·세션. **모든 HTTP의 단일 창구**
 - [ ] `YTUS` 어댑터 — 목록→상세→`raw_text`+이미지 URL 확보
 - [ ] `source_data` 적재 — 불변·`UNIQUE(source_key, external_id)`(원장)·이미 본 글 skip
-- [ ] 티어별 fetch 골격(정적) + 인코딩(EUC-KR) 처리
+- [ ] **`collect` 명령 + `--dry-run`** — 저장 없이 [행 수·공지 제외 수·**external_id 중복 수**·게시일 범위·원장 신규 수·샘플]을 출력. 31곳 파싱 검증의 도구
+- [ ] **`external_id` 중복은 에러**(SPEC §10 · 단 한 실행 안만 본다) · `PUTS` bd_name 필터 · `CSU`는 1110만 · **`HANSEI`는 처음부터 `catId:artclNo` 복합키**(실행 간 충돌은 가드가 못 잡음)
+- [ ] **id 재사용 탐지** — 원장 조회가 저장된 `list_title`·`list_date`를 함께 돌려주고 목록 값과 비교(추가 요청 0건 · 경고만)
+- [ ] `--months N` 컷오프 = **목록의 게시일**(구조화 전이라 posted_at 없음) · 날짜 없는 소스는 `--pages N` 폴백
 
 ### 1-2. 구조화 (source_data → review_data)  ← ★ 1소스 전 구간 관통(뼈대 완성)
 - [ ] Gemini 구조화 호출 + **출력 JSON 계약**(필드·타입) + 한글→enum 매핑(position·region 등)
