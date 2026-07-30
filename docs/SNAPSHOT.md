@@ -2,13 +2,13 @@
 
 > **이 문서 하나로 "지금 상황" 파악.** 새 세션(다른 컴퓨터 포함)에서 이어받을 때 이 파일 + `README.md` + `docs/SPEC.md`(파이프라인 정본) + `docs/SOURCES.md` + `docs/CONTRACT.md`만 읽으면 됨.
 >
-> **작성 시점**: 최초 2026-07-12 · **갱신 2026-07-21**(데모 · 3차 실측 · Fable 교차감사 · 초교파) · **갱신 2026-07-27**(운영자 전수 실측 → 크롤 31 확정 §5·§7 · 파이프라인·Supabase 스키마 설계 §9) · **dev = prod = origin** (ff-only)
+> **작성 시점**: 최초 2026-07-12 · **갱신 2026-07-21**(데모 · 3차 실측 · Fable 교차감사 · 초교파) · **갱신 2026-07-27**(운영자 전수 실측 → 크롤 31 확정 §5·§7 · 파이프라인·Supabase 스키마 설계 §9) · **갱신 2026-07-30**(Python 이식 완료 · Phase 1-1 fetch 층 완료 §10) · **dev = prod = origin** (ff-only)
 
 ---
 
 ## 0. 한 문장 요약
 
-`min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·staging 4테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). **`docs/ROADMAP.md`·`CLAUDE.md` 작성 완료**(CLAUDE.md는 3렌즈 검수 반영). **Phase 0 뼈대 완료** — TS 스켈레톤(Store seam·`domain`·Gemini 래퍼·**31곳 레지스트리 라이브 2차검증**), `typecheck` 통과 · **Gemini 실호출 성공**(운영자 확인). **스택을 Python으로 교체(2026-07-29)하고 이식 완료** — TS 잔재 삭제, `minjob_ingest/` flat 패키지에 `domain`·`models`(SPEC §6 4레코드)·`clock`·`settings`·`sources.registry`·`store`(Protocol+JSON)·`lib.gemini` + CLI(`list-sources`·`check-gemini`), 4게이트(ruff·format·mypy strict·pytest 313) 통과. 현재 열린 핵심 = **Phase 1-1(fetch → source_data) 구현**.
+`min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·staging 4테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). **`docs/ROADMAP.md`·`CLAUDE.md` 작성 완료**(CLAUDE.md는 3렌즈 검수 반영). **Phase 0 뼈대 완료** — TS 스켈레톤(Store seam·`domain`·Gemini 래퍼·**31곳 레지스트리 라이브 2차검증**), `typecheck` 통과 · **Gemini 실호출 성공**(운영자 확인). **스택을 Python으로 교체(2026-07-29)하고 이식 완료** — TS 잔재 삭제, `minjob_ingest/` flat 패키지에 `domain`·`models`(SPEC §6 4레코드)·`clock`·`settings`·`sources.registry`·`store`(Protocol+JSON)·`lib.gemini` + CLI(`list-sources`·`check-gemini`), 4게이트(ruff·format·mypy strict·pytest **343**) 통과. **Phase 1-1도 착수** — `fetch/` 전송 층 완료(UA·cp949·타임아웃·재시도·간격·세션·본문 하한 · mutation 13/13). 현재 열린 핵심 = **1-1의 남은 4단계(어댑터 → 원장 확장 → `collect` → 관통)**. 상세는 **§10**.
 
 ---
 
@@ -31,6 +31,7 @@
 | **교단 태깅** | **공고에서 확정**(①교단 명시 ②교회 명부 ③AI 추정=`ai_guess` ④`UNKNOWN`). 근거 없으면 `UNKNOWN`+운영자 해소. 게시판 교단은 힌트만. **노회 미사용**(SPEC §5.3·CONTRACT §2). `raw_denomination` 보존 |
 | **로그인 소스** | **현재 크롤 31곳에서 제외**(2026-07-27 · 공개 게시판만). 인증 크롤은 **변호사 게이트 통과 후 별도 단계**로만 검토(계정은 운영자 제공 · 크롤러가 로그인 자동화 금지) |
 | **커뮤니티**(카페·밴드·페북) | 나중(Phase 후반). 지금은 공식 게시판만 |
+| **robots.txt** | **따르지 않는다** — 운영자 판단(2026-07-30 · 문제없음 확인). 부하 보호는 **요청 간격 1.5s·호스트당 1요청·타임아웃·페이지 상한**이 담당. 준수 코드는 `RESPECT_ROBOTS` 스위치 뒤에 살아 있어 소스 단위 되돌리기 가능 |
 | **브랜치** | `prod`(배포)·`dev`(작업). 릴리스 dev→prod ff-only. commit/push/merge는 명시 요청 시만 |
 
 > 교단 8→9 변경 이유: 검증에서 **합신대 청빙 게시판이 활발**(운영자 실측 ann 30)로 확인돼 기타→독립 key로 복구.
@@ -53,6 +54,10 @@
 11. **초교파·연합기관 조사(2026-07-21)** — subagent 3개로 "교단 프레임에 빠진 초교파 게시판" 발굴. **신규**: 횃불트리니티(~1,100+·매우활발·크롤 쉬움 → 즉시 추천)·아신대(ACTS, 1차 '휴면' 오판→활성 ~673 정정). 연합기관(한교총·한기총·NCCK·KWMA)·선교단체(CCC·YWAM)·방송사(CBS·극동·더미션)는 청빙판 **없음** 확인(재조사 방지 기록).
 12. **운영자 전 게시판 실측 검수(2026-07-27)** — 운영자가 워크시트 전 게시판을 직접 열어 실 공고량(`ann`)·조회수 전수 확인 → **크롤 tiering: 확정 25 · 조건부 5 · 나사렛 1(저물량이나 조회 1500~3000↑ 채택) = 크롤 31 · 드롭/휴면 6**(§5). 신규 사망/드롭 확정: **PROK(기장, 2025-08 이후 공고 0)** · `old.gapck`(합동총회) · `kcc`(장학 위주) · SU · 에스라(극저) · bsds(거의 정지). 순복음 공개 물량이 얇다는 것도 드러남(→ agkdc 가치↑). 또 `hanil`은 **www 필수**(apex 무응답)로 확진해 URL 정정.
 
+13. **Python 이식 완료(2026-07-29~30 · 커밋 5개)** — 0-1a 골격+`config/sources.json`(31곳) / 0-1b-1 레코드·시각·설정 / 0-1b-2 Store(프로토콜+JSON) / 0-1c Gemini 래퍼+TS 잔재 삭제 / 패키지명 `minjob_agent`→**`minjob_ingest`**("agent"가 배치 크롤러를 잘못 설명). 각 단계 리뷰 + **mutation 테스트**로 검증(전 변형 탐지). 발견·수정한 설계 결함: 재구조화가 운영자 교정을 덮어씀 · 판정 기록 삭제/시도횟수 감소 허용 · `source_key` 미정규화로 §7 경보 무력화 · 잘린 AI 응답을 성공 처리 · **테스트가 운영자 실제 `.env`를 읽어 private key 유입**(실측 확인 → `tests/conftest.py`로 전역 차단).
+14. **`external_id` 31곳 감사(2026-07-30)** — 31곳 **전부 목록에서 id 획득 가능**(→ 상세 요청 전 원장 대조 성립). 조건부 3곳 해법 확정: `PUTS` bd_name 필터 · `CSU` 1110만 · **`HANSEI`는 `catId:artclNo` 복합키**(목록이 카테고리에 걸쳐 있어 실행 간 충돌 → 중복 에러 가드로는 못 잡음). 규칙으로 승격(SPEC §10).
+15. **RUNBOOK 신설 + fetch 층 완료(2026-07-30)** — 운영자 실행 매뉴얼(56줄 · 명령 추가 시 갱신 의무). `fetch/client.py`·`robots.py` 작성, 실행으로 버그 2개 잡음(**UA에 한글 → HTTP 헤더 인코딩 실패로 31곳 전부 시작 불가** · `2**n`이 mypy Any). robots는 운영자 판단으로 미준수(§2).
+
 > ⚠️ 4·5번의 워크플로우 결과 원본은 세션 임시폴더(`/private/tmp/...`)에 있어 **다른 컴퓨터엔 없다**. 내용은 전부 `SOURCES.md`/`CONTRACT.md`로 옮겨졌으니 그걸 정본으로 볼 것.
 
 ---
@@ -70,7 +75,7 @@
 | `docs/ROADMAP.md` | Phase별 작업 단위(0~3) | ✅ 작성(min_job 스타일) |
 | `docs/RUNBOOK.md` | **운영자 실행 매뉴얼**(명령·저장위치·장애대응) | ✅ 작성 — 명령 추가 시 갱신 의무 |
 
-> **코드 = `minjob_ingest/`**(flat 패키지 · TS 잔재는 0-1c에서 삭제, 필요하면 git 이력): `domain.py`·`models.py`·`clock.py`·`paths.py`·`settings.py`·`cli.py`·`sources/registry.py`·`store/{base,serde,json_store}.py`·`lib/gemini.py`. 전송 정본은 **`config/sources.json`(31곳)**. 별도로 **`crawler-demo/`에 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, zip) — 전 체인 관통 검증됨(참고용).
+> **코드 = `minjob_ingest/`**(flat 패키지 · TS 잔재는 0-1c에서 삭제, 필요하면 git 이력): `domain.py`·`models.py`·`clock.py`·`paths.py`·`settings.py`·`cli.py`·`sources/registry.py`·`store/{base,serde,json_store}.py`·`lib/gemini.py`·**`fetch/{client,robots}.py`**. 테스트 343개(네트워크 미사용). 전송 정본은 **`config/sources.json`(31곳)**. 별도로 **`crawler-demo/`에 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, zip) — 전 체인 관통 검증됨(참고용).
 
 ---
 
@@ -130,8 +135,8 @@
 - [x] **SPEC.md 작성**(3렌즈 냉정검수) **+ 이 리포 문서 정합 갱신(2026-07-28)** — CONTRACT/SOURCES/SNAPSHOT을 SPEC 정본에 맞춤.
 
 **대기:**
-- [ ] **크롤 로직 정식 `src/` 구현** ⭐ — 어댑터 31곳·교단 확정·`source_data`/`review_data` 적재·GH Actions.
-- [ ] **Python 이식** — `registry.ts`(31곳 검증값·`fetchNote`) → `config/sources.json` 문자 그대로 · 뼈대 재작성 · TS 잔존물 제거. *(CLAUDE.md·ROADMAP ✅ 작성 완료)*
+- [x] **Python 이식 완료(2026-07-30)** — `config/sources.json`(31곳 문자 그대로) · 도메인/레코드/시각/설정 · Store(프로토콜+JSON) · Gemini 래퍼 · TS 잔재 제거 · 패키지명 `minjob_ingest`. (§3-13)
+- [ ] **크롤 로직 구현** ⭐ — **1-1 진행 중**(fetch 층 ✅ / 어댑터·원장확장·`collect`·관통 남음 → **§10**). 이후 교단 확정(1-3)·31곳 확장(1-4)·Supabase(1-6)·GH Actions(1-7).
 - [~] **min_job 연동**(별도 리포 · SPEC §8) — 2026-07-29 확인: ✅ `job_kind`·`role`·`contact` 타입 반영 · ✅ `KIJANG` 제거(**10키 완료**) · ✅ 가드레일 #1·#3 재정의 + **법률 검토 완료(2026-07-28)** · ✅ min_job ROADMAP 1-10 트랙 생성. **남은 것**: 마이그레이션 SQL · 목록 UI 필터 · `review_data` 검수 브릿지(전부 min_job 소관).
 - [ ] **순복음·ETC 물량 보강 검토** — 순복음 공개 물량 얇음 → `agkdc` 확인, PROK 사망분 대체.
 - [ ] **로그인 소스 법률 게이트** — KMC·AGK·기독신문 인증 크롤 전 변호사 확인 + 계정.
@@ -147,7 +152,7 @@
 0. ✅ **열린 결정 확정** — 스코프·job_kind·교단·연락처·이미지·백필/크론 전부 확정(§6 "이번 세션 확정" · SPEC).
 1. **하네스 문서** — ✅ `CLAUDE.md`·`docs/SPEC.md`·`docs/ROADMAP.md` 완료(전부 다중 검수 반영).
 2. ✅ **Python 이식(0-1a~0-1c) 완료** — 골격·`config/sources.json`(31곳)·도메인/레코드/시각·Store(Protocol+JSON, write-once·검수상태 보존 강제)·Gemini 래퍼(SDK 내장 재시도)·CLI 2명령. 각 단계 리뷰 + mutation 테스트로 검증(전 변형 탐지).
-3. **▶ 다음: Phase 1-1** — `fetch/` 층 + `YTUS` 어댑터 → `source_data` 적재(원장·인코딩·rate limit). 그 다음 1-2 구조화로 **1소스 전 구간 관통**.
+3. **▶ 다음: Phase 1-1의 남은 4단계** — 상세는 **§10**. 요약: ②YTUS 어댑터(파싱) → ③원장 조회 확장(제목·날짜 대조) → ④`collect` 명령+`--dry-run` → ⑤관통+fixture. 그 다음 1-2 구조화로 **1소스 전 구간 관통**.
 4. **데모 → 31곳 확장** — 어댑터 **1개 검증 후 31곳**(§5·§7), **교단 확정 로직(명시/명부/AI추정 `ai_guess` + evidence + 미상 해소)**, JSON → **Supabase(§9 스키마)**는 ROADMAP 1-4·1-3·1-6.
 5. **robots.txt·요청 rate limit 구현**(데모 미구현) · 로그인 소스 법률게이트 · 이미지 공고 처리(Gemini 멀티모달 — pckworld 등).
 
@@ -247,3 +252,57 @@ curl -sL "https://www.ytus.ac.kr/board/list/trXXR" | head   # 영남신대(통�
 - **크롤러 staging 스키마(`source_data`·`review_data`·`source_health`·`crawl_run`)는 `min_job_agent`가 소유·문서화·마이그레이션.** min_job 리포는 건드리지 않는다.
 - **`../min_job/docs/DATA.md`는 최종 output(`churches`/`jobs`) 스키마만 정본.** 크롤러는 그 output 모양에 맞춰 승격만 하고, 그 위 staging 4테이블은 이 리포 소관.
 - 물리적으로는 **min_job Supabase 프로젝트에 함께** 두되(같은 DB라 검수·승격이 단순), **정의·변경 관리는 이 리포**에서. (CONTRACT §3 "크롤러 전용 스테이징 필드"와 정합)
+
+---
+
+## 10. ★ Phase 1-1 현황 (2026-07-30 시점 · 여기서 이어받는다)
+
+> **1-1의 목표**: 게시판 **1곳**에서 공고를 실제로 가져와 원문 그대로 `source_data`에 저장. AI는 안 쓴다. 이게 되면 나머지 30곳은 어댑터를 붙이는 반복 작업(1-4)이 된다.
+
+### 진행
+
+| | 단계 | 상태 | 파일 |
+|---|---|---|---|
+| ① | **fetch 층** (전송 단일 창구) | ✅ **완료** | `fetch/client.py`(282줄) · `fetch/robots.py`(53줄) · `tests/test_fetch_client.py`(30테스트 · mutation 13/13) |
+| ② | **YTUS 어댑터** (파싱만) | ⬜ 다음 | `sources/adapters/ytus.py` |
+| ③ | **원장 조회 확장** | ⬜ | `store/{base,json_store}.py` 수정 |
+| ④ | **`collect` 명령 + `--dry-run`** | ⬜ | `cli.py` · `pipeline/collect.py` |
+| ⑤ | **관통 확인 + fixture** | ⬜ | `tests/fixtures/YTUS/` |
+
+### ① fetch 층이 하는 일 (완료 · 재작업 금지)
+
+모든 HTTP가 여기를 지난다(어댑터·파이프라인의 직접 `httpx` import는 ruff TID251로 금지).
+담당: UA 항상 송신(`spoof_ua`면 브라우저 UA) · **config 인코딩 우선**(EUC-KR→cp949) · 타임아웃 20s ·
+재시도 3회(429·5xx·연결오류만 · 지수 백오프+지터) · 같은 소스 요청 간격 1.5s · 세션 쿠키(`needs_session`) ·
+**본문 길이 하한 200자**(200 OK + 빈 본문을 성공으로 오판하지 않기).
+
+**하지 않는 것**(의도적):
+- `www_required`·`http_only` → 이미 `list_url`에 있고 레지스트리가 로드 시 강제. 상대 URL은 `urljoin`이 물려준다. **코드 넣지 말 것.**
+- robots → `RESPECT_ROBOTS=False`(운영자 판단 §2). 코드는 스위치 뒤에 살아 있다.
+- `soft_200`·`image_only` → 전송이 아니라 **본문 판정**이라 어댑터·파이프라인 몫.
+
+### ② 다음에 할 일 — YTUS 어댑터
+
+`list_postings(opts) → [PostingRef]` + `fetch_posting(ref) → RawPosting` 두 함수뿐. **네트워크를 만지지 않는다.**
+
+YTUS 실측값(`config/sources.json`이 정본):
+```
+목록   https://www.ytus.ac.kr/board/list/trXXR      pagination /board/list/trXXR/page/{n}
+상세   /board/view/trXXR/{id}                       id = 경로 끝 숫자
+공지   .notice-row  → 제외(고정공지는 수집 대상 아님)
+```
+
+⚠️ **시작 전에 필요한 것**: YTUS 목록 HTML 실물. 받아서 `tests/fixtures/YTUS/list.html`로 저장한 뒤 파싱은 오프라인으로 반복한다(가드레일 #7 — 개발 중 반복 요청 금지). 운영자가 직접 받아 주거나, 에이전트가 검증 목적 1~2건 요청.
+
+### ③④⑤ 설계 결정 (이미 확정 · SPEC §10에 기록)
+
+- **`external_id` 중복은 에러** — 단 "한 실행 안"만 본다. 실행 간 충돌은 **제목·날짜 대조**로 잡는다(추가 요청 0건: 목록 값 ↔ 저장된 `raw_meta.list_title`·`list_date`). 그래서 ③에서 원장 조회가 `{id: (제목, 날짜)}`를 돌려주게 바꾼다.
+- **`--dry-run`이 출력할 것**: 행 수 · 공지 제외 수 · **external_id 중복 수** · 게시일 범위 · 원장 신규 수 · 샘플 3건. 31곳 파싱 검증의 도구다.
+- **3개월 컷오프 = 목록의 게시일**(구조화 전이라 `posted_at` 없음). 날짜 없는 소스는 `--pages N` 폴백. 페이지 수는 `--pages` > config > 기본 3 + "새 글 없는 페이지 만나면 종료".
+- **수집(무료)과 구조화(유료)는 별도 명령** — 파싱이 틀린 채 수백 건을 Gemini에 보내면 되돌릴 수 없다.
+
+### 미해결 (집에서 결정할 것)
+
+- [ ] **`Crawl-delay`도 무시할지** — `Disallow`는 선호지만 `Crawl-delay`는 "서버가 이 속도를 못 받는다"는 **부하 신호**다. 현재 robots.txt를 아예 안 받으므로 함께 무시된다. 고정 1.5s로 충분할 가능성이 크지만, 차단당하면 이게 원인일 수 있다. 되돌리기 = `RESPECT_ROBOTS=True` 한 줄.
+- [ ] **Scrapy 도입 여부** — 마지막 갈림길이었고 `fetch/`를 직접 쓰기로 진행했다(에이전트 권고 = 현 구조 유지: 수집·구조화가 다른 배치라 Scrapy의 item pipeline과 결이 다르고, mypy strict와 충돌). **사실상 결정됨** — 되돌리려면 지금이 마지막.
+- [ ] **`collect --save-fixture`** — 가드레일 #7이 "테스트는 fixture로"를 요구하는데 fixture를 **만드는 수단이 아키텍처에 없다**. ROADMAP 1-1에 항목으로 추가됨.
