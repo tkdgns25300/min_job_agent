@@ -2,12 +2,39 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
-from minjob_agent.paths import DEFAULT_DATA_DIR, DEFAULT_SOURCES_PATH, PROJECT_ROOT
-from minjob_agent.settings import ENV_DATA_DIR, ENV_SOURCES, Settings, env_str
+from minjob_agent.paths import (
+    DEFAULT_DATA_DIR,
+    DEFAULT_DOTENV_PATH,
+    DEFAULT_SOURCES_PATH,
+    PROJECT_ROOT,
+)
+from minjob_agent.settings import (
+    DEFAULT_VERTEX_LOCATION,
+    DEFAULT_VERTEX_MODEL,
+    ENV_DATA_DIR,
+    ENV_SOURCES,
+    ENV_VERTEX_CLIENT_EMAIL,
+    ENV_VERTEX_LOCATION,
+    ENV_VERTEX_MODEL,
+    ENV_VERTEX_PRIVATE_KEY,
+    ENV_VERTEX_PROJECT,
+    Settings,
+    VertexConfigError,
+    env_str,
+)
+
+_VERTEX_ENV_NAMES = (
+    ENV_VERTEX_PROJECT,
+    ENV_VERTEX_LOCATION,
+    ENV_VERTEX_CLIENT_EMAIL,
+    ENV_VERTEX_PRIVATE_KEY,
+    ENV_VERTEX_MODEL,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -15,6 +42,8 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """실제 셸 환경이 새지 않게 격리한다. `.env`는 `dotenv_path=None`으로 차단한다."""
     monkeypatch.delenv(ENV_DATA_DIR, raising=False)
     monkeypatch.delenv(ENV_SOURCES, raising=False)
+    for name in _VERTEX_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
 
 
 def _load(*, data_dir: Path | None = None, sources_path: Path | None = None) -> Settings:
@@ -97,10 +126,86 @@ def test_env_names_are_documented_in_env_example() -> None:
         for line in (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
         if "=" in line and not line.lstrip().startswith("#")
     }
-    assert {ENV_DATA_DIR, ENV_SOURCES} <= documented
+    assert {ENV_DATA_DIR, ENV_SOURCES, *_VERTEX_ENV_NAMES} <= documented
 
 
 def test_settings_is_frozen() -> None:
     settings = _load()
     with pytest.raises(AttributeError):
         settings.data_dir = Path("/tmp/nope")  # type: ignore[misc]
+
+
+# ── Vertex 설정 ──────────────────────────────────────────────────
+
+
+def _set_vertex(monkeypatch: pytest.MonkeyPatch, **overrides: str) -> None:
+    values = {
+        ENV_VERTEX_PROJECT: "test-project",
+        ENV_VERTEX_CLIENT_EMAIL: "crawler@test.iam.gserviceaccount.com",
+        ENV_VERTEX_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\\nAAA\\n-----END PRIVATE KEY-----\\n",
+        **overrides,
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+def test_require_vertex_lists_every_missing_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 하나씩 알려주면 운영자가 세 번 실행해야 한다 → 빠진 것 전부를 한 번에 말한다.
+    monkeypatch.setenv(ENV_VERTEX_PROJECT, "test-project")
+    with pytest.raises(VertexConfigError) as caught:
+        _load().require_vertex()
+    message = str(caught.value)
+    assert ENV_VERTEX_CLIENT_EMAIL in message
+    assert ENV_VERTEX_PRIVATE_KEY in message
+    assert ENV_VERTEX_PROJECT not in message
+
+
+def test_require_vertex_treats_blank_as_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """값을 지운 `.env`(`KEY=`)를 통과시키면 인증 오류가 호출 시점에야 터진다.
+
+    빈 값도 **전부 한 번에** 보고해야 한다 — 하나씩 알려주면 운영자가 여러 번 실행한다.
+    """
+    _set_vertex(monkeypatch, **{ENV_VERTEX_PROJECT: "   ", ENV_VERTEX_CLIENT_EMAIL: ""})
+    with pytest.raises(VertexConfigError) as caught:
+        _load().require_vertex()
+    message = str(caught.value)
+    assert ENV_VERTEX_PROJECT in message
+    assert ENV_VERTEX_CLIENT_EMAIL in message
+
+
+def test_require_vertex_applies_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_vertex(monkeypatch)
+    vertex = _load().require_vertex()
+    assert vertex.location == DEFAULT_VERTEX_LOCATION
+    assert vertex.model == DEFAULT_VERTEX_MODEL
+
+
+def test_require_vertex_restores_pem_newlines(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `.env`는 개행을 리터럴 `\n`으로 담는다 — PEM으로 복원되지 않으면 인증이 실패한다.
+    _set_vertex(monkeypatch)
+    vertex = _load().require_vertex()
+    assert vertex.private_key.startswith("-----BEGIN PRIVATE KEY-----\n")
+    assert "\\n" not in vertex.private_key
+
+
+def test_vertex_repr_masks_the_private_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """트레이스백·디버그 로그에 비밀키 전문이 찍히면 안 된다(가드레일)."""
+    _set_vertex(monkeypatch)
+    vertex = _load().require_vertex()
+    assert "AAA" not in repr(vertex)
+    assert "BEGIN PRIVATE KEY" not in repr(vertex)
+    assert vertex.project_id in repr(vertex)  # 진단에 필요한 값은 남는다
+
+
+@pytest.mark.skipif(
+    not DEFAULT_DOTENV_PATH.is_file(), reason="리포에 `.env`가 없으면 유출 위험 자체가 없다"
+)
+def test_conftest_blocks_the_operator_dotenv() -> None:
+    """`tests/conftest.py`의 차단이 살아 있는지 확인한다.
+
+    이 차단이 풀리면 `Settings.load()`를 지나는 어떤 테스트든 운영자 서비스계정 키를
+    `os.environ`에 들이고, `check-gemini` 경로를 타는 순간 **유료 API를 실제로 호출**한다.
+    차단은 conftest에 있어 스스로는 검증되지 않으므로 여기서 감시한다.
+    """
+    Settings.load()  # 인자 없음 = 리포 루트 `.env`를 읽으려는 경로
+    assert os.environ.get(ENV_VERTEX_PRIVATE_KEY) is None

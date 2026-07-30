@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
 import pytest
 
-from minjob_agent.cli import main
+from minjob_agent.cli import _dispatch, main
+from minjob_agent.lib import gemini
+from minjob_agent.settings import (
+    ENV_VERTEX_CLIENT_EMAIL,
+    ENV_VERTEX_PRIVATE_KEY,
+    ENV_VERTEX_PROJECT,
+)
 
 
 def _write_config(tmp_path: Path, *, enabled: bool = True) -> Path:
@@ -77,3 +84,35 @@ def test_requires_a_subcommand() -> None:
     with pytest.raises(SystemExit) as exc:
         main([])
     assert exc.value.code == 2
+
+
+def test_unknown_subcommand_is_rejected_by_the_parser() -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["crawl-everything"])
+    assert exc.value.code == 2
+
+
+def test_unwired_subcommand_crashes_instead_of_succeeding() -> None:
+    """서브파서만 추가하고 `_dispatch` 연결을 잊었을 때 조용히 0을 반환하면 안 된다."""
+    with pytest.raises(RuntimeError, match="연결되지 않았다"):
+        _dispatch(argparse.Namespace(command="not-wired"))
+
+
+def test_check_gemini_reports_missing_config_without_calling_the_api(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """설정이 비면 실호출 전에 멈춘다.
+
+    ⚠️ 이 테스트가 실제 `.env`를 읽어버리면 운영자 자격증명으로 **유료 API를 호출**한다.
+    빈 문자열을 넣어두면 `load_dotenv(override=False)`가 덮어쓰지 못하므로
+    (`os.environ`에 키가 이미 존재), 리포에 `.env`가 있든 없든 결과가 같다.
+    """
+    for name in (ENV_VERTEX_PROJECT, ENV_VERTEX_CLIENT_EMAIL, ENV_VERTEX_PRIVATE_KEY):
+        monkeypatch.setenv(name, "")
+
+    def fail_if_called(_settings: object) -> object:  # pragma: no cover - 불려선 안 된다
+        raise AssertionError("설정 검증 전에 Gemini 클라이언트를 만들었다")
+
+    monkeypatch.setattr(gemini, "build_client", fail_if_called)
+    assert main(["check-gemini"]) == 1
+    assert "Vertex 설정 오류" in capsys.readouterr().err

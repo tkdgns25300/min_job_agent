@@ -7,8 +7,7 @@ name = "minjob-agent"
 version = "0.0.0"
 description = "교역자 청빙 공고 수집 크롤러 (min_job 리뷰 큐 적재)"
 requires-python = ">=3.12"
-# google-genai는 0-1c(Gemini 래퍼)에서 추가.
-dependencies = ["python-dotenv>=1.0"]
+dependencies = ["python-dotenv>=1.0", "google-genai>=1.0"]
 
 [project.optional-dependencies]
 dev = ["ruff>=0.6", "mypy>=1.11", "pytest>=8.0"]
