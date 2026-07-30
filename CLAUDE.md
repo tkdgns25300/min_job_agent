@@ -74,7 +74,7 @@ pipeline → Store(프로토콜) → [Phase 1] JsonStore(로컬) → [1-6] Supab
 **flat 레이아웃** — 패키지가 리포 루트에 있고 `src/` 껍데기를 두지 않는다. `src` 레이아웃은 PyPI에 올리는 **배포 라이브러리** 권장 배치이고, 우리는 **리포에서 그대로 실행하는 앱**이다(운영자가 CLI 실행 · `config/`·`data/`가 코드 옆). 앱에 `src/`를 끼우면 `config/` 경로 계산만 한 단계 깊어지고 얻는 게 없다.
 
 ```
-minjob_agent/                 ★ 패키지 (= import 이름)
+minjob_ingest/                 ★ 패키지 (= import 이름)
 ├── cli.py                    진입점 (운영자가 실행하는 창구)
 ├── domain.py                 enum — CONTRACT §1 계약 미러 + 크롤러 enum
 ├── models.py                 레코드 dataclass — SPEC §6 4테이블
@@ -95,7 +95,7 @@ data/                         로컬 저장소 (gitignored)
 
 > ⚠️ 위 트리에서 `sources/adapters`·`fetch`·`pipeline`·`store`·`lib`는 **아직 없는 목표 구조**다. 드리프트할 수 있으니 "계약"으로 신뢰하지 말 것.
 >
-> **커밋하지 않는 자동생성물**: `.venv/`·`__pycache__/`·`minjob_agent.egg-info/`(pip 메타데이터)·`.mypy_cache/`·`.ruff_cache/`·`.pytest_cache/`·`data/`. 전부 `.gitignore`에 있다 — 지워도 도구가 다시 만든다.
+> **커밋하지 않는 자동생성물**: `.venv/`·`__pycache__/`·`minjob_ingest.egg-info/`(pip 메타데이터)·`.mypy_cache/`·`.ruff_cache/`·`.pytest_cache/`·`data/`. 전부 `.gitignore`에 있다 — 지워도 도구가 다시 만든다.
 >
 
 ## Commands
@@ -114,8 +114,8 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 
 **실행**
 ```bash
-.venv/bin/minjob-agent list-sources [KEY]   # 등록 소스 확인 (네트워크 없음)
-.venv/bin/minjob-agent check-gemini         # Vertex 인증·연결 (유료 API 실호출 1회)
+.venv/bin/minjob-ingest list-sources [KEY]   # 등록 소스 확인 (네트워크 없음)
+.venv/bin/minjob-ingest check-gemini         # Vertex 인증·연결 (유료 API 실호출 1회)
 ```
 아직 없는 명령(Phase 1): `daily`·`backfill`.
 
@@ -124,7 +124,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 
 ### Registry (`sources/registry.py` + `config/sources.json`)
 - **"어떻게 접속하나"를 데이터로** 보유. 코드에 URL·셀렉터·페이지 파라미터를 하드코딩하지 않는다.
-- 현재 필드(= `minjob_agent/sources/registry.py`): `key`(대문자) · `board_name` · `denomination_hint`(참고, 확정 아님·null 가능) · `enabled` · `fetch_tier` · `encoding` · `flags` · `list_url` · `detail_pattern`(`{id}` 치환) · `fetch_note`.
+- 현재 필드(= `minjob_ingest/sources/registry.py`): `key`(대문자) · `board_name` · `denomination_hint`(참고, 확정 아님·null 가능) · `enabled` · `fetch_tier` · `encoding` · `flags` · `list_url` · `detail_pattern`(`{id}` 치환) · `fetch_note`.
   - `flags`: `www_required` · `http_only` · `spoof_ua`(브라우저 UA 필수) · `insecure_tls` · `needs_session`(상세가 쿠키 요구) · `image_only`(본문이 이미지 — 빈 raw_text가 정상) · `soft_200`(잘못된 요청에도 200 → 본문으로 검증).
   - **이식 시 추가 예정**: `disabled_reason` · `page_param` · `notice_marker` — 지금은 `fetch_note` 산문에만 있다(구조화하면 어댑터가 코드로 안 들고 있게 된다).
 - **로드 시 검증**(스타트업 assert + 테스트): key 대문자·유일 · `denomination_hint ∈ CONTRACT §1 ∪ {null}` · `flags` 키 화이트리스트 · `detail_pattern`이 있으면 `{id}` 포함. ⚠️ **예외 2곳**: `CSU`(API 호출이라 URL 템플릿 없음) · `HANSEI`(경로에 카테고리 id가 끼어 목록 href를 그대로 사용) — 사유는 `fetch_note`에.
@@ -213,7 +213,7 @@ min_job 가드레일을 승계·구체화한다. 근거는 SPEC·CONTRACT·min_j
 - 공유 타입·enum은 `domain.py`·`models.py`. 한 모듈 전용 타입은 파일 상단.
 
 **Imports**
-- 패키지 내부는 절대 import(`from minjob_agent.fetch import client`). 상대 import는 같은 서브패키지 내에서만.
+- 패키지 내부는 절대 import(`from minjob_ingest.fetch import client`). 상대 import는 같은 서브패키지 내에서만.
 
 ## Git Workflow
 

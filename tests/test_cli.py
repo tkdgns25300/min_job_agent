@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from minjob_agent.cli import _dispatch, main
-from minjob_agent.lib import gemini
-from minjob_agent.settings import (
+from minjob_ingest.cli import _dispatch, main
+from minjob_ingest.lib import gemini
+from minjob_ingest.settings import (
     ENV_VERTEX_CLIENT_EMAIL,
     ENV_VERTEX_PRIVATE_KEY,
     ENV_VERTEX_PROJECT,

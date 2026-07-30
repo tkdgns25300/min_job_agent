@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-#: <repo>/  — 이 파일이 minjob_agent/paths.py이므로 한 단계 위.
+#: <repo>/  — 이 파일이 minjob_ingest/paths.py이므로 한 단계 위.
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 
 #: 소스 레지스트리 config(커밋 대상).

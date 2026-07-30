@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from minjob_agent.domain import Denomination, Encoding, FetchTier
-from minjob_agent.sources.registry import (
+from minjob_ingest.domain import Denomination, Encoding, FetchTier
+from minjob_ingest.sources.registry import (
     ConfigError,
     SourceConfig,
     detail_url,
@@ -372,7 +372,7 @@ def test_error_message_names_the_source_key(tmp_path: Path) -> None:
 
 
 def test_denomination_publishable_excludes_unknown() -> None:
-    from minjob_agent.domain import PUBLISHABLE_DENOMINATIONS
+    from minjob_ingest.domain import PUBLISHABLE_DENOMINATIONS
 
     assert Denomination.UNKNOWN not in PUBLISHABLE_DENOMINATIONS
     # 순서가 고정돼야 프롬프트·메시지 출력이 실행마다 흔들리지 않는다.

@@ -12,9 +12,9 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from minjob_agent.lib.gemini import GeminiClient, GeminiError
-from minjob_agent.settings import Settings, VertexConfigError
-from minjob_agent.sources.registry import (
+from minjob_ingest.lib.gemini import GeminiClient, GeminiError
+from minjob_ingest.settings import Settings, VertexConfigError
+from minjob_ingest.sources.registry import (
     ConfigError,
     SourceConfig,
     enabled_sources,
@@ -22,7 +22,7 @@ from minjob_agent.sources.registry import (
     load_sources,
 )
 
-_PROGRAM = "minjob-agent"
+_PROGRAM = "minjob-ingest"
 _LIST_SOURCES = "list-sources"
 _CHECK_GEMINI = "check-gemini"
 _ENABLED_MARKER = "●"

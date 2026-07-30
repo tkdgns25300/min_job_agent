@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
-from minjob_agent.clock import (
+from minjob_ingest.clock import (
     ensure_utc,
     parse_iso,
     parse_iso_date,

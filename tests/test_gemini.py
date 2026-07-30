@@ -1,7 +1,7 @@
 """Gemini 래퍼 테스트 — 네트워크·실호출 없음(가드레일 #10).
 
 SDK 클라이언트 생성(`build_client`)을 가짜로 바꿔 호출 경로를 검증한다. 실제 인증·연결은
-운영자가 `minjob-agent check-gemini`로 확인한다.
+운영자가 `minjob-ingest check-gemini`로 확인한다.
 """
 
 from __future__ import annotations
@@ -12,15 +12,15 @@ import pytest
 from google.genai import types
 from google.oauth2 import service_account
 
-from minjob_agent.lib import gemini
-from minjob_agent.lib.gemini import (
+from minjob_ingest.lib import gemini
+from minjob_ingest.lib.gemini import (
     GeminiClient,
     GeminiError,
     build_client,
     require_text,
     smoke_config,
 )
-from minjob_agent.settings import VertexConfigError, VertexSettings
+from minjob_ingest.settings import VertexConfigError, VertexSettings
 
 _SETTINGS = VertexSettings(
     project_id="test-project",

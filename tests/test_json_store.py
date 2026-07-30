@@ -14,7 +14,7 @@ from uuid import UUID
 
 import pytest
 
-from minjob_agent.domain import (
+from minjob_ingest.domain import (
     Confidence,
     CrawlMode,
     Denomination,
@@ -23,10 +23,16 @@ from minjob_agent.domain import (
     ReviewStatus,
     SourceHealthStatus,
 )
-from minjob_agent.models import MAX_STRUCTURE_ATTEMPTS, ReviewData, SourceData, SourceHealth, new_id
-from minjob_agent.store.base import Store, StoreError
-from minjob_agent.store.json_store import _MUTABLE_STATE_FIELDS, FILE_VERSION, JsonStore
-from minjob_agent.store.serde import SerdeError, to_row
+from minjob_ingest.models import (
+    MAX_STRUCTURE_ATTEMPTS,
+    ReviewData,
+    SourceData,
+    SourceHealth,
+    new_id,
+)
+from minjob_ingest.store.base import Store, StoreError
+from minjob_ingest.store.json_store import _MUTABLE_STATE_FIELDS, FILE_VERSION, JsonStore
+from minjob_ingest.store.serde import SerdeError, to_row
 
 FIXED_NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
 
@@ -486,7 +492,7 @@ def test_failed_write_keeps_the_old_file_and_cleans_up(
     def disk_full(_descriptor: int) -> None:
         raise OSError("디스크가 꽉 찼다")
 
-    monkeypatch.setattr("minjob_agent.store.json_store.os.fsync", disk_full)
+    monkeypatch.setattr("minjob_ingest.store.json_store.os.fsync", disk_full)
     with pytest.raises(OSError, match="디스크"):
         store.save_source_data(_source_data("2"))
 

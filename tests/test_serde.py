@@ -14,7 +14,7 @@ from uuid import UUID
 
 import pytest
 
-from minjob_agent.domain import (
+from minjob_ingest.domain import (
     Confidence,
     CrawlMode,
     Denomination,
@@ -30,7 +30,7 @@ from minjob_agent.domain import (
     SourceHealthStatus,
     StipendPeriod,
 )
-from minjob_agent.models import (
+from minjob_ingest.models import (
     REVIEW_STATE_FIELDS,
     CrawlRun,
     ReviewData,
@@ -38,7 +38,7 @@ from minjob_agent.models import (
     SourceHealth,
     new_id,
 )
-from minjob_agent.store.serde import (
+from minjob_ingest.store.serde import (
     SerdeError,
     ledger_key_of_row,
     row_to_crawl_run,

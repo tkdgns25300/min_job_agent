@@ -18,8 +18,8 @@ from enum import StrEnum
 from pathlib import Path
 from urllib.parse import SplitResult, urlsplit
 
-from minjob_agent.domain import Denomination, Encoding, FetchTier, normalize_source_key
-from minjob_agent.paths import DEFAULT_SOURCES_PATH
+from minjob_ingest.domain import Denomination, Encoding, FetchTier, normalize_source_key
+from minjob_ingest.paths import DEFAULT_SOURCES_PATH
 
 _ID_PLACEHOLDER = "{id}"
 _PLACEHOLDER_PATTERN = re.compile(r"\{[^}]*\}")

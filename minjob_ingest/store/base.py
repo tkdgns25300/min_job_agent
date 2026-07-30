@@ -21,8 +21,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from minjob_agent.domain import CrawlMode
-from minjob_agent.models import CrawlRun, ReviewData, SourceData, SourceHealth
+from minjob_ingest.domain import CrawlMode
+from minjob_ingest.models import CrawlRun, ReviewData, SourceData, SourceHealth
 
 
 class StoreError(Exception):

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from minjob_agent.domain import (
+from minjob_ingest.domain import (
     PUBLISHABLE_DENOMINATIONS,
     Confidence,
     CrawlMode,

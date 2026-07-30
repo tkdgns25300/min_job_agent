@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from dotenv import load_dotenv
 
-from minjob_agent.paths import DEFAULT_DOTENV_PATH
+from minjob_ingest.paths import DEFAULT_DOTENV_PATH
 
 
 @pytest.fixture(autouse=True)
@@ -25,4 +25,4 @@ def _block_the_operator_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
         return load_dotenv(dotenv_path=dotenv_path, override=override)
 
     # 문자열 타깃 — `settings`는 `load_dotenv`를 재export하지 않는다(strict no_implicit_reexport).
-    monkeypatch.setattr("minjob_agent.settings.load_dotenv", guarded)
+    monkeypatch.setattr("minjob_ingest.settings.load_dotenv", guarded)

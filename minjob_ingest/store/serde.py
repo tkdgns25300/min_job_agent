@@ -31,8 +31,8 @@ from enum import StrEnum
 from types import MappingProxyType
 from uuid import UUID
 
-from minjob_agent.clock import parse_iso, parse_iso_date, to_iso, to_iso_date
-from minjob_agent.domain import (
+from minjob_ingest.clock import parse_iso, parse_iso_date, to_iso, to_iso_date
+from minjob_ingest.domain import (
     Confidence,
     CrawlMode,
     Denomination,
@@ -48,7 +48,7 @@ from minjob_agent.domain import (
     SourceHealthStatus,
     StipendPeriod,
 )
-from minjob_agent.models import CrawlRun, JsonValue, ReviewData, SourceData, SourceHealth
+from minjob_ingest.models import CrawlRun, JsonValue, ReviewData, SourceData, SourceHealth
 
 #: 이 모듈이 다루는 레코드들.
 type StagingRecord = SourceData | ReviewData | SourceHealth | CrawlRun

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from minjob_agent.paths import DEFAULT_DATA_DIR, DEFAULT_DOTENV_PATH, DEFAULT_SOURCES_PATH
+from minjob_ingest.paths import DEFAULT_DATA_DIR, DEFAULT_DOTENV_PATH, DEFAULT_SOURCES_PATH
 
 ENV_DATA_DIR = "MINJOB_DATA_DIR"
 ENV_SOURCES = "MINJOB_SOURCES"

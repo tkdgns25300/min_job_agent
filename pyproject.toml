@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "minjob-agent"
+name = "minjob-ingest"
 version = "0.0.0"
 description = "교역자 청빙 공고 수집 크롤러 (min_job 리뷰 큐 적재)"
 requires-python = ">=3.12"
@@ -13,12 +13,12 @@ dependencies = ["python-dotenv>=1.0", "google-genai>=1.0"]
 dev = ["ruff>=0.6", "mypy>=1.11", "pytest>=8.0"]
 
 [project.scripts]
-minjob-agent = "minjob_agent.cli:main"
+minjob-ingest = "minjob_ingest.cli:main"
 
 # flat 레이아웃(패키지가 리포 루트에) — 배포 라이브러리가 아니라 리포에서 실행하는 앱이라
 # `src/` 껍데기를 두지 않는다. 자동 탐색이 config·docs·tests를 패키지로 오인하지 않게 명시한다.
 [tool.setuptools.packages.find]
-include = ["minjob_agent*"]
+include = ["minjob_ingest*"]
 
 [tool.ruff]
 line-length = 100
@@ -31,18 +31,18 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RET", "ARG", "PTH", "RUF", "TID", "D
 # 가드레일을 규칙으로 굳힌다: HTTP 클라이언트는 fetch 층만 만든다(CLAUDE.md Fetch).
 # 어댑터·파이프라인이 직접 요청을 보내면 UA·인코딩·rate limit·robots가 우회된다.
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"httpx".msg = "HTTP는 minjob_agent.fetch 층만 만든다(CLAUDE.md Fetch)."
-"requests".msg = "HTTP는 minjob_agent.fetch 층만 만든다(CLAUDE.md Fetch)."
-"urllib.request".msg = "HTTP는 minjob_agent.fetch 층만 만든다(CLAUDE.md Fetch)."
+"httpx".msg = "HTTP는 minjob_ingest.fetch 층만 만든다(CLAUDE.md Fetch)."
+"requests".msg = "HTTP는 minjob_ingest.fetch 층만 만든다(CLAUDE.md Fetch)."
+"urllib.request".msg = "HTTP는 minjob_ingest.fetch 층만 만든다(CLAUDE.md Fetch)."
 
 [tool.ruff.lint.per-file-ignores]
 # fetch 층 자체와 그 테스트는 당연히 HTTP 클라이언트를 쓴다.
-"minjob_agent/fetch/*" = ["TID251"]
+"minjob_ingest/fetch/*" = ["TID251"]
 "tests/test_fetch*" = ["TID251"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["minjob_agent", "tests"]
+files = ["minjob_ingest", "tests"]
 strict = true
 # 잘못된 상태를 타입으로 막는다(CLAUDE.md Clean Code) — Any 유입 차단.
 disallow_any_explicit = true

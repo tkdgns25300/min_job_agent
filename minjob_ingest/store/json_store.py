@@ -20,11 +20,11 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Final
 
-from minjob_agent.clock import utc_now
-from minjob_agent.domain import CrawlMode, ReviewStatus, normalize_source_key
-from minjob_agent.models import CrawlRun, ReviewData, SourceData, SourceHealth
-from minjob_agent.store.base import StoreError
-from minjob_agent.store.serde import (
+from minjob_ingest.clock import utc_now
+from minjob_ingest.domain import CrawlMode, ReviewStatus, normalize_source_key
+from minjob_ingest.models import CrawlRun, ReviewData, SourceData, SourceHealth
+from minjob_ingest.store.base import StoreError
+from minjob_ingest.store.serde import (
     Row,
     SerdeError,
     ledger_key_of_row,

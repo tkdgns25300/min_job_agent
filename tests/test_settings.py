@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from minjob_agent.paths import (
+from minjob_ingest.paths import (
     DEFAULT_DATA_DIR,
     DEFAULT_DOTENV_PATH,
     DEFAULT_SOURCES_PATH,
     PROJECT_ROOT,
 )
-from minjob_agent.settings import (
+from minjob_ingest.settings import (
     DEFAULT_VERTEX_LOCATION,
     DEFAULT_VERTEX_MODEL,
     ENV_DATA_DIR,

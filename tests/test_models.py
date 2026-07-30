@@ -12,8 +12,8 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
-from minjob_agent.clock import utc_now
-from minjob_agent.domain import (
+from minjob_ingest.clock import utc_now
+from minjob_ingest.domain import (
     Confidence,
     CrawlMode,
     Denomination,
@@ -22,7 +22,7 @@ from minjob_agent.domain import (
     ReviewStatus,
     SourceHealthStatus,
 )
-from minjob_agent.models import (
+from minjob_ingest.models import (
     MAX_DESCRIPTION_CHARS,
     MAX_STRUCTURE_ATTEMPTS,
     CrawlRun,

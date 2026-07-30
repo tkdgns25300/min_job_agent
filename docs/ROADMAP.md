@@ -24,7 +24,7 @@
 ### 0-1. Python 이식 (스택 변경 후속 · Phase 1 선행)
 - [x] **0-1a** 프로젝트 골격 + `config/sources.json`(31곳 기계 변환) + `domain.py` + `cli list-sources` — 검수 2회 반영
 - [x] **0-1b-1** `paths.py`·`clock.py`(UTC·date 단일 창구)·`models.py`(SPEC §6 4레코드)·`settings.py` — 검수 2회 + 검증 패스 반영
-- [x] **flat 레이아웃 확정** — 패키지를 `minjob_agent/`(리포 루트)로. `src/` 껍데기는 배포 라이브러리용이라 앱에는 불필요(CLAUDE.md Directory)
+- [x] **flat 레이아웃 확정** — 패키지를 `minjob_ingest/`(리포 루트)로. `src/` 껍데기는 배포 라이브러리용이라 앱에는 불필요(CLAUDE.md Directory)
 - [x] **0-1b-2** `store/{base,serde,json_store}.py` — Store 프로토콜 + JSON 구현(원자적 쓰기·행별 격리 읽기·write-once 강제·검수 상태 보존) — 검수 + mutation 테스트 20/20 반영
 - [x] **0-1c** `lib/gemini.py`(SDK 내장 재시도·타임아웃 설정 사용) + `cli check-gemini` + **TS 잔존물 제거 완료**
 - [x] 툴체인 — venv+pip(uv 미설치) · ruff(+DTZ·TID) · mypy strict · pytest

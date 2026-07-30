@@ -16,8 +16,8 @@
 python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 cp .env.example .env                        # Vertex(Gemini) 서비스계정 값 입력
 
-.venv/bin/minjob-agent list-sources [KEY]   # 등록 소스 확인 (예: … YTUS)
-.venv/bin/minjob-agent check-gemini         # Vertex 인증 스모크 (실호출 1회)
+.venv/bin/minjob-ingest list-sources [KEY]   # 등록 소스 확인 (예: … YTUS)
+.venv/bin/minjob-ingest check-gemini         # Vertex 인증 스모크 (실호출 1회)
 ```
 
 **커밋 전 게이트 — 4개 전부 통과**

@@ -22,7 +22,7 @@ from google import genai
 from google.genai import types
 from google.oauth2 import service_account
 
-from minjob_agent.settings import VertexConfigError, VertexSettings
+from minjob_ingest.settings import VertexConfigError, VertexSettings
 
 _LOG = logging.getLogger(__name__)
 

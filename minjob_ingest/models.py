@@ -21,8 +21,8 @@ from math import isfinite
 from types import MappingProxyType
 from uuid import UUID, uuid4
 
-from minjob_agent.clock import ensure_utc, require_plain_date, utc_now
-from minjob_agent.domain import (
+from minjob_ingest.clock import ensure_utc, require_plain_date, utc_now
+from minjob_ingest.domain import (
     Confidence,
     CrawlMode,
     Denomination,
