@@ -7,7 +7,7 @@ name = "minjob-ingest"
 version = "0.0.0"
 description = "교역자 청빙 공고 수집 크롤러 (min_job 리뷰 큐 적재)"
 requires-python = ">=3.12"
-dependencies = ["python-dotenv>=1.0", "google-genai>=1.0"]
+dependencies = ["python-dotenv>=1.0", "google-genai>=1.0", "httpx>=0.27", "beautifulsoup4>=4.12", "lxml>=5.0"]
 
 [project.optional-dependencies]
 dev = ["ruff>=0.6", "mypy>=1.11", "pytest>=8.0"]

@@ -81,11 +81,12 @@ minjob_ingest/                 ★ 패키지 (= import 이름)
 ├── clock.py                  UTC·ISO8601·date 생성/직렬화 단일 창구
 ├── paths.py                  리포 기준 경로 (한 곳에서만 계산)
 ├── settings.py               env 로딩 1곳 (import 시점 캡처 금지)
-├── sources/{registry.py, adapters/}
-├── fetch/{client.py, session.py}
-├── pipeline/{run.py, collect.py, structure.py, denomination.py, dedup.py}
-├── store/{base.py, json_store.py, supabase_store.py}
-└── lib/gemini.py             Vertex 클라이언트 + 재시도
+├── sources/registry.py       소스 레지스트리 로드·검증  (+ adapters/ 예정 = 게시판별 파싱)
+├── fetch/{client.py, robots.py}   전송 단일 창구 · robots 준수
+├── store/{base.py, serde.py, json_store.py}   Store 프로토콜 · 행 변환 · JSON 구현
+│                                              (+ supabase_store.py 예정 = 1-6)
+├── lib/gemini.py             Vertex 클라이언트 (재시도는 SDK 설정)
+└── pipeline/ 예정            run·collect·structure·denomination·dedup
 config/
 ├── sources.json              ★ 소스 레지스트리 (전송 정본 · 라이브 검증값)
 └── heresy-ref.json           이단 참고 목록 (사람이 관리 · git 이력 = 감사)
@@ -145,7 +146,9 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 - 정책은 SPEC §3, 소스별 값은 config. 이 층이 단독 구현한다: UA(**항상 비어있지 않은 UA 송신**, `spoof_ua`면 브라우저 UA) · `encoding` **config 값 우선**(서버 헤더가 틀린 보드가 있음 · 미지정 시 자동감지) · 타임아웃 · 재시도 · rate limit · robots `Disallow` · 세션 쿠키(`needs_session`).
 - **동시성은 SPEC §3이 정본**: **소스 간 병렬 · 소스 내 순차** — 한 호스트에는 항상 요청 1개만 흐른다(그래서 31곳 동시 실행이 예의에 어긋나지 않는다). 자원 보호용 상한이 필요하면 **정책이 아니라 실행 옵션**으로 둔다.
 - **기본값(config 미지정 시)**: 요청 타임아웃 **20s** · 재시도 **3회**(지수 백오프+지터, 429·5xx·연결오류) · 같은 소스 요청 간격 **≥1.5s** · 목록 페이지 데일리 **≤3p**. 상수는 모듈 상단에 둔다.
-- **성공을 상태코드만으로 판정하지 않는다** — 본문 내용으로 검증한다(일부 보드는 잘못된 요청에도 200을 준다 · `soft_200`).
+- **성공을 상태코드만으로 판정하지 않는다** — 본문 내용으로 검증한다(일부 보드는 잘못된 요청에도 200을 준다 · `soft_200`). 전송 층은 **본문 길이 하한**으로 스텁 응답을 걸러내고, 내용 수준 판정은 어댑터가 한다.
+- **`www_required`·`http_only`는 이 층에 코드가 없다** — 두 값은 이미 `list_url`에 반영돼 있고 레지스트리가 로드 시 강제하며, 상대 URL은 `urljoin`이 호스트·스킴을 물려준다. 아무 일도 안 하는 코드를 만들지 않는다.
+- **robots**: `RESPECT_ROBOTS = False`(운영자 판단 2026-07-30) — robots.txt를 **요청조차 하지 않는다**. 켜면 호스트당 한 번 받아 `Disallow`는 `RobotsDisallowed`(=`FetchError`)로 던지고(조용히 skip하지 않는다), 못 가져오면 "제한 없음"으로 진행하고, `Crawl-delay`가 기본 간격보다 크면 사이트 값을 따른다.
 - **EUC-KR 선언 소스는 `cp949`로 디코드**한다(EUC-KR 순정 코덱은 확장 한글에서 예외 → 한 글자로 페이지 전체를 잃는다).
 
 ### Structure (`pipeline/structure.py`) — AI는 추출·추정만
@@ -185,7 +188,7 @@ min_job 가드레일을 승계·구체화한다. 근거는 SPEC·CONTRACT·min_j
 4. **개인정보 최소 + opt-out.** 지원용으로 명시 공개된 연락처만 `contact`로 추출한다(SPEC §5.5). 제3자 개인정보는 추출하지 않고, 게시판이 가려둔 번호를 복원하지 않는다. **교회가 요청하면 해당 교회·공고를 수집 대상에서 제외(opt-out)하고 기존 수집분도 삭제할 수 있어야 한다** — write-once 원칙보다 우선한다. ⚠️ 약관·개인정보처리방침 정식 검토는 진행 중(min_job).
 5. **이단은 플래그만.** 근거만 남기고 **자동 삭제·공개 낙인 금지**(명예훼손·오판 회피). 최종 판단은 사람.
 6. **교단은 공고에서 확정.** 게시판 교단은 힌트일 뿐이다. 근거 없으면 `UNKNOWN`(+운영자 게이트) — 추측으로 찍지 않는다(SPEC §5.3).
-7. **예의 있는 크롤.** 위 fetch 기본값(간격·타임아웃·robots)과 **한 호스트 1요청** 원칙을 지킨다. 원장으로 증분해 **같은 글을 다시 긁지 않는다**. 개발 중 반복 실행으로 사이트를 두드리지 않는다 — **테스트는 fixture로, 네트워크를 타지 않는다**.
+7. **예의 있는 크롤.** 위 fetch 기본값(간격·타임아웃)과 **한 호스트 1요청** 원칙을 지킨다. ⚠️ **robots.txt는 따르지 않는다** — 운영자 판단(2026-07-30 · 문제없음 확인). 부하 보호는 robots가 아니라 **요청 간격·호스트당 1요청·타임아웃·페이지 상한**이 담당한다. 판정 코드(`fetch/robots.py`)와 `RESPECT_ROBOTS` 스위치는 살려둔다 — 게시판 한 곳이 요청하면 되돌릴 수 있어야 한다. 원장으로 증분해 **같은 글을 다시 긁지 않는다**. 개발 중 반복 실행으로 사이트를 두드리지 않는다 — **테스트는 fixture로, 네트워크를 타지 않는다**.
 8. **재공고는 보존.** 같은 교회·자리의 다른 시점 공고를 합치지 않는다(min_job 차별점). dedup은 "같은 글의 중복 수집·교차게시"까지이며 **자동 병합이 아니라 후보 표시**다.
 9. **경계를 넘지 않는다.** 이 리포에서 **`../min_job`의 파일을 수정하지 않는다**(연동 요구는 문서로 전달). min_job은 staging 마이그레이션을 만들지 않는다.
 10. **프로덕션 수집은 운영자가 실행한다.** 에이전트(Claude)는 코드·config·문서를 만들고 **검증 목적의 소량 요청만** 한다(보드당 목록 1~2건 수준, 반복 금지). 전 소스 실행·백필·대량 AI 호출은 운영자가 CLI로 한다.

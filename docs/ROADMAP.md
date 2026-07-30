@@ -43,7 +43,8 @@
 
 ### 1-1. 수집 (fetch → source_data)  ← 플로우 앞단
 > **작업 순서(2026-07-30 확정)**: 게시판 하나씩 **`--dry-run`으로 파싱·id 유일성 확인 → 통과분만 실제 수집(3개월) → 그 다음 `structure`(유료)**. 수집과 구조화를 다른 명령으로 나눈 이유 = 파싱이 틀린 채로 수백 건을 AI에 보내면 되돌릴 수 없다.
-- [ ] `fetch/client.py` — UA·인코딩(config 우선·EUC-KR→cp949)·타임아웃·재시도·소스별 간격·robots·세션. **모든 HTTP의 단일 창구**
+- [x] `fetch/client.py`·`fetch/robots.py` — UA(항상 송신·`spoof_ua`)·인코딩(cp949)·타임아웃 20s·재시도 3회·소스별 간격 1.5s·세션 쿠키·본문 길이 하한 (robots는 `RESPECT_ROBOTS=False`로 미준수 — 운영자 판단). **모든 HTTP의 단일 창구**
+- [ ] **fixture 저장 경로**(`collect --save-fixture`) — 가드레일 #7이 "테스트는 fixture로"를 요구하는데 fixture를 **만드는 수단이 없다**. 어댑터를 고칠 때마다 게시판을 다시 두드리게 되므로, 받아온 HTML을 `tests/fixtures/<KEY>/`에 저장해 이후 파싱 반복은 오프라인으로 한다
 - [ ] `YTUS` 어댑터 — 목록→상세→`raw_text`+이미지 URL 확보
 - [ ] `source_data` 적재 — 불변·`UNIQUE(source_key, external_id)`(원장)·이미 본 글 skip
 - [ ] **`collect` 명령 + `--dry-run`** — 저장 없이 [행 수·공지 제외 수·**external_id 중복 수**·게시일 범위·원장 신규 수·샘플]을 출력. 31곳 파싱 검증의 도구
