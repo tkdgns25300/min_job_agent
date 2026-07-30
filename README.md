@@ -6,21 +6,27 @@
 
 > 📄 **문서 정본**: 아키텍처·컨벤션·가드레일 = [`CLAUDE.md`](CLAUDE.md) · 파이프라인 = [`docs/SPEC.md`](docs/SPEC.md) · 소스 카탈로그 = [`docs/SOURCES.md`](docs/SOURCES.md) · 출력 계약·교단 = [`docs/CONTRACT.md`](docs/CONTRACT.md) · 작업 로드맵 = [`docs/ROADMAP.md`](docs/ROADMAP.md) · 시점 핸드오프 = [`docs/SNAPSHOT.md`](docs/SNAPSHOT.md).
 >
-> **게시판 전송 정본(코드)** = `src/sources/registry.ts` — 31곳의 tier·encoding·flags·상세URL 라이브 검증값. Python 이식 시 `config/sources.json`으로 이동.
+> **게시판 전송 정본** = [`config/sources.json`](config/sources.json) — 31곳의 tier·encoding·flags·상세URL **라이브 검증값**. 문서와 다르면 이 파일이 이긴다.
 
 ## 환경 · 실행
 
-**스택 = Python 3.12+**(2026-07-29 확정). 현재 `src/`는 **이식 대기 중인 TypeScript 뼈대**다.
+**스택 = Python 3.12+**(2026-07-29 확정 · TS 뼈대 이식 완료).
 
 ```bash
-cp .env.example .env      # Vertex(Gemini) 서비스계정 값 입력
-npm install
-npm run typecheck         # 타입 검사
-npm run list [KEY]        # 등록 소스 확인 (예: npm run list YTUS)
-npm run check:gemini      # Vertex 인증 스모크 (실호출 1회)
+python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
+cp .env.example .env                        # Vertex(Gemini) 서비스계정 값 입력
+
+.venv/bin/minjob-agent list-sources [KEY]   # 등록 소스 확인 (예: … YTUS)
+.venv/bin/minjob-agent check-gemini         # Vertex 인증 스모크 (실호출 1회)
 ```
 
-> ⚠️ **프로덕션 수집은 운영자가 실행한다**(CLAUDE.md 가드레일 #10). 크롤 로직은 Phase 1에서 Python으로 구현.
+**커밋 전 게이트 — 4개 전부 통과**
+```bash
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
+.venv/bin/mypy && .venv/bin/pytest -q
+```
+
+> ⚠️ **프로덕션 수집은 운영자가 실행한다**(CLAUDE.md 가드레일 #10). 수집 명령(`daily`·`backfill`)은 Phase 1에서 붙는다.
 
 ## 브랜치 / Git
 

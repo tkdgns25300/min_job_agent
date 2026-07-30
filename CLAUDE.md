@@ -4,7 +4,7 @@
 >
 > **문서 책임 분리** — 같은 사실을 두 곳에 쓰지 않는다. **여기는 "코드를 어떻게 쓰는가"만** 담고, 정책·판정 규칙·소스 목록·스키마 필드는 위 문서를 **가리킨다**(복사하지 않는다).
 >
-> ⚠️ **정본 순서**: 게시판 전송 사실(tier·encoding·flags·상세URL) = **`src/sources/registry.ts`**(라이브 검증값 · 이식 후 `config/sources.json`) > SOURCES §6 요약. 그 외 파이프라인·판정·스키마 = SPEC. **코드와 문서가 다르면 전송은 코드가, 정책은 SPEC이 이긴다.**
+> ⚠️ **정본 순서**: 게시판 전송 사실(tier·encoding·flags·상세URL) = **`config/sources.json`**(라이브 검증값) > SOURCES §6 요약. 그 외 파이프라인·판정·스키마 = SPEC. **코드와 문서가 다르면 전송은 코드가, 정책은 SPEC이 이긴다.**
 
 ## Project
 
@@ -16,7 +16,7 @@
 
 > ⚠️ **스택 변경(2026-07-29)**: 원래 TypeScript/Node였다(SNAPSHOT §2 "되돌리지 말 것" 항목). **Python으로 교체됨** — 크롤 생태계 성숙도 + 운영자가 직접 실행. TS를 택한 명목("min_job 타입 공유")은 별도 리포·별도 프로세스라 실제로 성립하지 않았고, enum 정합은 코드 공유가 아니라 **CONTRACT §1 계약 + 드리프트 테스트**로 지킨다.
 >
-> ⚠️ **Phase 0 뼈대는 TypeScript로 작성돼 있고 이식 대기 중이다.** 신규 코드는 Python으로만 쓴다. `src/*.ts`·`package.json`·`tsconfig.json`은 이식 완료 시 삭제한다. 단 **`src/sources/registry.ts`의 31곳 검증값(특히 `fetchNote` 문자열)은 재취득 불가한 자산**이므로 `config/sources.json`으로 **문자 그대로** 옮긴 뒤 제거한다.
+> ✅ **TS 뼈대 이식 완료(2026-07-29, 0-1c).** `src/*.ts`·`package.json`·`tsconfig.json`은 삭제했다 — 되짚어야 하면 git 이력을 본다. 재취득 불가 자산이던 31곳 검증값(특히 `fetch_note`)은 `config/sources.json`으로 **문자 그대로** 이관됐다.
 >
 > ⚠️ **`google-genai` SDK·Gemini 모델 ID는 학습 데이터와 다를 수 있다.** 구조화 코드 작성 전 공식 문서를 확인할 것. 모델 ID는 **`VERTEX_MODEL` env에서 읽고 하드코딩하지 않는다**(운영자가 최신 Flash로 교체함). 인증은 서비스계정 4개 env(`VERTEX_AI_PROJECT_ID`·`_LOCATION`·`_CLIENT_EMAIL`·`_PRIVATE_KEY`) — `.env.example` 참조.
 
@@ -97,7 +97,6 @@ data/                         로컬 저장소 (gitignored)
 >
 > **커밋하지 않는 자동생성물**: `.venv/`·`__pycache__/`·`minjob_agent.egg-info/`(pip 메타데이터)·`.mypy_cache/`·`.ruff_cache/`·`.pytest_cache/`·`data/`. 전부 `.gitignore`에 있다 — 지워도 도구가 다시 만든다.
 >
-> **`src/`**(+`package.json`·`tsconfig.json`)는 **이식 대기 중인 TS 잔존물**이다. 이식이 끝난 부분은 지우고, 아직 참고가 필요한 `store/*.ts`·`lib/gemini.ts`는 0-1c까지 둔다.
 
 ## Commands
 
@@ -115,17 +114,17 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 
 **실행**
 ```bash
-.venv/bin/minjob-agent list-sources [KEY]   # 등록 소스 확인
+.venv/bin/minjob-agent list-sources [KEY]   # 등록 소스 확인 (네트워크 없음)
+.venv/bin/minjob-agent check-gemini         # Vertex 인증·연결 (유료 API 실호출 1회)
 ```
-아직 없는 명령(이후 Phase): `check-gemini`(0-1c) · `daily`·`backfill`(Phase 1).
+아직 없는 명령(Phase 1): `daily`·`backfill`.
 
-> ⚠️ TS 뼈대(`src/*.ts`·`package.json`)는 이식 완료분이라 제거 대기 상태다(0-1c). `npm run …`은 참고용.
 
 ## Layer Responsibilities
 
 ### Registry (`sources/registry.py` + `config/sources.json`)
 - **"어떻게 접속하나"를 데이터로** 보유. 코드에 URL·셀렉터·페이지 파라미터를 하드코딩하지 않는다.
-- 현재 필드(= `src/sources/types.ts`): `key`(대문자) · `board_name` · `denomination_hint`(참고, 확정 아님·null 가능) · `enabled` · `fetch_tier` · `encoding` · `flags` · `list_url` · `detail_pattern`(`{id}` 치환) · `fetch_note`.
+- 현재 필드(= `minjob_agent/sources/registry.py`): `key`(대문자) · `board_name` · `denomination_hint`(참고, 확정 아님·null 가능) · `enabled` · `fetch_tier` · `encoding` · `flags` · `list_url` · `detail_pattern`(`{id}` 치환) · `fetch_note`.
   - `flags`: `www_required` · `http_only` · `spoof_ua`(브라우저 UA 필수) · `insecure_tls` · `needs_session`(상세가 쿠키 요구) · `image_only`(본문이 이미지 — 빈 raw_text가 정상) · `soft_200`(잘못된 요청에도 200 → 본문으로 검증).
   - **이식 시 추가 예정**: `disabled_reason` · `page_param` · `notice_marker` — 지금은 `fetch_note` 산문에만 있다(구조화하면 어댑터가 코드로 안 들고 있게 된다).
 - **로드 시 검증**(스타트업 assert + 테스트): key 대문자·유일 · `denomination_hint ∈ CONTRACT §1 ∪ {null}` · `flags` 키 화이트리스트 · `detail_pattern`이 있으면 `{id}` 포함. ⚠️ **예외 2곳**: `CSU`(API 호출이라 URL 템플릿 없음) · `HANSEI`(경로에 카테고리 id가 끼어 목록 href를 그대로 사용) — 사유는 `fetch_note`에.

@@ -80,7 +80,7 @@
 ## 4. 소스 → default 교단 (참고 hint)
 
 > ⚠️ **이 표의 역할은 `source_key` → default 교단(참고 hint) + 접근성뿐이다.**
-> - **전송 요건(tier·encoding·flags·상세URL·세션·이미지)은 `src/sources/registry.ts`가 정본**(라이브 2차 검증 2026-07-29). 과거 이 표의 "기술요건" 열은 실측에서 **다수 오류로 확인돼 삭제**했다(예: `DAESHIN`·`KTS` `-k` 불요 · `PGAK`·`SUNGKYUL`·`KAICAM` UA위장 불요 · `MOKWON`·`ACTS` 정적 · `CSU` 세션 필요 · `HTUS` 상세 공개 · `KWANGSHIN`·`MTU` www 필수).
+> - **전송 요건(tier·encoding·flags·상세URL·세션·이미지)은 `config/sources.json`이 정본**(라이브 2차 검증 2026-07-29). 과거 이 표의 "기술요건" 열은 실측에서 **다수 오류로 확인돼 삭제**했다(예: `DAESHIN`·`KTS` `-k` 불요 · `PGAK`·`SUNGKYUL`·`KAICAM` UA위장 불요 · `MOKWON`·`ACTS` 정적 · `CSU` 세션 필요 · `HTUS` 상세 공개 · `KWANGSHIN`·`MTU` www 필수).
 > - **`모드 A/B` 열도 폐기**(SPEC §10) — 교단은 항상 **공고에서 판정**(§2)하므로 default는 힌트일 뿐이다.
 > - **`source_key`는 대문자가 저장값**(`YTUS`).
 >

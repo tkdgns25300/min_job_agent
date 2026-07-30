@@ -11,7 +11,9 @@
 
 ## Phase 0: 뼈대 (골격)  ✅ 착수 완료(2026-07-28)
 
-> "빈 파이프" — 코드 골격 + 저장 seam + 외부 연결(Gemini) 검증. 로직은 Phase 1. **`npm run typecheck` 통과 · `npm run list` 실행 확인.**
+> "빈 파이프" — 코드 골격 + 저장 seam + 외부 연결(Gemini) 검증. 로직은 Phase 1.
+>
+> ⚠️ 이 절은 **TypeScript로 수행한 이력**이다(파일 경로는 이미 삭제됨 — 0-1c). 같은 내용을 Python으로 다시 만든 기록이 아래 0-1이다.
 - [x] 부트스트랩 — `package.json`·`tsconfig`(strict·bundler)·`.env.example`·`src/` 구조 (Prettier 미도입)
 - [x] **Store seam + JSON 구현** — `src/store/{types,json-store}.ts`(파이프라인이 저장소 모름 → Supabase 스왑용)
 - [x] `types/domain.ts` — min_job enum 미러(교단 10키·region·position…) + 크롤러 enum(job_kind·denomination_source 등)
@@ -20,12 +22,11 @@
 - [x] **CLAUDE.md 작성 + 3렌즈 검수 반영**(설계 결함 `structured_at` 발견·SPEC 정정 포함)
 
 ### 0-1. Python 이식 (스택 변경 후속 · Phase 1 선행)
-- [ ] `config/sources.json` — `registry.ts` 31곳 **문자 그대로** 이관(특히 `fetchNote`) + 로드 시 검증(key 대문자·유일·hint 화이트리스트·`{id}` 포함)
 - [x] **0-1a** 프로젝트 골격 + `config/sources.json`(31곳 기계 변환) + `domain.py` + `cli list-sources` — 검수 2회 반영
 - [x] **0-1b-1** `paths.py`·`clock.py`(UTC·date 단일 창구)·`models.py`(SPEC §6 4레코드)·`settings.py` — 검수 2회 + 검증 패스 반영
 - [x] **flat 레이아웃 확정** — 패키지를 `minjob_agent/`(리포 루트)로. `src/` 껍데기는 배포 라이브러리용이라 앱에는 불필요(CLAUDE.md Directory)
-- [ ] **0-1b-2** `store/{base,serde,json_store}.py` — Store 프로토콜 + JSON 구현(원자적 쓰기·행별 격리 읽기)
-- [ ] **0-1c** `lib/gemini.py` + `cli check-gemini` + **TS 잔존물 제거**(`src/*.ts`·`package.json`·`tsconfig.json`)
+- [x] **0-1b-2** `store/{base,serde,json_store}.py` — Store 프로토콜 + JSON 구현(원자적 쓰기·행별 격리 읽기·write-once 강제·검수 상태 보존) — 검수 + mutation 테스트 20/20 반영
+- [x] **0-1c** `lib/gemini.py`(SDK 내장 재시도·타임아웃 설정 사용) + `cli check-gemini` + **TS 잔존물 제거 완료**
 - [x] 툴체인 — venv+pip(uv 미설치) · ruff(+DTZ·TID) · mypy strict · pytest
 
 ## Phase 1: MVP 크롤러 (수집 → review_data · JSON · 31곳 · 배포)
@@ -37,7 +38,7 @@
 > - **EUC-KR 소스는 `cp949`로 디코드** — 순정 EUC-KR 코덱은 확장 한글에서 예외 → 페이지 전체 유실.
 > - **JSON 저장은 원자적**(임시파일→rename) + 병렬 시 직렬화/JSONL — 전체 배열 read-modify-write는 레코드 유실·파일 손상.
 > - **Store에 읽기 포함** — 원장 bulk 조회 + `source_health` 조회(연속 실패 누적·마지막 성공 보존).
-> - **재시도 판정**에 소켓 오류(`cause.code`)·gRPC 코드 포함, **빈 AI 응답은 실패 처리**, 요청 타임아웃 필수.
+> - **Gemini 재시도를 손으로 만들지 않기** — SDK의 `HttpRetryOptions`(408·429·5xx + httpx 타임아웃/커넥션, 지수 백오프+지터)를 설정으로 쓴다. 직접 판정하면 예외 타입을 추측하게 되고 실제 SDK와 어긋난다. **빈 AI 응답은 실패 처리**, 요청 타임아웃(ms) 필수. (0-1c에서 적용 완료 — `lib/gemini.py`)
 > - **실패를 조용히 넘기지 않기** — 알 수 없는 `run_id`·손상 파일은 예외로.
 
 ### 1-1. 수집 (fetch → source_data)  ← 플로우 앞단
@@ -74,6 +75,10 @@
 > 스키마가 여기서 굳음(그 전까진 JSON).
 - [ ] 마이그레이션 — `source_data`·`review_data`·`source_health`·`crawl_run`(+ RLS 운영자 전용)
 - [ ] Store를 Supabase 구현으로 스왑(파이프라인 코드 불변) + 스모크 테스트
+- [ ] **운영자 전용 쓰기 경로 2개를 Store에 추가**(JSON 단계에선 파일 직접 편집으로 대체 중):
+  ① opt-out·법적 삭제(write-once 예외 — SPEC §6 ①·가드레일 #4), ② 구조화 시도 횟수 리셋
+  (`SourceData.with_attempts_reset` — `update_structure_state`는 횟수 감소를 거부한다).
+  Supabase로 옮기면 운영자가 service-role SQL을 직접 쓰는 수밖에 없어지므로 여기서 같이 낸다.
 
 ### 1-7. 배포 (GitHub Actions) — ⚠️ **1-6 이후에만**
 > ephemeral 러너 + JsonStore 조합은 매 실행 원장을 잃어 **전량 재크롤·재구조화·산출물 유실**을 만든다. `crawl.yml`은 **Supabase 전환(1-6) 완료 후** 작성한다(CLAUDE.md 순서 제약).

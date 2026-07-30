@@ -8,7 +8,7 @@
 
 ## 0. 한 문장 요약
 
-`min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·staging 4테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). **`docs/ROADMAP.md`·`CLAUDE.md` 작성 완료**(CLAUDE.md는 3렌즈 검수 반영). **Phase 0 뼈대 완료** — TS 스켈레톤(Store seam·`domain`·Gemini 래퍼·**31곳 레지스트리 라이브 2차검증**), `typecheck` 통과 · **Gemini 실호출 성공**(운영자 확인). ⚠️ **스택을 Python으로 교체(2026-07-29)** — 현 `src/*.ts`는 이식 대기. 현재 열린 핵심 = **Python 이식 + Phase 1(수집→구조화) 구현**.
+`min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·staging 4테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). **`docs/ROADMAP.md`·`CLAUDE.md` 작성 완료**(CLAUDE.md는 3렌즈 검수 반영). **Phase 0 뼈대 완료** — TS 스켈레톤(Store seam·`domain`·Gemini 래퍼·**31곳 레지스트리 라이브 2차검증**), `typecheck` 통과 · **Gemini 실호출 성공**(운영자 확인). **스택을 Python으로 교체(2026-07-29)하고 이식 완료** — TS 잔재 삭제, `minjob_agent/` flat 패키지에 `domain`·`models`(SPEC §6 4레코드)·`clock`·`settings`·`sources.registry`·`store`(Protocol+JSON)·`lib.gemini` + CLI(`list-sources`·`check-gemini`), 4게이트(ruff·format·mypy strict·pytest 313) 통과. 현재 열린 핵심 = **Phase 1-1(fetch → source_data) 구현**.
 
 ---
 
@@ -69,7 +69,7 @@
 | `docs/SPEC.md` | 파이프라인 명세(스코프·게이트·staging 4테이블·정책·배포) | ✅ 작성 + 3렌즈 냉정검수·재검증 |
 | `docs/ROADMAP.md` | Phase별 작업 단위(0~3) | ✅ 작성(min_job 스타일) |
 
-> **정식 `src/` = Phase 0 뼈대 존재**(TS · 이식 대기): `types/domain.ts`·`store/{types,json-store}.ts`·`sources/{types,registry}.ts`(31곳)·`lib/gemini.ts`·`scripts/check-gemini.ts`·`index.ts`. 별도로 **`crawler-demo/`에 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, zip) — 전 체인 관통 검증됨(참고용).
+> **코드 = `minjob_agent/`**(flat 패키지 · TS 잔재는 0-1c에서 삭제, 필요하면 git 이력): `domain.py`·`models.py`·`clock.py`·`paths.py`·`settings.py`·`cli.py`·`sources/registry.py`·`store/{base,serde,json_store}.py`·`lib/gemini.py`. 전송 정본은 **`config/sources.json`(31곳)**. 별도로 **`crawler-demo/`에 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, zip) — 전 체인 관통 검증됨(참고용).
 
 ---
 
@@ -145,18 +145,21 @@
 
 0. ✅ **열린 결정 확정** — 스코프·job_kind·교단·연락처·이미지·백필/크론 전부 확정(§6 "이번 세션 확정" · SPEC).
 1. **하네스 문서** — ✅ `CLAUDE.md`·`docs/SPEC.md`·`docs/ROADMAP.md` 완료(전부 다중 검수 반영).
-2. **데모 → 정식 `src/`** — 어댑터 **4개 → 31곳(§5·§7 확정)** 확장, **교단 확정 로직(명시/명부/AI추정 `ai_guess` + evidence + 미상 해소)** 구현, `staging.json` → **Supabase(§9 스키마: `source_data`/`review_data`)**.
-3. **robots.txt·요청 rate limit 구현**(데모 미구현) · 로그인 소스 법률게이트 · 이미지 공고 처리(Gemini 멀티모달 — pckworld 등).
+2. ✅ **Python 이식(0-1a~0-1c) 완료** — 골격·`config/sources.json`(31곳)·도메인/레코드/시각·Store(Protocol+JSON, write-once·검수상태 보존 강제)·Gemini 래퍼(SDK 내장 재시도)·CLI 2명령. 각 단계 리뷰 + mutation 테스트로 검증(전 변형 탐지).
+3. **▶ 다음: Phase 1-1** — `fetch/` 층 + `YTUS` 어댑터 → `source_data` 적재(원장·인코딩·rate limit). 그 다음 1-2 구조화로 **1소스 전 구간 관통**.
+4. **데모 → 31곳 확장** — 어댑터 **1개 검증 후 31곳**(§5·§7), **교단 확정 로직(명시/명부/AI추정 `ai_guess` + evidence + 미상 해소)**, JSON → **Supabase(§9 스키마)**는 ROADMAP 1-4·1-3·1-6.
+5. **robots.txt·요청 rate limit 구현**(데모 미구현) · 로그인 소스 법률게이트 · 이미지 공고 처리(Gemini 멀티모달 — pckworld 등).
 
 ---
 
 ## 8. 실행 / 재개 방법
 
 ```bash
-# Phase 0 뼈대(TS · 이식 대기). Python 이식 후 명령이 바뀐다 — CLAUDE.md Commands 참조.
-npm install && npm run typecheck   # 타입 검사
-npm run list [KEY]                 # 등록 소스 31곳 확인
-npm run check:gemini               # Vertex 인증 스모크(.env 필요)
+python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"   # 첫 셋업
+.venv/bin/ruff check . && .venv/bin/ruff format --check .   # 게이트 1·2
+.venv/bin/mypy && .venv/bin/pytest -q                       # 게이트 3·4
+.venv/bin/minjob-agent list-sources [KEY]   # 등록 소스 31곳 확인
+.venv/bin/minjob-agent check-gemini         # Vertex 인증 스모크(.env 필요 · 유료 실호출)
 git branch -vv            # prod / dev 확인
 git log --oneline         # 히스토리
 

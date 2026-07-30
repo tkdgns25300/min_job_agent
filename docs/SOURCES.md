@@ -162,7 +162,7 @@
 
 ## 6. 크롤 기술 요건 (어댑터 설계)
 
-> **전송(tier·encoding·flags·상세URL) 정본 = `src/sources/registry.ts`** — 2026-07-29 **라이브 2차 검증**(각 게시판 fetch + detailPattern을 실제 글번호로 실증). 아래는 요약이며, 초기 문서-추정과 달랐던 부분을 정정한 것.
+> **전송(tier·encoding·flags·상세URL) 정본 = `config/sources.json`** — 2026-07-29 **라이브 2차 검증**(각 게시판 fetch + detailPattern을 실제 글번호로 실증). 아래는 요약이며, 초기 문서-추정과 달랐던 부분을 정정한 것.
 
 - **UA**: **브라우저 UA 필수** `mtu`(기본 UA→보안차단 스텁 · config `spoof_ua`). **UA 문자열만 있으면 됨**(빈 UA만 차단) `sungkyul`(403)·`kaicam`(520). → 크롤러는 **항상 비어있지 않은 UA를 보내고**, 브라우저 위장은 `spoof_ua` 소스에만 적용한다(SPEC §3). (⚠️ 문서의 `pgak`·`bsds` UA위장은 오류 — 불요.)
 - **http 전용**: `calvin` · `wgst`. (⚠️ `daeshin`·`kts`의 `-k`는 불요 — 인증서 정상.)
