@@ -10,9 +10,11 @@
 
 from __future__ import annotations
 
+import importlib
+import pkgutil
+from pathlib import Path
 from typing import Final, Protocol
 
-from minjob_ingest.sources.adapters import daeshin, ytus
 from minjob_ingest.sources.adapters.base import ListRequest, PostingRef, RawPosting
 from minjob_ingest.sources.registry import SourceConfig
 
@@ -37,18 +39,46 @@ class Adapter(Protocol):
         ...
 
 
-#: 구현된 어댑터. 1-4에서 31곳까지 채운다.
-ADAPTERS: Final[dict[str, Adapter]] = {
-    daeshin.SOURCE_KEY: daeshin,
-    ytus.SOURCE_KEY: ytus,
-}
+#: 어댑터가 아닌 이 패키지의 모듈(공용 도구·레지스트리 자신).
+_NOT_ADAPTERS: Final = frozenset({"base", "registry"})
+
+
+def _discover() -> dict[str, Adapter]:
+    """이 패키지의 모듈에서 `SOURCE_KEY`를 선언한 것을 모은다.
+
+    손으로 관리하는 dict를 두지 않는 이유가 둘이다. 게시판이 31곳이면 **등록을 잊는 실수**가
+    생기고(그 게시판은 조용히 수집되지 않는다), 어댑터를 여러 갈래로 동시에 추가할 때
+    같은 dict를 고치다 서로의 등록을 덮어쓴다.
+
+    파일명이 곧 키라는 규칙(`ytus.py` → `YTUS`)은 적합성 테스트가 강제하므로, 파일을 놓아두는
+    것만으로 등록이 끝나도 안전하다.
+    """
+    found: dict[str, Adapter] = {}
+    for module_info in pkgutil.iter_modules(_package_path()):
+        if module_info.name in _NOT_ADAPTERS or module_info.name.startswith("_"):
+            continue
+        module = importlib.import_module(f"{__package__}.{module_info.name}")
+        key = getattr(module, "SOURCE_KEY", None)
+        if isinstance(key, str):
+            found[key] = module
+    return found
+
+
+def _package_path() -> list[str]:
+    """이 패키지 디렉터리. 를 직접 쓰면 mypy가 모듈 속성으로 좁히지 못한다."""
+    return [str(Path(__file__).parent)]
+
+
+#: 구현된 어댑터. `sources/adapters/<key 소문자>.py`를 두면 자동으로 들어온다.
+ADAPTERS: Final[dict[str, Adapter]] = _discover()
 
 
 def find_adapter(source_key: str) -> Adapter:
     adapter = ADAPTERS.get(source_key)
     if adapter is None:
         raise AdapterMissing(
-            f"{source_key}: 어댑터가 없다 — `sources/adapters/`에 만들고 이 레지스트리에 등록한다"
+            f"{source_key}: 어댑터가 없다 —"
+            f" `sources/adapters/{source_key.lower()}.py`를 만들면 자동으로 등록된다"
         )
     return adapter
 
