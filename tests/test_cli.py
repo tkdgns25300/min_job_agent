@@ -47,7 +47,8 @@ def _write_config(tmp_path: Path, *, enabled: bool = True) -> Path:
 def test_lists_real_config(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["list-sources"]) == 0
     out = capsys.readouterr().out
-    assert "등록 소스 31곳 (활성 31)" in out
+    # HANSEI는 2026-08-04에 게시판이 소멸해 비활성이다(config `disabled_reason` 참조).
+    assert "등록 소스 31곳 (활성 30)" in out
     assert "YTUS" in out
 
 

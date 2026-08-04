@@ -26,6 +26,7 @@ from bs4 import Tag
 from minjob_ingest.clock import parse_iso_date
 from minjob_ingest.models import Attachment
 from minjob_ingest.sources.adapters.base import (
+    ListRequest,
     ParseError,
     PostingRef,
     RawPosting,
@@ -56,8 +57,8 @@ _FILE_LIST: Final = "div.view-file"
 _PAGE_SEGMENT: Final = "/page/"
 
 
-def list_page_url(source: SourceConfig, page: int) -> str:
-    """N페이지 목록의 절대 URL. 1페이지는 `list_url` 그대로.
+def list_request(source: SourceConfig, page: int) -> ListRequest:
+    """N페이지 목록 요청. GET이고 1페이지는 `list_url` 그대로.
 
     ⚠️ 페이지 규칙이 config가 아니라 여기 있는 이유: 31곳의 pagination 형태가
     쿼리(`?page=N`)·경로(`/page/N`)·POST 본문으로 갈려 **한 소스만 보고 config 필드를 설계하면
@@ -66,8 +67,8 @@ def list_page_url(source: SourceConfig, page: int) -> str:
     if page < 1:
         raise ValueError(f"page는 1 이상이어야 함 ({page})")
     if page == 1:
-        return source.list_url
-    return f"{source.list_url.rstrip('/')}{_PAGE_SEGMENT}{page}"
+        return ListRequest(url=source.list_url)
+    return ListRequest(url=f"{source.list_url.rstrip('/')}{_PAGE_SEGMENT}{page}")
 
 
 def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import calendar
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
@@ -23,6 +24,8 @@ from minjob_ingest.sources.adapters.base import ParseError, PostingRef, RawPosti
 from minjob_ingest.sources.adapters.registry import Adapter
 from minjob_ingest.sources.registry import SourceConfig
 from minjob_ingest.store.base import LedgerEntry, Store
+
+_LOG = logging.getLogger(__name__)
 
 #: 목록 페이지 **안전 상한**(폭주 방지용 · SPEC §3).
 #:
@@ -253,12 +256,12 @@ def collect_source(
     """
     if not options.dry_run and run_id is None:
         raise ValueError("run_id 없이 저장할 수 없다 — dry_run이 아니면 실행을 먼저 시작한다")
-    cutoff = None if options.months is None else cutoff_date(options.months, today=today)
+    cutoff = _cutoff_for(source, options, today=today)
     tally = _Tally()
 
     capped = True  # for-else — break 없이 끝나면 상한에 걸린 것이다
     for page in range(1, options.max_pages + 1):
-        listing = adapter.parse_list(client.get(adapter.list_page_url(source, page)).text, source)
+        listing = adapter.parse_list(_fetch_list(adapter, client, source, page), source)
         refs = tally.drop_already_scanned(listing)
         ledger = store.seen_postings(source.key, [ref.external_id for ref in refs])
         plan = plan_page(refs, ledger, cutoff=cutoff)
@@ -289,6 +292,31 @@ def collect_source(
         max_pages=options.max_pages,
         stopped_at_page_cap=capped,
     )
+
+
+def _cutoff_for(source: SourceConfig, options: CollectOptions, *, today: date) -> date | None:
+    """이 소스에 적용할 게시일 컷오프.
+
+    목록에 날짜가 없는 게시판(config `list_has_dates: false`)은 **컷오프를 만들지 않는다** —
+    만들면 아무 행도 잘리지 않아 안전 상한까지 페이지를 넘기고, 그게 조용한 폭주다.
+    그런 소스의 범위는 페이지 상한이 정한다. 눈에 보이게 로그를 남긴다.
+    """
+    if options.months is None:
+        return None
+    if not source.list_has_dates:
+        _LOG.info(
+            "%s 목록에 게시일이 없어 기간을 적용하지 않는다 — 페이지 상한이 범위다", source.key
+        )
+        return None
+    return cutoff_date(options.months, today=today)
+
+
+def _fetch_list(adapter: Adapter, client: SourceClient, source: SourceConfig, page: int) -> str:
+    """목록 한 페이지를 받는다. 방식(GET/POST)은 어댑터가 정하고 전송은 fetch 층이 한다."""
+    request = adapter.list_request(source, page)
+    if request.form is None:
+        return client.get(request.url).text
+    return client.post_form(request.url, request.form).text
 
 
 def _notify(sink: ProgressSink | None, tally: _Tally, *, latest: PostingRef | None = None) -> None:

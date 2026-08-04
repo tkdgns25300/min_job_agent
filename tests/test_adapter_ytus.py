@@ -74,17 +74,19 @@ def refs(list_html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
 
 
 def test_first_page_is_the_configured_list_url(source: SourceConfig) -> None:
-    assert ytus.list_page_url(source, 1) == source.list_url
+    request = ytus.list_request(source, 1)
+    assert request.url == source.list_url
+    assert request.form is None  # GET 게시판이다
 
 
 def test_later_pages_append_the_page_segment(source: SourceConfig) -> None:
     # 실측: 쿼리 파라미터가 아니라 경로다(/page/2).
-    assert ytus.list_page_url(source, 3) == f"{source.list_url}/page/3"
+    assert ytus.list_request(source, 3).url == f"{source.list_url}/page/3"
 
 
 def test_page_zero_is_rejected(source: SourceConfig) -> None:
     with pytest.raises(ValueError, match="page"):
-        ytus.list_page_url(source, 0)
+        ytus.list_request(source, 0)
 
 
 # ── 목록 파싱 ────────────────────────────────────────────────────

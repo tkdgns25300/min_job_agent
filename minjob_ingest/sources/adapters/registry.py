@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Final, Protocol
 
 from minjob_ingest.sources.adapters import ytus
-from minjob_ingest.sources.adapters.base import PostingRef, RawPosting
+from minjob_ingest.sources.adapters.base import ListRequest, PostingRef, RawPosting
 from minjob_ingest.sources.registry import SourceConfig
 
 
@@ -24,8 +24,8 @@ class AdapterMissing(Exception):
 class Adapter(Protocol):
     """게시판별 파서가 제공해야 하는 것 전부(SPEC §10). **네트워크를 만지지 않는다.**"""
 
-    def list_page_url(self, source: SourceConfig, page: int) -> str:
-        """N페이지 목록의 절대 URL."""
+    def list_request(self, source: SourceConfig, page: int) -> ListRequest:
+        """N페이지 목록을 가져오는 방법(URL + 필요하면 POST 본문)."""
         ...
 
     def parse_list(self, html: str, source: SourceConfig) -> tuple[PostingRef, ...]:

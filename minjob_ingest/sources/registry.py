@@ -68,6 +68,11 @@ class SourceConfig:
     #: None = 템플릿으로 만들 수 없는 소스(API 호출·경로에 다른 가변 id가 섞임)
     #: → 목록에서 얻은 링크를 그대로 쓴다.
     detail_pattern: str | None = None
+    #: ⚠️ **목록에 게시일이 있나.** `False`면 `--months`를 적용할 수 없어 페이지 상한이 범위가
+    #: 된다. PCKWORLD는 포스터 이미지 그리드라 행에 날짜가 아예 없다(2026-08-04 실측).
+    #: 기본값이 `True`인 이유: 30곳은 날짜가 있고, 있는데 못 읽는 것은 **파서 버그**라서
+    #: 조용히 넘기지 않고 실패시켜야 한다(`_require_dates_for_cutoff`).
+    list_has_dates: bool = True
     #: `enabled: false`인 이유. 제외는 삭제가 아니라 비활성 + 사유로 남긴다(CLAUDE.md Registry).
     disabled_reason: str | None = None
     flags: SourceFlags = SourceFlags()
@@ -168,6 +173,13 @@ def _require_bool(row: dict[str, object], field_name: str, what: str) -> bool:
     return value
 
 
+def _optional_bool(row: dict[str, object], field_name: str, what: str, *, default: bool) -> bool:
+    """없으면 기본값. 있으면 반드시 bool이어야 한다(문자열 "false"를 참으로 읽지 않게)."""
+    if field_name not in row:
+        return default
+    return _require_bool(row, field_name, what)
+
+
 def _parse_source(row: dict[str, object], index: int) -> SourceConfig:
     label = _row_label(row, index)
 
@@ -195,6 +207,7 @@ def _parse_source(row: dict[str, object], index: int) -> SourceConfig:
         list_url=list_url,
         fetch_note=_require_str(row, "fetch_note", label),
         detail_pattern=_parse_detail_pattern(row.get("detail_pattern"), label),
+        list_has_dates=_optional_bool(row, "list_has_dates", label, default=True),
         disabled_reason=_parse_disabled_reason(row.get("disabled_reason"), enabled, label),
         flags=flags,
     )

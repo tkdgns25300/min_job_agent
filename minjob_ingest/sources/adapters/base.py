@@ -53,6 +53,24 @@ _SPACES: Final = re.compile("[ \\t\\u00a0]+")
 _BLANK_LINES: Final = re.compile(r"\n{3,}")
 
 
+@dataclass(frozen=True, slots=True)
+class ListRequest:
+    """목록 한 페이지를 어떻게 가져오나. **GET이 기본이고 `form`이 있으면 POST다.**
+
+    URL만 돌려주던 계약으로는 31곳 중 두 곳을 담을 수 없다(2026-08-04 실측) — CSU는 SPA라
+    목록이 `POST /api/user/board/…`이고, HANIL은 `POST …/article_list.ajax`다. 전송은 그대로
+    fetch 층이 하고(`client.post_form`), 어댑터는 **무엇을 보낼지만** 정한다.
+    """
+
+    url: str
+    #: POST 본문(form-encoded). `None`이면 GET.
+    form: Mapping[str, str] | None = None
+
+    @property
+    def is_post(self) -> bool:
+        return self.form is not None
+
+
 class ParseError(Exception):
     """게시판 HTML이 예상과 다를 때. 어댑터의 **유일한** 실패 신호다.
 

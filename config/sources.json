@@ -140,7 +140,8 @@
         "image_only": true
       },
       "detail_pattern": "/adsearch/ad_view.php?aid={id}",
-      "fetch_note": "2차검증: 상세 = /adsearch/ad_view.php?aid={id}(adview() JS가 여는 URL, headless 불요). 본문이 **JPG 이미지**(/upimg/adsearch/…jpg)·텍스트 없음→**빈 raw_text가 정상**·Gemini 멀티모달 필수. 목록 ul.grid>li: 제목 span+썸네일. id=aid."
+      "fetch_note": "2차검증: 상세 = /adsearch/ad_view.php?aid={id}(adview() JS가 여는 URL, headless 불요). 본문이 **JPG 이미지**(/upimg/adsearch/…jpg)·텍스트 없음→**빈 raw_text가 정상**·Gemini 멀티모달 필수. 목록 ul.grid>li: 제목 span+썸네일. id=aid. ⚠️2026-08-04 실측: 목록이 포스터 이미지 그리드(ul.grid > li.grid-item)로 **행에 게시일이 없다** → list_has_dates=false(기간 대신 페이지 상한이 범위). 상세 링크는 javascript:adview('{aid}',w,h).",
+      "list_has_dates": false
     },
     {
       "key": "HANIL",
@@ -262,11 +263,12 @@
       "key": "HANSEI",
       "board_name": "한세대 대학원(영산) 모집/채용",
       "denomination_hint": "SUNBOK",
-      "enabled": true,
+      "enabled": false,
       "fetch_tier": "static",
       "encoding": "utf-8",
       "list_url": "https://graduate.hansei.ac.kr/graduated/644/subview.do",
-      "fetch_note": "Konnect subview(서버렌더). graduate. 서브도메인 필수. ⚠️상세 URL의 catId가 카테고리별로 달라 **detailPattern 치환 불가 → 목록 href를 그대로 사용**(id=artclNo)."
+      "fetch_note": "Konnect subview(서버렌더). graduate. 서브도메인 필수. ⚠️상세 URL의 catId가 카테고리별로 달라 **detailPattern 치환 불가 → 목록 href를 그대로 사용**(id=artclNo). ⚠️2026-08-04 재실측: Konnect 이전으로 위 메모 전부 무효. 새 CMS는 /view.do?no=2041&pgMode=show&pstSn={id} 형태라 detail_pattern 치환이 **가능**해졌다(옛 catId 제약 해소). 목록 행은 href='#none'이고 onclick=\"javascript:show(28757)\"에 id가 있다. 페이징 pageIndex. 루트 /는 JS 리다이렉트(567B)라 목록 URL로 쓸 수 없다.",
+      "disabled_reason": "2026-08-04 확인: 사이트가 Konnect에서 이전되며 게시판 소멸(644/subview.do → 404). 후속은 공지사항 게시판 no=2041의 '모집/채용공고' 카테고리인데 **0건**이고, 게시판 전체 이력에서 '청빙' 0건·'채용' 1건(2016-05-24)뿐이라 청빙 소스가 아니다. 로그인벽은 아니다(전부 공개). 재활성 경로: https://graduate.hansei.ac.kr/view.do?no=2041&sv1=모집/채용공고 (siteId=SITE005, bbsId=BRD0085)."
     },
     {
       "key": "STS",
