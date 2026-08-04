@@ -50,6 +50,7 @@
 - [x] **페이지 경계 중복 처리** — `collect`가 실행 내 스캔한 번호를 모아, 밀려 내려온 글을 **한 번만** 수집한다. 페이지 *안* 중복은 여전히 어댑터 에러(`as_listing`)이고, 페이지 *간* 중복은 정상 현상이라 에러가 아니다(SPEC §4 정정)
 - [x] `source_data` 적재 — 불변·`UNIQUE(source_key, external_id)`(원장)·이미 본 글 skip(상세 요청 안 함)
 - [x] **`collect` 명령 + `--dry-run`** — 어댑터 레지스트리 + 결정(순수 함수: 컷오프·페이지 종료·번호 충돌) + 실행 루프 + 리포트. 소스 단위 격리 · `--dry-run`은 목록 전체 + **상세 표본 1건**(목록만 보면 상세 파싱 미검증) · mutation 17/17
+- [x] **`source_health` 기록 + 경보 판정**(`pipeline/health.py`) — 성공·실패 모두 기록(실패를 안 남기면 연속 실패를 셀 수 없다) · `--dry-run`은 기록 안 함 · `EMPTY`(목록 0행) 연속 2회 / 연속 실패 2회 = 경보, 조용한 게시판은 참고 정보 · 요약에 출력 · 12+4테스트 · mutation 12/12
 - [ ] (1-4) `PUTS` bd_name 필터 · `CSU`는 1110만 · **`HANSEI`는 `catId:artclNo` 복합키** — 각 어댑터를 만들 때 적용
 - [x] **원장 조회 확장** — `SourceData.title`·`posted_on` 컬럼 + `seen_postings`가 `LedgerEntry`(제목·게시일)를 함께 반환 + `points_to_another_posting`(둘 다 다르면 소스 실패). 추가 요청 0건 · mutation 12/12
 - [x] `--months N` 컷오프 = **목록의 게시일**(구조화 전이라 posted_at 없음 · 달 단위 말일 보정) · `--months 0`이면 날짜로 안 자름 · **범위는 컷오프가 정하고 페이지 상한(100p)은 폭주 방지용 · CLI 옵션 없음**

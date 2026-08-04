@@ -202,11 +202,15 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
 > **UNIQUE(`source_data_id`)** — 한 원자료당 초안 1개(중복 PENDING 방지). 재구조화 시 기존 행을 교체(upsert)한다. 게시판 default 교단은 `source_key`로 유도 가능(레지스트리)하므로 별도 hint 컬럼을 두지 않는다.
 
 ### ③ `source_health` — 게시판별 상태 (약 31행 · 매 실행 UPSERT)
-`source_key` PK · `last_run_at` · `last_success_at` · `last_new_count` · `consecutive_failures` · **`consecutive_zero_runs`** · `last_status`(OK/FAIL/ZERO) · `last_error`
+`source_key` PK · `last_run_at` · `first_run_at` · `last_run_id`(→`crawl_run.id`) · `last_status`(OK/FAIL/**EMPTY**) · `last_success_at` · **`last_cutoff`** · **`last_rows`** · `last_new_count` · **`last_posted_on`** · `consecutive_failures` · **`consecutive_empty_runs`** · `total_collected` · `last_error`
 
-> ⚠️ 누적값(`consecutive_failures`·`consecutive_zero_runs`)과 `last_success_at` 보존에는 **직전 값 읽기가 필요**하다 → Store에 조회(read)가 있어야 한다. 통째 덮어쓰기(blind upsert)만 두면 실패 1회로 `last_success_at`이 지워져 §7 경보가 무의미해진다.
+> ⚠️ **`EMPTY`는 "목록 행이 0"이다 — "신규 0건"이 아니다**(2026-08-04 정정). 원장 증분이라 조용한 게시판은 신규가 며칠씩 0이고 **그게 정상**이다. 그걸 소프트 실패로 세면 31곳 중 조용한 곳들이 매일 경보를 울려 **경보가 잡음이 되고 정작 깨진 게시판이 묻힌다**. 목록 자체를 못 읽는 것(셀렉터 깨짐·로그인벽 전환)이 진짜 신호다. → `consecutive_empty_runs`가 소프트 실패 경보의 근거다(§7).
 >
-> ⚠️ **`consecutive_zero_runs`가 소프트 실패 경보의 근거다**(§7). `ZERO`(200인데 신규 0건)를 완전 성공으로 취급하면 셀렉터가 깨지거나 로그인벽으로 바뀐 게시판이 영구히 "정상"으로 보인다 — `ZERO`는 성공 시각은 갱신하되 이 카운터를 올린다. 신규 유입이 있으면 0으로 리셋, 실패(FAIL)는 0건 판정 자체를 못 하므로 값을 유지한다.
+> ⚠️ **`last_cutoff`(그 실행에 적용한 기간) 없이는 다른 수치를 해석할 수 없다.** 3개월 백필 258행 다음의 데일리 18행이 "급감"으로 보인다.
+>
+> ⚠️ 누적값(`consecutive_failures`·`consecutive_empty_runs`·`total_collected`)과 `last_success_at`·`first_run_at` 보존에는 **직전 값 읽기가 필요**하다 → Store에 조회(read)가 있어야 한다.
+>
+> ⚠️ **`last_success_at`은 `OK`에서만 갱신한다.** `EMPTY`에도 갱신하면 목록 0행이 며칠 이어질 때 "마지막 성공"이 계속 오늘로 밀려 **"언제까지는 정상이었나"를 영구히 잃는다**. 실패(FAIL)는 관측값(`last_cutoff`·`last_rows`·`last_new_count`·`last_posted_on`)도 덮지 않고 직전 값을 보존한다 — 0으로 덮으면 FAIL과 EMPTY가 구분되지 않는다.
 
 ### ④ `crawl_run` — 실행별 요약 (실행마다 1행 · 누적)
 `id` PK · `started_at` · `finished_at` · `mode`(BACKFILL/DAILY) · `sources_ok` · `sources_failed` · `new_count` · `error_detail` jsonb(source_key→에러)
@@ -227,7 +231,7 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
 - **시크릿(GH Secrets)**: Vertex(Gemini) 키 · Supabase service key. 코드/DB에 노출 X.
 - **실패 감지**:
   - **하드**(비2xx·타임아웃·000): GitHub Actions 실패(빨간불) + 이메일 알림.
-  - **소프트**(200인데 신규 0건·급감): `source_health` baseline 비교 경보 + 내용 sanity(리스트 자리에 로그인폼/에러 감지).
+  - **소프트**(200인데 목록을 못 읽음): `source_health`의 `consecutive_empty_runs` ≥ 2 → 경보(셀렉터 깨짐·로그인벽). 연속 실패 ≥ 2 → 경보. 최신 글이 60일 이상 오래되거나 훑은 기간 안에 글이 없으면 **경보가 아니라 참고 정보**(방학처럼 실제로 조용한 시기가 있다). ⚠️ **"신규 0건·급감" 판정은 폐기**(2026-08-04) — 원장 증분에서는 백필 227건 → 데일리 2건이 정상이라 급감이라는 개념 자체가 성립하지 않고, 신규 0건 경보는 조용한 게시판마다 매일 울려 잡음이 된다.
 - **대시보드**: min_job admin이 `crawl_run`(최근 실행) + `source_health`(게시판별) + `review_data` PENDING 카운트를 읽어 "오늘 몇 건 추가/실패·언제 긁었나" 표시.
 
 ---

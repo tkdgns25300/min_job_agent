@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 from uuid import UUID
 
@@ -18,6 +20,7 @@ from minjob_ingest.console import Console, ProgressLine
 from minjob_ingest.domain import CrawlMode
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.lib.gemini import GeminiClient, GeminiError
+from minjob_ingest.models import SourceHealth
 from minjob_ingest.pipeline.collect import (
     DEFAULT_MONTHS,
     CollectOptions,
@@ -26,6 +29,14 @@ from minjob_ingest.pipeline.collect import (
     Progress,
     ProgressSink,
     collect_source,
+)
+from minjob_ingest.pipeline.health import (
+    Alert,
+    AlertKind,
+    alerts_for,
+    days_since_last_posting,
+    record_failure,
+    record_success,
 )
 from minjob_ingest.settings import Settings, VertexConfigError
 from minjob_ingest.sources.adapters.base import ParseError
@@ -44,6 +55,8 @@ _PROGRAM = "minjob-ingest"
 _LIST_SOURCES = "list-sources"
 _CHECK_GEMINI = "check-gemini"
 _COLLECT = "collect"
+#: 요청마다 한 줄씩 찍어 리포트를 덮는 로거들. `--verbose`에서만 켠다.
+_NOISY_LOGGERS = ("httpx", "httpcore")
 _ENABLED_MARKER = "●"
 _DISABLED_MARKER = "○"
 _INTERDENOMINATIONAL_LABEL = "초교파"
@@ -113,7 +126,18 @@ def _run_collect(
     소스가 있으면 1이다(운영자가 `status` 없이도 알 수 있게).
     """
     console = Console()
-    _setup_logging(console, verbose)
+    with _console_logging(console, verbose=verbose):
+        return _collect_all(console, config_path, only, months=months, dry_run=dry_run)
+
+
+def _collect_all(
+    console: Console,
+    config_path: Path | None,
+    only: str | None,
+    *,
+    months: int | None,
+    dry_run: bool,
+) -> int:
     sources = _collect_targets(load_sources(config_path), only)
     store = JsonStore(Settings.load().data_dir)
     # dry-run은 아무것도 쓰지 않는다 — 실행 기록(crawl_run)도 남기지 않는다.
@@ -121,6 +145,7 @@ def _run_collect(
 
     failures: dict[str, str] = {}
     saved_total = 0
+    states: list[SourceHealth] = []
     for source in sources:
         report = _collect_one(
             console,
@@ -129,6 +154,7 @@ def _run_collect(
             run_id=None if run is None else run.id,
             options=CollectOptions(months=months, dry_run=dry_run),
             failures=failures,
+            states=states,
         )
         if report is not None:
             saved_total += report.saved
@@ -143,7 +169,7 @@ def _run_collect(
                 error_detail=failures,
             )
         )
-    _print_summary(console, len(sources), failures, saved_total, dry_run=dry_run)
+    _print_summary(console, len(sources), failures, saved_total, states, dry_run=dry_run)
     return 1 if failures else 0
 
 
@@ -155,33 +181,43 @@ def _collect_one(
     run_id: UUID | None,
     options: CollectOptions,
     failures: dict[str, str],
+    states: list[SourceHealth],
 ) -> CollectReport | None:
     """게시판 하나. 실패는 `failures`에 담고 `None`을 돌려준다 — 나머지 소스는 계속 돈다.
 
     잡는 예외는 **예상된 실패만**이다(어댑터 없음·전송·파싱·원장 충돌). 그 밖의 예외는 버그이므로
     그대로 터뜨려 눈에 보이게 한다.
+
+    성공이든 실패든 `source_health`에 남긴다 — 실패를 안 남기면 연속 실패를 셀 수 없어 §7 경보가
+    죽는다. `--dry-run`은 아무것도 쓰지 않으므로 상태도 남기지 않는다.
     """
     # 제목을 먼저 낸다 — 진행 줄이 그 아래에서 갱신되고, 그 자리에 최종 리포트가 온다.
     console.heading(source.key, note=source.board_name)
     line = console.progress()
+    now = utc_now()
     try:
         with SourceClient(source) as client:
-            return collect_source(
+            report = collect_source(
                 source,
                 find_adapter(source.key),
                 client,
                 store,
                 run_id=run_id,
                 options=options,
-                today=utc_now().date(),
+                today=now.date(),
                 on_progress=_progress_renderer(console, line, dry_run=options.dry_run),
             )
     except (AdapterMissing, FetchError, ParseError, LedgerConflict) as err:
         failures[source.key] = f"{type(err).__name__}: {err}"
-        console.error(str(err))
-        return None
-    finally:
         line.clear()
+        console.error(str(err))
+        if not options.dry_run:
+            states.append(record_failure(store, source.key, run_id=run_id, at=now, error=str(err)))
+        return None
+    line.clear()
+    if not options.dry_run:
+        states.append(record_success(store, report, run_id=run_id, at=now))
+    return report
 
 
 class _ConsoleHandler(logging.Handler):
@@ -203,18 +239,32 @@ class _ConsoleHandler(logging.Handler):
             self._console.line(f"  {self._console.paint(message, 'dim')}")
 
 
-def _setup_logging(console: Console, verbose: bool) -> None:
-    """기본은 우리 메시지만 보여준다.
+@contextmanager
+def _console_logging(console: Console, *, verbose: bool) -> Iterator[None]:
+    """이 명령이 도는 동안만 로그를 Console로 보낸다.
 
-    `httpx`는 INFO에서 요청마다 한 줄씩 찍어 리포트를 덮는다 — 진단이 필요할 때만 켠다.
+    기본은 우리 메시지만 보여준다 — `httpx`는 INFO에서 요청마다 한 줄씩 찍어 리포트를 덮으므로
+    진단이 필요할 때만 켠다.
+
+    ⚠️ **핸들러를 남겨두면 안 된다.** Console이 붙은 스트림은 명령이 끝나면 닫히는데, 핸들러가
+    살아 있으면 그 뒤의 로그가 닫힌 스트림에 쓰여 터진다(테스트 20개가 실제로 깨졌다).
+    기존 핸들러를 지우지도 않는다 — 우리 것만 붙이고 우리 것만 뗀다.
     """
     root = logging.getLogger()
-    root.handlers.clear()
-    root.addHandler(_ConsoleHandler(console))
+    handler = _ConsoleHandler(console)
+    noisy = [logging.getLogger(name) for name in _NOISY_LOGGERS]
+    saved = [(logger, logger.level) for logger in (root, *noisy)]
+    root.addHandler(handler)
     root.setLevel(logging.INFO)
     if not verbose:
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        for logger in noisy:
+            logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        root.removeHandler(handler)
+        for logger, level in saved:
+            logger.setLevel(level)
 
 
 def _progress_renderer(console: Console, line: ProgressLine, *, dry_run: bool) -> ProgressSink:
@@ -297,7 +347,13 @@ def _warn_if_short(console: Console, report: CollectReport) -> None:
 
 
 def _print_summary(
-    console: Console, total: int, failures: Mapping[str, str], saved: int, *, dry_run: bool
+    console: Console,
+    total: int,
+    failures: Mapping[str, str],
+    saved: int,
+    states: Sequence[SourceHealth],
+    *,
+    dry_run: bool,
 ) -> None:
     console.line()
     console.line(console.paint("── 요약", "bold"))
@@ -309,8 +365,43 @@ def _print_summary(
     if dry_run:
         console.line()
         console.warn("--dry-run — 아무것도 저장하지 않았습니다")
-    else:
-        console.field("신규", console.paint(f"{saved}건", "green", "bold"))
+        return
+    console.field("신규", console.paint(f"{saved}건", "green", "bold"))
+    _print_alerts(console, states)
+
+
+def _print_alerts(console: Console, states: Sequence[SourceHealth]) -> None:
+    """게시판별 경보. **이게 없으면 31곳 리포트를 눈으로 비교해야 조용한 실패를 잡는다.**"""
+    today = utc_now().date()
+    alerts = [alert for health in states for alert in alerts_for(health, today=today)]
+    if not alerts:
+        return
+    console.line()
+    for alert in alerts:
+        text = f"{alert.source_key}  {_alert_sentence(alert, today=today)}"
+        if alert.kind.is_warning:
+            console.warn(text)
+        else:
+            console.bullet(console.paint(f"· {text}", "dim"))
+
+
+def _alert_sentence(alert: Alert, *, today: date) -> str:
+    """사유별 문장. 판정은 pipeline이 하고 **표현은 여기서만** 한다."""
+    health = alert.health
+    if alert.kind is AlertKind.FETCH_FAILING:
+        return f"{health.consecutive_failures}회 연속 실패 — {health.last_error}"
+    if alert.kind is AlertKind.LISTING_EMPTY:
+        since = health.last_success_at
+        return (
+            f"목록 0행 {health.consecutive_empty_runs}회 연속 —"
+            f" 셀렉터 또는 로그인벽 확인 (마지막 성공 {since:%Y-%m-%d})"
+            if since is not None
+            else f"목록 0행 {health.consecutive_empty_runs}회 연속 — 셀렉터 확인"
+        )
+    elapsed = days_since_last_posting(health, today=today)
+    if elapsed is None:
+        return f"훑은 기간({health.last_cutoff}부터) 안에 글이 없습니다 — 게시판이 조용합니다"
+    return f"최신 글이 {health.last_posted_on} ({elapsed}일 전) — 게시판이 조용합니다"
 
 
 def _build_parser() -> argparse.ArgumentParser:

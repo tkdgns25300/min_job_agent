@@ -479,13 +479,40 @@ def test_health_advance_accumulates_failures_then_resets() -> None:
     assert recovered.last_error is None
 
 
-def test_health_advance_empty_status_counts_as_response() -> None:
-    # EMPTY = 응답은 받았는데 목록 행이 0. 실패가 아니므로 성공 시각을 갱신한다(소프트 실패 후보).
+def test_health_advance_empty_status_is_not_a_failure() -> None:
+    # EMPTY = 응답은 받았는데 목록 행이 0. 실패로 세지 않되 성공 시각도 갱신하지 않는다.
     empty = SourceHealth.advance(
         previous=None, source_key="YTUS", run_at=FIXED_NOW, status=SourceHealthStatus.EMPTY
     )
-    assert empty.last_success_at == FIXED_NOW
+    assert empty.consecutive_failures == 0
     assert empty.last_error is None
+    assert empty.last_success_at is None  # 한 번도 목록을 읽은 적이 없다
+
+
+def test_empty_runs_preserve_when_the_board_last_worked() -> None:
+    """⚠️ `EMPTY`가 성공 시각을 갱신하면 0행이 이어질 때 그 값이 계속 오늘로 밀린다.
+
+    그러면 경보가 "마지막 성공 = 오늘"이라고 말해 **"언제까지는 정상이었나"를 영구히 잃는다** —
+    운영자가 게시판 개편 시점을 되짚을 수 없다.
+    """
+    working = SourceHealth.advance(
+        previous=None,
+        source_key="YTUS",
+        run_at=FIXED_NOW,
+        status=SourceHealthStatus.OK,
+        rows=18,
+        new_count=2,
+    )
+    broken = working
+    for day in (1, 2, 3):
+        broken = SourceHealth.advance(
+            previous=broken,
+            source_key="YTUS",
+            run_at=FIXED_NOW + timedelta(days=day),
+            status=SourceHealthStatus.EMPTY,
+        )
+    assert broken.last_success_at == FIXED_NOW  # 3일이 지나도 그날을 가리킨다
+    assert broken.consecutive_empty_runs == 3
 
 
 # ── CrawlRun ─────────────────────────────────────────────────────

@@ -539,6 +539,9 @@ class SourceHealth:
     first_run_at: datetime
     #: 이 상태를 만든 실행(`crawl_run.id`). 실패를 봤을 때 그 실행으로 되짚는 유일한 연결이다.
     last_run_id: UUID | None = None
+    #: ⚠️ **마지막으로 목록을 읽은 시각**(`OK`였던 실행). `EMPTY`·`FAIL`은 갱신하지 않는다 —
+    #: 갱신하면 목록 0행이 며칠 이어질 때 "마지막 성공"이 계속 오늘로 밀려, 정작 필요한
+    #: "언제까지는 정상이었나"를 영구히 잃는다. 한 번도 읽은 적이 없으면 `None`이다.
     last_success_at: datetime | None = None
     #: ⚠️ **이번에 훑은 기간의 시작**(게시일 컷오프). 이게 없으면 `last_rows`·`last_new_count`를
     #: 해석할 수 없다 — 3개월 백필 258행과 데일리 18행이 "급감"으로 보인다.
@@ -592,9 +595,9 @@ class SourceHealth:
                 raise ValueError("last_status=FAIL이면 last_error가 있어야 함(원인 없는 실패 금지)")
             _set(self, "last_error", _require_non_empty(self.last_error, "last_error"))
             return
-        if self.last_success_at is None:
-            # OK·EMPTY는 응답을 받은 상태이므로 성공 시각이 있어야 §7 경보가 의미를 갖는다.
-            raise ValueError(f"last_status={self.last_status.value}면 last_success_at이 필요함")
+        if self.last_status is SourceHealthStatus.OK and self.last_success_at is None:
+            # OK는 정의상 이번에 목록을 읽었다 — 그 시각이 곧 마지막 성공이다.
+            raise ValueError("last_status=OK면 last_success_at이 필요함")
         if self.last_status is SourceHealthStatus.EMPTY and self.last_rows != 0:
             raise ValueError(f"EMPTY는 목록 행 0을 뜻함 (last_rows={self.last_rows})")
         if self.last_status is SourceHealthStatus.OK and self.last_rows == 0:
@@ -625,9 +628,10 @@ class SourceHealth:
     ) -> SourceHealth:
         """직전 상태에 이번 실행 결과를 접어 다음 상태를 만든다.
 
-        실패해도 `last_success_at`을 보존하고, 성공하면 연속 실패를 0으로 되돌린다 —
-        이 규칙이 없으면 실패 1회로 마지막 성공 시각이 지워져 §7 경보가 무의미해진다.
-        `EMPTY`(목록 행 0)는 응답은 받았으니 성공 시각을 갱신하되 **연속 카운터를 올린다**.
+        `OK`가 아닌 실행은 `last_success_at`을 **건드리지 않는다**(실패·목록 0행 모두). 이 규칙이
+        없으면 한 번의 실패로 마지막 성공 시각이 지워지거나, 반대로 목록 0행이 이어질 때 성공
+        시각이 계속 오늘로 밀려 "언제까지는 정상이었나"를 잃는다.
+        `EMPTY`(목록 행 0)는 응답은 받았으니 실패로 세지 않되 **연속 카운터를 올린다**.
 
         ⚠️ **실패는 측정이 아니다** — `FAIL`이면 관측값(`cutoff`·`rows`·`new_count`·`posted_on`)을
         인자로 받지 않고 직전 값을 그대로 보존한다. 0으로 덮으면 실패 한 번이 "목록이 비었다"로
@@ -655,7 +659,11 @@ class SourceHealth:
             last_status=checked_status,
             first_run_at=previous.first_run_at if previous is not None else run_at,
             last_run_id=run_id,
-            last_success_at=(previous.last_success_at if previous else None) if failed else run_at,
+            last_success_at=(
+                run_at
+                if checked_status is SourceHealthStatus.OK
+                else (previous.last_success_at if previous is not None else None)
+            ),
             last_cutoff=observed.cutoff,
             last_rows=observed.rows,
             last_new_count=observed.new_count,

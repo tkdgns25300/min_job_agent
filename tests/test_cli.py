@@ -4,17 +4,25 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+from datetime import date
 from pathlib import Path
 
 import pytest
 
-from minjob_ingest.cli import _dispatch, main
+from minjob_ingest import cli
+from minjob_ingest.cli import _NOISY_LOGGERS, _dispatch, main
+from minjob_ingest.domain import SourceHealthStatus
+from minjob_ingest.fetch.client import FetchError
 from minjob_ingest.lib import gemini
+from minjob_ingest.pipeline.collect import CollectReport
+from minjob_ingest.pipeline.health import EMPTY_RUNS_ALARM
 from minjob_ingest.settings import (
     ENV_VERTEX_CLIENT_EMAIL,
     ENV_VERTEX_PRIVATE_KEY,
     ENV_VERTEX_PROJECT,
 )
+from minjob_ingest.store.json_store import JsonStore
 
 
 def _write_config(tmp_path: Path, *, enabled: bool = True) -> Path:
@@ -116,3 +124,170 @@ def test_check_gemini_reports_missing_config_without_calling_the_api(
     monkeypatch.setattr(gemini, "build_client", fail_if_called)
     assert main(["check-gemini"]) == 1
     assert "Vertex 설정 오류" in capsys.readouterr().err
+
+
+# ── collect: source_health 배선 ──────────────────────────────────
+#
+# `collect_source`는 이미 fixture로 검증됐다. 여기서 보는 것은 **배선**이다 — 결과를
+# `source_health`에 남기는가, `--dry-run`이 그걸 건드리지 않는가.
+
+
+class _NoClient:
+    """전송 층 대역. 이 테스트는 게시판을 만지지 않는다(가드레일 #7)."""
+
+    def __init__(self, source: object) -> None:
+        pass
+
+    def __enter__(self) -> _NoClient:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+def _canned_report(
+    *, rows: int, saved: int, newest: date | None = date(2026, 8, 4)
+) -> CollectReport:
+    return CollectReport(
+        source_key="YTUS",
+        pages_read=1,
+        rows=rows,
+        fresh=saved,
+        seen=rows - saved,
+        stale=0,
+        saved=saved,
+        shifted=0,
+        oldest=newest,
+        newest=newest,
+        samples=(),
+        cutoff=date(2026, 5, 4),
+    )
+
+
+def _run_collect_with(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    outcome: CollectReport | Exception,
+    dry_run: bool,
+) -> JsonStore:
+    monkeypatch.setenv("MINJOB_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(cli, "SourceClient", _NoClient)
+    monkeypatch.setattr(cli, "find_adapter", lambda _key: object())
+
+    def fake_collect(*_args: object, **_kwargs: object) -> CollectReport:
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(cli, "collect_source", fake_collect)
+    main(
+        [
+            "collect",
+            "--config",
+            str(_write_config(tmp_path)),
+            *(["--dry-run"] if dry_run else []),
+        ]
+    )
+    return JsonStore(tmp_path / "data")
+
+
+def test_collect_records_health_on_success(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = _run_collect_with(
+        monkeypatch, tmp_path, outcome=_canned_report(rows=18, saved=2), dry_run=False
+    )
+    health = store.get_health("YTUS")
+    assert health is not None
+    assert health.last_status is SourceHealthStatus.OK
+    assert health.last_rows == 18
+    assert health.last_cutoff == date(2026, 5, 4)  # 기간이 없으면 행 수를 해석할 수 없다
+    assert health.last_run_id is not None  # crawl_run 과 이어져야 되짚을 수 있다
+    capsys.readouterr()
+
+
+def test_collect_records_health_on_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """실패를 안 남기면 연속 실패를 셀 수 없어 §7 경보가 죽는다."""
+    store = _run_collect_with(monkeypatch, tmp_path, outcome=FetchError("HTTP 500"), dry_run=False)
+    health = store.get_health("YTUS")
+    assert health is not None
+    assert health.last_status is SourceHealthStatus.FAIL
+    assert health.consecutive_failures == 1
+    assert health.last_error is not None
+    capsys.readouterr()
+
+
+def test_dry_run_records_no_health(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--dry-run`은 아무것도 저장하지 않는다고 약속한다 — 상태도 저장이다."""
+    store = _run_collect_with(
+        monkeypatch, tmp_path, outcome=_canned_report(rows=18, saved=2), dry_run=True
+    )
+    assert store.get_health("YTUS") is None
+    assert not (tmp_path / "data" / "source_health.json").exists()
+    capsys.readouterr()
+
+
+def test_collect_leaves_logging_as_it_found_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 핸들러를 남기면 **명령이 끝난 뒤의 로그가 닫힌 스트림에 쓰여** 터진다.
+
+    Console은 이 명령의 출력 스트림에 묶여 있고 그 스트림은 곧 닫힌다. 실제로 이걸 안 치웠을 때
+    이후 테스트 20개가 `ValueError: I/O operation on closed file`로 깨졌다.
+    """
+    root = logging.getLogger()
+    before_handlers = list(root.handlers)
+    # ⚠️ 현재 레벨을 그냥 읽어 비교하면 안 된다 — 앞선 collect 테스트가 이미 WARNING을 남긴
+    # 상태면 "복원 안 함" 변이에서도 before == after 가 되어 조용히 통과한다.
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.DEBUG)
+
+    _run_collect_with(monkeypatch, tmp_path, outcome=_canned_report(rows=18, saved=2), dry_run=True)
+
+    assert root.handlers == before_handlers
+    for name in _NOISY_LOGGERS:
+        assert logging.getLogger(name).level == logging.DEBUG  # 우리가 낮춘 것을 되돌렸다
+        logging.getLogger(name).setLevel(logging.NOTSET)  # 이 테스트가 남기지 않는다
+    # 명령이 끝난 뒤 로그를 찍어도 터지지 않는다.
+    capsys.readouterr()
+    logging.getLogger("minjob_ingest.after").info("이 줄이 예외를 내면 핸들러가 남은 것이다")
+
+
+def test_repeated_empty_listings_are_reported_in_the_summary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """판정만 맞고 **출력하지 않으면** 운영자는 여전히 리포트 31개를 눈으로 비교해야 한다."""
+    empty = _canned_report(rows=0, saved=0, newest=None)
+    for _ in range(EMPTY_RUNS_ALARM):
+        _run_collect_with(monkeypatch, tmp_path, outcome=empty, dry_run=False)
+    printed = capsys.readouterr().out
+    assert "목록 0행" in printed
+    assert "YTUS" in printed
+    # 경보 표시(⚠)까지 확인한다 — 참고 정보로 격하되면 31곳 요약에서 눈에 안 들어온다.
+    assert any("⚠" in line and "YTUS" in line for line in printed.splitlines())
+
+
+def test_logs_emitted_during_collect_reach_the_console(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """robots·재시도 알림은 로거로 나간다 — 콘솔에 붙이지 않으면 **전부 사라진다**.
+
+    차단 직전 신호(`Retry-After`·`Crawl-delay`)가 조용히 없어지는 경로다.
+    """
+    report = _canned_report(rows=18, saved=2)
+
+    def logging_collect(*_args: object, **_kwargs: object) -> CollectReport:
+        logging.getLogger("minjob_ingest.fetch.client").info("YTUS 일시 오류 — 재시도")
+        return report
+
+    monkeypatch.setenv("MINJOB_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(cli, "SourceClient", _NoClient)
+    monkeypatch.setattr(cli, "find_adapter", lambda _key: object())
+    monkeypatch.setattr(cli, "collect_source", logging_collect)
+    main(["collect", "--config", str(_write_config(tmp_path)), "--dry-run"])
+    assert "YTUS 일시 오류 — 재시도" in capsys.readouterr().out
