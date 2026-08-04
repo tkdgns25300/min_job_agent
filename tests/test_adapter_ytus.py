@@ -210,14 +210,19 @@ def test_non_numeric_url_tail_is_rejected(source: SourceConfig) -> None:
 
 
 def test_unexpected_date_format_is_rejected(source: SourceConfig) -> None:
-    # 조용히 None으로 흘리면 백필 범위가 무의미해진다.
-    with pytest.raises(ParseError, match="작성일 형식"):
-        ytus.parse_list(_list_html(_row(rdate="2026.08.04")), source)
+    """조용히 None으로 흘리면 백필 범위가 무의미해진다.
+
+    ⚠️ `2026.08.04`(점)는 **거부하지 않는다** — 구분자는 게시판마다 `-`·`.`·`/`로 갈려서
+    공용 파서가 셋 다 받는다(`require_date`). 값이 올바르게 나오면 문제가 아니다.
+    실제로 못 읽는 형태만 실패해야 한다.
+    """
+    with pytest.raises(ParseError, match="게시일 형식"):
+        ytus.parse_list(_list_html(_row(rdate="2026년 8월 4일")), source)
 
 
 def test_empty_date_cell_is_rejected(source: SourceConfig) -> None:
     """YTUS는 전 행에 날짜가 있다 — 비면 셀렉터가 깨진 것이고, 백필 범위가 무의미해진다."""
-    with pytest.raises(ParseError, match="작성일 칸"):
+    with pytest.raises(ParseError, match="게시일 칸"):
         ytus.parse_list(_list_html(_row(rdate="")), source)
 
 
@@ -227,7 +232,7 @@ def test_empty_number_marks_a_notice_even_without_the_class(source: SourceConfig
     실측에서 공지행은 `tr.notice-row`이면서 `td.num`이 비어 있다. 클래스만 믿으면 개편 한 번에
     공지 두 건이 매일 구조화돼 돈을 쓴다.
     """
-    with pytest.raises(ParseError, match="전부 공지로 판정"):
+    with pytest.raises(ParseError, match="전부 걸러짐"):
         ytus.parse_list(_list_html(_row(num="")), source)
 
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Final, Protocol
 
-from minjob_ingest.sources.adapters import ytus
+from minjob_ingest.sources.adapters import daeshin, ytus
 from minjob_ingest.sources.adapters.base import ListRequest, PostingRef, RawPosting
 from minjob_ingest.sources.registry import SourceConfig
 
@@ -38,7 +38,10 @@ class Adapter(Protocol):
 
 
 #: 구현된 어댑터. 1-4에서 31곳까지 채운다.
-ADAPTERS: Final[dict[str, Adapter]] = {ytus.SOURCE_KEY: ytus}
+ADAPTERS: Final[dict[str, Adapter]] = {
+    daeshin.SOURCE_KEY: daeshin,
+    ytus.SOURCE_KEY: ytus,
+}
 
 
 def find_adapter(source_key: str) -> Adapter:

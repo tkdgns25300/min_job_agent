@@ -17,19 +17,18 @@
 
 from __future__ import annotations
 
-from datetime import date
 from typing import Final
 from urllib.parse import urljoin
 
 from bs4 import Tag
 
-from minjob_ingest.clock import parse_iso_date
 from minjob_ingest.models import Attachment
 from minjob_ingest.sources.adapters.base import (
     ListRequest,
     ParseError,
     PostingRef,
     RawPosting,
+    as_int,
     as_listing,
     attachments_in,
     cell_text,
@@ -37,7 +36,11 @@ from minjob_ingest.sources.adapters.base import (
     image_urls_in,
     normalized_text,
     parse_html,
+    require_date,
+    require_numeric_id,
     require_one,
+    require_some_kept,
+    rows_with_data,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -48,6 +51,7 @@ _ROW: Final = "tr"
 #: 고정공지 — 두 신호가 독립적으로 존재한다(class + 빈 표시번호). 하나가 바뀌어도 걸린다.
 _NOTICE_CLASS: Final = "notice-row"
 _DETAIL_LINK: Final = "td.title a[href]"
+_DATE_CELL: Final = "td.rdate"
 _BODY: Final = "div.boardViewContent"
 #: 이미지형 첨부의 **미리보기**. 본문의 형제라 본문만 훑으면 놓친다(실측).
 _IMAGE_PREVIEW: Final = "div.pnlAttachedImage"
@@ -78,17 +82,12 @@ def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
     후자는 `ParseError`다. 빈 리스트로 돌려주면 "정상인데 0건"으로 기록돼 셀렉터가 깨진 걸
     아무도 모른다.
     """
-    soup = parse_html(html)
-    table = require_one(soup, _LIST_TABLE, what=f"{SOURCE_KEY} 목록")
-    data_rows = [row for row in table.select(_ROW) if row.select("td")]
+    table = require_one(parse_html(html), _LIST_TABLE, what=f"{SOURCE_KEY} 목록")
+    data_rows = rows_with_data(table, row=_ROW)
     refs = [_ref_from_row(row, source) for row in data_rows if not _is_skippable_row(row)]
-    if data_rows and not refs:
-        # 데이터 행이 있는데 전부 걸러졌다 = 공지 판정 기준(`td.num`)이 안 맞는다.
-        # 빈 결과로 흘리면 "정상인데 0건"으로 기록돼 셀렉터가 깨진 걸 아무도 모른다.
-        raise ParseError(
-            f"{SOURCE_KEY}: 데이터 행 {len(data_rows)}개가 전부 공지로 판정됨 —"
-            f" `td.num` 셀렉터 확인(사이트 개편 의심)"
-        )
+    require_some_kept(
+        refs, data_rows, source_key=SOURCE_KEY, filtered_by=f"공지 판정(`{_NOTICE_CLASS}`·td.num)"
+    )
     return as_listing(refs, source_key=SOURCE_KEY)
 
 
@@ -154,12 +153,12 @@ def _ref_from_row(row: Tag, source: SourceConfig) -> PostingRef:
         # 붙어 있어, 같은 글을 1페이지에서 찾았을 때와 `source_url`이 달라진다.
         url=detail_url(source, external_id),
         title=link.get_text(" ", strip=True),
-        posted_on=_posted_on(row),
+        posted_on=require_date(cell_text(row, _DATE_CELL), source_key=SOURCE_KEY, cell=_DATE_CELL),
         list_meta={
             "list_title": link.get_text(" ", strip=True),
-            "list_date": cell_text(row, "td.rdate") or None,
+            "list_date": cell_text(row, _DATE_CELL) or None,
             "author": cell_text(row, "td.author") or None,
-            "views": _as_int(cell_text(row, "td.rnum")),
+            "views": as_int(cell_text(row, "td.rnum")),
             "display_no": cell_text(row, "td.num") or None,
             # 상세에서 첨부 셀렉터가 빗나갔는지 교차 확인하는 독립 신호.
             "has_attachment": bool(row.select("td.list-file img")),
@@ -172,26 +171,4 @@ def _external_id_from(url: str, source: SourceConfig) -> str:
     if source.detail_pattern is None:  # 레지스트리가 로드 시 보장하지만 타입을 좁힌다
         raise ParseError(f"{SOURCE_KEY}: detail_pattern이 없다")
     found = external_id_from_url(url, detail_pattern=source.detail_pattern, what=SOURCE_KEY)
-    if not found.isdigit():
-        raise ParseError(f"{SOURCE_KEY}: 글번호가 숫자가 아님 ({found!r}) — 링크 형태가 바뀌었다")
-    return found
-
-
-def _posted_on(row: Tag) -> date:
-    """목록의 작성일. **조용히 None으로 흘리지 않는다** — 날짜는 백필 컷오프의 유일한
-    기준이라(SPEC §4) 없거나 형식이 다르면 범위가 무의미해진다."""
-    text = cell_text(row, "td.rdate")
-    if not text:
-        # YTUS는 전 행에 작성일이 있다(실측) → 비면 셀렉터가 깨진 것이다.
-        # `PostingRef.posted_on=None`은 "날짜 칸이 없는 게시판"용 계약이라 이 침묵과 구분되지
-        # 않는다 → 여기서 실패시켜 백필 범위가 조용히 무의미해지는 것을 막는다.
-        raise ParseError(f"{SOURCE_KEY}: 작성일 칸이 비었음 — 셀렉터 `td.rdate` 확인")
-    try:
-        return parse_iso_date(text)
-    except ValueError as err:
-        raise ParseError(f"{SOURCE_KEY}: 작성일 형식이 예상과 다름 ({text!r})") from err
-
-
-def _as_int(text: str) -> int | None:
-    digits = text.replace(",", "").strip()
-    return int(digits) if digits.isdigit() else None
+    return require_numeric_id(found, source_key=SOURCE_KEY)

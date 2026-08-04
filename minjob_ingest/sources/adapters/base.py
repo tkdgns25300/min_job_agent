@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from types import MappingProxyType
@@ -22,6 +22,7 @@ from urllib.parse import unquote, urljoin, urlsplit
 from bs4 import BeautifulSoup, Tag
 from bs4.element import NavigableString
 
+from minjob_ingest.clock import parse_iso_date
 from minjob_ingest.models import Attachment, JsonValue, as_json_value
 
 #: `lxml`을 쓴다 — 깨진 마크업(닫히지 않은 `<td>` 등)에서 표준 파서보다 관대하다.
@@ -212,6 +213,70 @@ def _filename_from(url: str) -> str:
     """URL 끝 세그먼트를 파일명으로. YTUS 다운로드 URL은 끝에 파일명을 담는다(실측)."""
     last = unquote(urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1])
     return last or "unknown"
+
+
+def rows_with_data(table: Tag, *, row: str = "tr", cell: str = "td") -> list[Tag]:
+    """헤더를 뺀 데이터 행. 헤더는 `th`만 갖고 있어 `td`가 없다.
+
+    31곳 중 대부분이 `table > tr` 구조라 여기 둔다. `ul > li` 게시판은 그 어댑터가 직접 고른다.
+    """
+    return [found for found in table.select(row) if found.select(cell)]
+
+
+def require_some_kept(
+    kept: Sequence[object], data_rows: Sequence[object], *, source_key: str, filtered_by: str
+) -> None:
+    """데이터 행이 있는데 **전부 걸러졌으면** 에러.
+
+    ⚠️ 이 검사가 없으면 공지 판정 기준이 어긋났을 때 조용히 0건이 된다. YTUS에서 실제로
+    `td.num` 클래스가 바뀌자 공고 18건이 전부 공지로 판정돼 **예외 없이** 0건이 됐다.
+    """
+    if data_rows and not kept:
+        raise ParseError(
+            f"{source_key}: 데이터 행 {len(data_rows)}개가 전부 걸러짐 —"
+            f" {filtered_by} 확인(사이트 개편 의심)"
+        )
+
+
+def require_date(text: str, *, source_key: str, cell: str) -> date:
+    """목록의 게시일. **조용히 `None`으로 흘리지 않는다.**
+
+    날짜는 백필 범위의 유일한 기준이다(SPEC §4). 비거나 형식이 다르면 셀렉터가 깨진 것이고,
+    `posted_on=None`은 "날짜 칸이 없는 게시판"용 계약이라 그 침묵과 구분되지 않는다.
+    구분자는 게시판마다 `-`·`.`·`/`로 갈리므로 셋 다 받는다(실측).
+    """
+    trimmed = text.strip()
+    if not trimmed:
+        raise ParseError(f"{source_key}: 게시일 칸이 비었음 — 셀렉터 `{cell}` 확인")
+    try:
+        return parse_iso_date(trimmed.replace(".", "-").replace("/", "-"))
+    except ValueError as err:
+        raise ParseError(f"{source_key}: 게시일 형식이 예상과 다름 ({trimmed!r})") from err
+
+
+def require_numeric_id(found: str, *, source_key: str) -> str:
+    """글번호가 숫자인지. 아니면 링크 형태가 바뀐 것이다(복합키 게시판은 이걸 쓰지 않는다)."""
+    if not found.isdigit():
+        raise ParseError(f"{source_key}: 글번호가 숫자가 아님 ({found!r}) — 링크 형태가 바뀌었다")
+    return found
+
+
+def as_int(text: str) -> int | None:
+    """조회수 같은 숫자 칸. 못 읽으면 `None` — 부수 정보라 실패시키지 않는다."""
+    digits = text.replace(",", "").strip()
+    return int(digits) if digits.isdigit() else None
+
+
+def id_from_js(text: str, *, pattern: re.Pattern[str], source_key: str, what: str) -> str:
+    """`javascript:fView('42705')`처럼 **JS 호출 안에 든 글번호**를 뽑는다.
+
+    31곳 중 여러 게시판이 상세를 href가 아니라 JS 함수로 연다(실측: CALVIN·KWANGSHIN·
+    PCKWORLD·KEHC·HANSEI). href를 읽는 코드로는 통째로 놓치므로 게시판별 정규식을 받는다.
+    """
+    found = pattern.search(text)
+    if found is None:
+        raise ParseError(f"{source_key}: {what}에서 글번호를 못 찾음 ({text[:60]!r})")
+    return found.group(1)
 
 
 def external_id_from_url(url: str, *, detail_pattern: str, what: str) -> str:
