@@ -521,43 +521,92 @@ class ReviewData:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SourceHealth:
-    """③ 게시판별 상태. 매 실행 UPSERT.
+    """③ 게시판별 상태. 매 실행 UPSERT — **게시판 1곳 = 1행**(이력이 아니라 현재 상태다).
 
-    누적값(`consecutive_failures`·`consecutive_zero_runs`)과 `last_success_at` 보존에는
-    직전 값이 필요하다 → store에서 읽어 `advance`로 이어붙인다(SPEC §6 ③).
+    누적값(`consecutive_failures`·`consecutive_empty_runs`·`total_collected`)과
+    `last_success_at`·`first_run_at` 보존에는 직전 값이 필요하다 → store에서 읽어 `advance`로
+    이어붙인다(SPEC §6 ③).
+
+    ⚠️ **`last_*` 값들은 시점이 섞일 수 있다.** 실패한 실행은 아무것도 측정하지 못하므로
+    마지막으로 *관측된* 값을 보존한다(그게 언제 것인지는 `last_success_at`이 말해준다).
     """
 
     source_key: str
     last_run_at: datetime
     last_status: SourceHealthStatus
+    #: 이 게시판을 처음 훑은 시각. `total_collected=0`이 "3일째라 아직 없음"인지
+    #: "3개월째인데 하나도 없음"인지 구분하는 데 필요하다.
+    first_run_at: datetime
+    #: 이 상태를 만든 실행(`crawl_run.id`). 실패를 봤을 때 그 실행으로 되짚는 유일한 연결이다.
+    last_run_id: UUID | None = None
     last_success_at: datetime | None = None
+    #: ⚠️ **이번에 훑은 기간의 시작**(게시일 컷오프). 이게 없으면 `last_rows`·`last_new_count`를
+    #: 해석할 수 없다 — 3개월 백필 258행과 데일리 18행이 "급감"으로 보인다.
+    last_cutoff: date | None = None
+    #: 목록에서 읽은 행 수(범위 밖 포함). **0이면 목록 자체를 못 읽었다는 뜻**이다.
+    last_rows: int = 0
+    #: 그중 새로 저장한 건수. 데일리에서 0인 것은 **정상**이다(원장이 걸러낸 것).
     last_new_count: int = 0
+    #: 컷오프 안에서 관측한 가장 최근 게시일. `None`이면 그 기간에 글이 없었다는 뜻이다.
+    last_posted_on: date | None = None
     consecutive_failures: int = 0
-    #: 응답은 정상인데 신규 0건이 연속된 횟수 — §7 소프트 실패(셀렉터 깨짐·로그인벽 전환) 신호.
-    consecutive_zero_runs: int = 0
+    #: **목록 행이 0**인 실행이 연속된 횟수 — §7 소프트 실패(셀렉터 깨짐·로그인벽 전환) 신호.
+    #: ⚠️ "신규 0건"이 아니다(그건 정상) — 이유는 `SourceHealthStatus` 참조.
+    consecutive_empty_runs: int = 0
+    #: 이 게시판에서 지금까지 저장한 누적 건수.
+    total_collected: int = 0
     last_error: str | None = None
 
     def __post_init__(self) -> None:
         _set(self, "source_key", normalize_source_key(self.source_key))
         _set(self, "last_status", _as_enum(self.last_status, SourceHealthStatus, "last_status"))
-        _require_non_negative(self.last_new_count, "last_new_count")
-        _require_non_negative(self.consecutive_failures, "consecutive_failures")
-        _require_non_negative(self.consecutive_zero_runs, "consecutive_zero_runs")
+        for name in (
+            "last_rows",
+            "last_new_count",
+            "consecutive_failures",
+            "consecutive_empty_runs",
+            "total_collected",
+        ):
+            _require_non_negative(getattr(self, name), name)
+        if self.last_new_count > self.last_rows:
+            # 신규는 목록 행의 부분집합이다. 어기면 rows 자리에 fresh를 넣은 배선 오류다.
+            raise ValueError(
+                f"last_new_count({self.last_new_count})가 last_rows({self.last_rows})보다 큼"
+            )
         _set(self, "last_run_at", ensure_utc(self.last_run_at))
+        _set(self, "first_run_at", ensure_utc(self.first_run_at))
+        if self.first_run_at > self.last_run_at:
+            raise ValueError("first_run_at이 last_run_at보다 늦을 수 없음")
         if self.last_success_at is not None:
             _set(self, "last_success_at", ensure_utc(self.last_success_at))
+        if self.last_cutoff is not None:
+            _set(self, "last_cutoff", require_plain_date(self.last_cutoff))
+        if self.last_posted_on is not None:
+            _set(self, "last_posted_on", require_plain_date(self.last_posted_on))
+        self._check_status_matches_rows()
+
+    def _check_status_matches_rows(self) -> None:
+        """상태와 행 수가 어긋나면 경보 판정이 무의미해진다 — 정의를 타입으로 못 박는다."""
         if self.last_status is SourceHealthStatus.FAIL:
             if self.last_error is None:
                 raise ValueError("last_status=FAIL이면 last_error가 있어야 함(원인 없는 실패 금지)")
             _set(self, "last_error", _require_non_empty(self.last_error, "last_error"))
-        elif self.last_success_at is None:
-            # OK·ZERO는 응답을 받은 상태이므로 성공 시각이 있어야 §7 경보가 의미를 갖는다.
+            return
+        if self.last_success_at is None:
+            # OK·EMPTY는 응답을 받은 상태이므로 성공 시각이 있어야 §7 경보가 의미를 갖는다.
             raise ValueError(f"last_status={self.last_status.value}면 last_success_at이 필요함")
+        if self.last_status is SourceHealthStatus.EMPTY and self.last_rows != 0:
+            raise ValueError(f"EMPTY는 목록 행 0을 뜻함 (last_rows={self.last_rows})")
+        if self.last_status is SourceHealthStatus.OK and self.last_rows == 0:
+            raise ValueError("목록 행이 0이면 OK가 아니라 EMPTY다")
 
     @property
     def is_soft_failing(self) -> bool:
-        """응답은 오는데 신규가 계속 0인가 — 셀렉터 깨짐 의심(§7). 임계값은 runner가 정한다."""
-        return self.consecutive_zero_runs > 0
+        """응답은 오는데 **목록이 계속 비어 있나** — 셀렉터 깨짐 의심(§7).
+
+        임계값은 runner가 정한다. ⚠️ 신규 0건으로 판정하지 않는다(그건 정상 · SPEC §7).
+        """
+        return self.consecutive_empty_runs > 0
 
     @classmethod
     def advance(
@@ -567,14 +616,22 @@ class SourceHealth:
         source_key: str,
         run_at: datetime,
         status: SourceHealthStatus,
+        run_id: UUID | None = None,
+        cutoff: date | None = None,
+        rows: int = 0,
         new_count: int = 0,
+        posted_on: date | None = None,
         error: str | None = None,
     ) -> SourceHealth:
         """직전 상태에 이번 실행 결과를 접어 다음 상태를 만든다.
 
         실패해도 `last_success_at`을 보존하고, 성공하면 연속 실패를 0으로 되돌린다 —
         이 규칙이 없으면 실패 1회로 마지막 성공 시각이 지워져 §7 경보가 무의미해진다.
-        `ZERO`는 응답은 받았으니 성공 시각을 갱신하되 **연속 0건 카운터를 올린다**(소프트 실패).
+        `EMPTY`(목록 행 0)는 응답은 받았으니 성공 시각을 갱신하되 **연속 카운터를 올린다**.
+
+        ⚠️ **실패는 측정이 아니다** — `FAIL`이면 관측값(`cutoff`·`rows`·`new_count`·`posted_on`)을
+        인자로 받지 않고 직전 값을 그대로 보존한다. 0으로 덮으면 실패 한 번이 "목록이 비었다"로
+        보여 EMPTY 경보와 구분되지 않는다.
         """
         checked_status = _as_enum(status, SourceHealthStatus, "status")
         failed = checked_status is SourceHealthStatus.FAIL
@@ -583,23 +640,31 @@ class SourceHealth:
                 f"status={checked_status.value}인데 error가 주어짐 — 부분 실패 상세는"
                 " crawl_run.error_detail에 남긴다"
             )
-        previous_failures = previous.consecutive_failures if previous is not None else 0
-        previous_zeros = previous.consecutive_zero_runs if previous is not None else 0
-        previous_success = previous.last_success_at if previous is not None else None
-        if checked_status is SourceHealthStatus.ZERO:
-            zero_runs = previous_zeros + 1
-        elif failed:
-            zero_runs = previous_zeros  # 실패는 0건 판정 자체를 못 하므로 유지
-        else:
-            zero_runs = 0
+        empty_runs = _next_empty_runs(previous, checked_status)
+        observed = _Observation.of(
+            previous,
+            failed=failed,
+            cutoff=cutoff,
+            rows=rows,
+            new_count=new_count,
+            posted_on=posted_on,
+        )
         return cls(
             source_key=source_key,
             last_run_at=run_at,
             last_status=checked_status,
-            last_success_at=previous_success if failed else run_at,
-            last_new_count=new_count,
-            consecutive_failures=previous_failures + 1 if failed else 0,
-            consecutive_zero_runs=zero_runs,
+            first_run_at=previous.first_run_at if previous is not None else run_at,
+            last_run_id=run_id,
+            last_success_at=(previous.last_success_at if previous else None) if failed else run_at,
+            last_cutoff=observed.cutoff,
+            last_rows=observed.rows,
+            last_new_count=observed.new_count,
+            last_posted_on=observed.posted_on,
+            consecutive_failures=(
+                (previous.consecutive_failures if previous else 0) + 1 if failed else 0
+            ),
+            consecutive_empty_runs=empty_runs,
+            total_collected=(previous.total_collected if previous else 0) + new_count,
             # 예외 메시지가 비는 경우(TimeoutError 등)에도 기록이 남아야 한다.
             last_error=(error or checked_status.value) if failed else None,
         )
@@ -653,6 +718,48 @@ class CrawlRun:
             new_count=new_count,
             error_detail=error_detail if error_detail is not None else self.error_detail,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _Observation:
+    """이번 실행이 관측한 값들. 실패면 직전 관측을 그대로 물려준다(0으로 덮지 않는다)."""
+
+    cutoff: date | None
+    rows: int
+    new_count: int
+    posted_on: date | None
+
+    @classmethod
+    def of(
+        cls,
+        previous: SourceHealth | None,
+        *,
+        failed: bool,
+        cutoff: date | None,
+        rows: int,
+        new_count: int,
+        posted_on: date | None,
+    ) -> _Observation:
+        if not failed:
+            return cls(cutoff=cutoff, rows=rows, new_count=new_count, posted_on=posted_on)
+        if previous is None:
+            return cls(cutoff=None, rows=0, new_count=0, posted_on=None)
+        return cls(
+            cutoff=previous.last_cutoff,
+            rows=previous.last_rows,
+            new_count=previous.last_new_count,
+            posted_on=previous.last_posted_on,
+        )
+
+
+def _next_empty_runs(previous: SourceHealth | None, status: SourceHealthStatus) -> int:
+    """목록이 빈 실행의 연속 횟수. 실패는 판정 자체를 못 하므로 유지한다."""
+    carried = previous.consecutive_empty_runs if previous is not None else 0
+    if status is SourceHealthStatus.EMPTY:
+        return carried + 1
+    if status is SourceHealthStatus.FAIL:
+        return carried
+    return 0
 
 
 def _set(record: object, field_name: str, value: object) -> None:

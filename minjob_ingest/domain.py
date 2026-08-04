@@ -171,11 +171,18 @@ class CrawlMode(StrEnum):
 
 
 class SourceHealthStatus(StrEnum):
-    """ZERO = 응답은 정상인데 신규 0건(소프트 실패 후보 · SPEC §7)."""
+    """게시판 한 곳의 마지막 실행 결과(SPEC §7).
+
+    ⚠️ **`EMPTY`는 "목록 행이 0"이다 — "신규가 0"이 아니다.**
+    데일리 실행에서 신규 0건은 **정상**이다(원장이 이미 본 글을 걸러내므로, 조용한 게시판은 며칠씩
+    신규가 없다). 그걸 소프트 실패로 세면 31곳 중 조용한 곳들이 매일 경보를 울려 **경보가 잡음이
+    되고, 정작 깨진 게시판이 그 속에 묻힌다**. 목록 자체를 못 읽는 것(셀렉터 깨짐·로그인벽 전환)이
+    진짜 신호다.
+    """
 
     OK = "OK"
     FAIL = "FAIL"
-    ZERO = "ZERO"
+    EMPTY = "EMPTY"
 
 
 class FetchTier(StrEnum):

@@ -67,7 +67,9 @@ def _health_ok() -> SourceHealth:
         source_key="YTUS",
         last_run_at=FIXED_NOW,
         last_status=SourceHealthStatus.OK,
+        first_run_at=FIXED_NOW,
         last_success_at=FIXED_NOW,
+        last_rows=18,
     )
 
 
@@ -417,6 +419,7 @@ def test_health_advance_first_success() -> None:
         source_key="YTUS",
         run_at=FIXED_NOW,
         status=SourceHealthStatus.OK,
+        rows=20,
         new_count=8,
     )
     assert health.last_success_at == FIXED_NOW
@@ -427,7 +430,11 @@ def test_health_advance_first_success() -> None:
 def test_health_advance_failure_preserves_last_success() -> None:
     # 실패 1회로 마지막 성공 시각이 지워지면 §7 경보가 무의미해진다.
     ok = SourceHealth.advance(
-        previous=None, source_key="YTUS", run_at=FIXED_NOW, status=SourceHealthStatus.OK
+        previous=None,
+        source_key="YTUS",
+        run_at=FIXED_NOW,
+        status=SourceHealthStatus.OK,
+        rows=18,
     )
     later = FIXED_NOW + timedelta(days=1)
     failed = SourceHealth.advance(
@@ -465,19 +472,20 @@ def test_health_advance_accumulates_failures_then_resets() -> None:
         source_key="YTUS",
         run_at=FIXED_NOW + timedelta(days=2),
         status=SourceHealthStatus.OK,
+        rows=12,
         new_count=3,
     )
     assert recovered.consecutive_failures == 0
     assert recovered.last_error is None
 
 
-def test_health_advance_zero_status_counts_as_response() -> None:
-    # ZERO = 응답 정상인데 신규 0건. 실패가 아니므로 성공 시각을 갱신한다(소프트 실패 후보).
-    zero = SourceHealth.advance(
-        previous=None, source_key="YTUS", run_at=FIXED_NOW, status=SourceHealthStatus.ZERO
+def test_health_advance_empty_status_counts_as_response() -> None:
+    # EMPTY = 응답은 받았는데 목록 행이 0. 실패가 아니므로 성공 시각을 갱신한다(소프트 실패 후보).
+    empty = SourceHealth.advance(
+        previous=None, source_key="YTUS", run_at=FIXED_NOW, status=SourceHealthStatus.EMPTY
     )
-    assert zero.last_success_at == FIXED_NOW
-    assert zero.last_error is None
+    assert empty.last_success_at == FIXED_NOW
+    assert empty.last_error is None
 
 
 # ── CrawlRun ─────────────────────────────────────────────────────
@@ -565,8 +573,8 @@ def test_rejects_unknown_enum_string() -> None:
 
 
 def test_health_status_string_is_coerced() -> None:
-    health = replace(_health_ok(), last_status="ZERO")  # type: ignore[arg-type]
-    assert health.last_status is SourceHealthStatus.ZERO
+    health = replace(_health_ok(), last_status="EMPTY", last_rows=0)  # type: ignore[arg-type]
+    assert health.last_status is SourceHealthStatus.EMPTY
 
 
 def test_health_fail_string_still_requires_error() -> None:
@@ -655,52 +663,66 @@ def test_redraft_preserves_identity_and_review_state() -> None:
     assert merged.title == "다시 구조화한 제목"  # 새 구조화 결과는 반영
 
 
-# ── SourceHealth: 소프트 실패(연속 0건) ──────────────────────────
+# ── SourceHealth: 소프트 실패(목록이 계속 빔) ────────────────────
 
 
-def test_zero_runs_accumulate_for_soft_failure_alarm() -> None:
-    # 응답은 200인데 신규가 계속 0이면 셀렉터 깨짐·로그인벽 전환 신호다(§7).
-    state = SourceHealth.advance(
-        previous=None, source_key="YTUS", run_at=FIXED_NOW, status=SourceHealthStatus.ZERO
-    )
-    state = SourceHealth.advance(
-        previous=state,
+def _empty(previous: SourceHealth | None, *, day: int = 0) -> SourceHealth:
+    return SourceHealth.advance(
+        previous=previous,
         source_key="YTUS",
-        run_at=FIXED_NOW + timedelta(days=1),
-        status=SourceHealthStatus.ZERO,
+        run_at=FIXED_NOW + timedelta(days=day),
+        status=SourceHealthStatus.EMPTY,
     )
-    assert state.consecutive_zero_runs == 2
+
+
+def test_empty_runs_accumulate_for_soft_failure_alarm() -> None:
+    # 응답은 200인데 목록 행이 계속 0이면 셀렉터 깨짐·로그인벽 전환 신호다(§7).
+    state = _empty(_empty(None), day=1)
+    assert state.consecutive_empty_runs == 2
     assert state.is_soft_failing is True
 
 
-def test_new_postings_reset_zero_streak() -> None:
-    zero = SourceHealth.advance(
-        previous=None, source_key="YTUS", run_at=FIXED_NOW, status=SourceHealthStatus.ZERO
-    )
+def test_new_postings_reset_the_empty_streak() -> None:
     ok = SourceHealth.advance(
-        previous=zero,
+        previous=_empty(None),
         source_key="YTUS",
         run_at=FIXED_NOW + timedelta(days=1),
         status=SourceHealthStatus.OK,
+        rows=18,
         new_count=5,
     )
-    assert ok.consecutive_zero_runs == 0
+    assert ok.consecutive_empty_runs == 0
     assert ok.is_soft_failing is False
 
 
-def test_failure_holds_zero_streak() -> None:
-    # 실패한 실행은 "0건"을 판정할 수 없으므로 카운터를 늘리지도 지우지도 않는다.
-    zero = SourceHealth.advance(
-        previous=None, source_key="YTUS", run_at=FIXED_NOW, status=SourceHealthStatus.ZERO
+def test_a_quiet_board_is_not_soft_failing() -> None:
+    """⚠️ **신규 0건은 정상이다** — 원장이 이미 본 글을 걸러낸 결과다.
+
+    이걸 소프트 실패로 세면 조용한 게시판들이 매일 경보를 울려 **경보가 잡음이 되고 정작
+    깨진 게시판이 묻힌다**(그래서 판정 기준이 "신규 0"이 아니라 "목록 행 0"이다).
+    """
+    quiet = SourceHealth.advance(
+        previous=None,
+        source_key="YTUS",
+        run_at=FIXED_NOW,
+        status=SourceHealthStatus.OK,
+        rows=18,  # 목록은 읽혔다
+        new_count=0,  # 다 이미 본 글
     )
+    assert quiet.consecutive_empty_runs == 0
+    assert quiet.is_soft_failing is False
+
+
+def test_failure_holds_the_empty_streak() -> None:
+    # 실패한 실행은 "목록이 비었나"를 판정할 수 없으므로 카운터를 늘리지도 지우지도 않는다.
     failed = SourceHealth.advance(
-        previous=zero,
+        previous=_empty(None),
         source_key="YTUS",
         run_at=FIXED_NOW + timedelta(days=1),
         status=SourceHealthStatus.FAIL,
         error="timeout",
     )
-    assert failed.consecutive_zero_runs == 1
+    assert failed.consecutive_empty_runs == 1
 
 
 def test_advance_records_reason_for_empty_exception_message() -> None:
@@ -757,3 +779,80 @@ def test_source_data_rejects_datetime_as_posted_on() -> None:
 def test_source_data_accepts_a_missing_posted_on() -> None:
     """목록에 날짜가 없는 게시판이 있다 — 그런 소스는 페이지 수로 범위를 정한다."""
     assert replace(_source_data(), posted_on=None).posted_on is None
+
+
+# ── SourceHealth: 상태와 관측값이 어긋나는 것 ────────────────────
+
+
+def test_ok_with_no_rows_is_rejected() -> None:
+    """목록 행이 0인데 OK면 §7 경보가 그 게시판을 영구히 건너뛴다 — 그게 EMPTY의 존재 이유다."""
+    with pytest.raises(ValueError, match="EMPTY"):
+        replace(_health_ok(), last_rows=0, last_new_count=0)
+
+
+def test_empty_with_rows_is_rejected() -> None:
+    """`EMPTY`는 정의상 목록 행 0이다. 어긋나면 상태의 의미가 무너진다."""
+    with pytest.raises(ValueError, match="목록 행 0"):
+        replace(_health_ok(), last_status=SourceHealthStatus.EMPTY, last_rows=18)
+
+
+def test_new_count_cannot_exceed_rows() -> None:
+    """신규는 목록 행의 부분집합이다 — 어기면 rows 자리에 fresh를 넣은 배선 오류다."""
+    with pytest.raises(ValueError, match="last_rows"):
+        replace(_health_ok(), last_rows=3, last_new_count=8)
+
+
+def test_first_run_cannot_be_later_than_last_run() -> None:
+    with pytest.raises(ValueError, match="first_run_at"):
+        replace(_health_ok(), first_run_at=FIXED_NOW + timedelta(days=1))
+
+
+def test_failure_preserves_the_last_observation() -> None:
+    """⚠️ 실패는 측정이 아니다 — 0으로 덮으면 실패 한 번이 "목록이 비었다"로 보인다.
+
+    그러면 EMPTY(셀렉터 깨짐) 경보와 FAIL(접속 불가)이 구분되지 않는다.
+    """
+    ok = SourceHealth.advance(
+        previous=None,
+        source_key="YTUS",
+        run_at=FIXED_NOW,
+        status=SourceHealthStatus.OK,
+        cutoff=date(2026, 5, 4),
+        rows=258,
+        new_count=227,
+        posted_on=date(2026, 8, 4),
+    )
+    failed = SourceHealth.advance(
+        previous=ok,
+        source_key="YTUS",
+        run_at=FIXED_NOW + timedelta(days=1),
+        status=SourceHealthStatus.FAIL,
+        error="HTTP 500",
+    )
+    assert failed.last_rows == 258  # 마지막으로 관측된 값
+    assert failed.last_cutoff == date(2026, 5, 4)
+    assert failed.last_posted_on == date(2026, 8, 4)
+    assert failed.total_collected == 227  # 실패는 누적을 늘리지 않는다
+
+
+def test_first_run_and_total_accumulate_across_runs() -> None:
+    """`total_collected=0`이 "3일째"인지 "3개월째"인지 구분하려면 `first_run_at`이 필요하다."""
+    state = SourceHealth.advance(
+        previous=None,
+        source_key="YTUS",
+        run_at=FIXED_NOW,
+        status=SourceHealthStatus.OK,
+        rows=258,
+        new_count=227,
+    )
+    for day in (1, 2):
+        state = SourceHealth.advance(
+            previous=state,
+            source_key="YTUS",
+            run_at=FIXED_NOW + timedelta(days=day),
+            status=SourceHealthStatus.OK,
+            rows=18,
+            new_count=2,
+        )
+    assert state.first_run_at == FIXED_NOW  # 첫 실행 시각은 보존된다
+    assert state.total_collected == 231

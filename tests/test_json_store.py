@@ -485,6 +485,7 @@ def test_health_roundtrip_and_upsert_replaces(store: JsonStore, data_dir: Path) 
         source_key="YTUS",
         run_at=FIXED_NOW,
         status=SourceHealthStatus.OK,
+        rows=20,
         new_count=8,
     )
     store.upsert_health(first)

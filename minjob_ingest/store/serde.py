@@ -185,10 +185,16 @@ def row_to_source_health(row: Row) -> SourceHealth:
             source_key=_str(row, "source_key"),
             last_run_at=_timestamp(row, "last_run_at"),
             last_status=_enum(row, "last_status", SourceHealthStatus),
+            first_run_at=_timestamp(row, "first_run_at"),
+            last_run_id=_optional_uuid(row, "last_run_id"),
             last_success_at=_optional_timestamp(row, "last_success_at"),
+            last_cutoff=_optional_date(row, "last_cutoff"),
+            last_rows=_int(row, "last_rows"),
             last_new_count=_int(row, "last_new_count"),
+            last_posted_on=_optional_date(row, "last_posted_on"),
             consecutive_failures=_int(row, "consecutive_failures"),
-            consecutive_zero_runs=_int(row, "consecutive_zero_runs"),
+            consecutive_empty_runs=_int(row, "consecutive_empty_runs"),
+            total_collected=_int(row, "total_collected"),
             last_error=_optional_str(row, "last_error"),
         )
     except ValueError as err:

@@ -122,7 +122,7 @@ def test_crawl_mode_matches_spec() -> None:
 
 
 def test_source_health_status_matches_spec() -> None:
-    assert _values(SourceHealthStatus) == {"OK", "FAIL", "ZERO"}
+    assert _values(SourceHealthStatus) == {"OK", "FAIL", "EMPTY"}
 
 
 def test_fetch_tier_matches_spec() -> None:

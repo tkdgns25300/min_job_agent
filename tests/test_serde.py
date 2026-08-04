@@ -50,6 +50,7 @@ from minjob_ingest.store.serde import (
 )
 
 FIXED_NOW = datetime(2026, 7, 29, 12, 0, 0, 123456, tzinfo=UTC)
+FIXED_UUID = UUID("11111111-2222-3333-4444-555555555555")
 
 
 def _full_source_data() -> SourceData:
@@ -124,11 +125,17 @@ def _full_source_health() -> SourceHealth:
     return SourceHealth(
         source_key="YTUS",
         last_run_at=FIXED_NOW,
-        last_status=SourceHealthStatus.ZERO,
+        last_status=SourceHealthStatus.OK,
+        first_run_at=FIXED_NOW - timedelta(days=30),
+        last_run_id=FIXED_UUID,
         last_success_at=FIXED_NOW - timedelta(days=1),
+        last_cutoff=date(2026, 5, 4),
+        last_rows=18,
         last_new_count=8,
+        last_posted_on=date(2026, 8, 4),
         consecutive_failures=0,
-        consecutive_zero_runs=3,
+        consecutive_empty_runs=3,
+        total_collected=41,
         last_error=None,
     )
 
