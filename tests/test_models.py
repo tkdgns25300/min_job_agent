@@ -25,6 +25,7 @@ from minjob_ingest.domain import (
 from minjob_ingest.models import (
     MAX_DESCRIPTION_CHARS,
     MAX_STRUCTURE_ATTEMPTS,
+    Attachment,
     CrawlRun,
     JsonValue,
     ReviewData,
@@ -42,6 +43,8 @@ def _source_data() -> SourceData:
         source_key="YTUS",
         external_id="25553",
         source_url="https://www.ytus.ac.kr/board/view/trXXR/25553",
+        title="오천중앙교회 부목사 청빙",
+        posted_on=date(2026, 7, 28),
         run_id=new_id(),
         fetched_at=FIXED_NOW,
         raw_text="오천중앙교회에서 부목사님을 모십니다.",
@@ -202,6 +205,50 @@ def test_allows_empty_raw_text_for_image_only_boards() -> None:
     # PCKWORLD처럼 본문이 이미지뿐인 보드는 빈 raw_text가 정상이다(config image_only).
     record = replace(_source_data(), raw_text="", image_urls=("https://pckworld/a.jpg",))
     assert record.raw_text == ""
+
+
+def test_source_data_deduplicates_files_by_url() -> None:
+    """같은 파일을 두 번 받으면 바이트 fetch와 Gemini 비용이 두 배다.
+
+    **저장되는 레코드 한 곳에서만** 제거한다 — 어댑터·`RawPosting`은 페이지에 있는 대로
+    보고하고, 두 곳에서 제거하면 한쪽을 지워도 다른 쪽이 가려 결함을 못 잡는다.
+    """
+    record = replace(
+        _source_data(),
+        image_urls=("https://x/a.jpg", "https://x/a.jpg", "https://x/b.jpg"),
+        attachments=(
+            Attachment(name="공고.hwp", url="https://x/dl/1"),
+            Attachment(name="공고.hwp", url="https://x/dl/1"),
+            Attachment(name="포스터.jpg", url="https://x/dl/2"),
+        ),
+    )
+    assert record.image_urls == ("https://x/a.jpg", "https://x/b.jpg")
+    assert [a.name for a in record.attachments] == ["공고.hwp", "포스터.jpg"]
+
+
+def test_source_data_normalizes_files_to_tuples() -> None:
+    """리스트로 넘겨도 튜플이 된다 — frozen 레코드가 호출자의 리스트 변경에 노출되면 안 된다."""
+    record = replace(
+        _source_data(),
+        image_urls=["https://x/a.jpg"],  # type: ignore[arg-type]
+        attachments=[Attachment(name="공고.hwp", url="https://x/dl/1")],  # type: ignore[arg-type]
+    )
+    assert isinstance(record.image_urls, tuple)
+    assert isinstance(record.attachments, tuple)
+
+
+def test_attachment_image_detection_uses_the_filename() -> None:
+    """다운로드 URL에 확장자가 없어(`/download/…/57439f…`) 파일명으로만 판단할 수 있다."""
+    assert Attachment(name="포스터.JPEG", url="https://x/dl/1").is_image is True
+    assert Attachment(name="공고.hwp", url="https://x/dl/2").is_image is False
+    assert Attachment(name="지원서.pdf", url="https://x/dl/3").is_image is False
+
+
+def test_attachment_rejects_empty_name_or_url() -> None:
+    with pytest.raises(ValueError, match=r"attachment\.name"):
+        Attachment(name="  ", url="https://x/dl/1")
+    with pytest.raises(ValueError, match=r"attachment\.url"):
+        Attachment(name="공고.hwp", url="")
 
 
 # ── ReviewData ───────────────────────────────────────────────────
@@ -692,3 +739,21 @@ def test_rejects_description_longer_than_summary_cap() -> None:
 def test_accepts_description_at_cap() -> None:
     record = replace(_review_data(), description="가" * MAX_DESCRIPTION_CHARS)
     assert record.description is not None
+
+
+def test_source_data_requires_a_title() -> None:
+    """제목이 비면 운영자가 원자료 표에서 무슨 공고인지 알 수 없다."""
+    with pytest.raises(ValueError, match="title"):
+        replace(_source_data(), title="   ")
+
+
+def test_source_data_rejects_datetime_as_posted_on() -> None:
+    """`datetime`은 `date`의 서브클래스라 타입 검사·런타임 모두 통과한다 —
+    date 컬럼에 시각이 섞이면 백필 컷오프 비교가 어긋난다."""
+    with pytest.raises(ValueError, match="datetime"):
+        replace(_source_data(), posted_on=datetime(2026, 8, 3, 12, 0, tzinfo=UTC))
+
+
+def test_source_data_accepts_a_missing_posted_on() -> None:
+    """목록에 날짜가 없는 게시판이 있다 — 그런 소스는 페이지 수로 범위를 정한다."""
+    assert replace(_source_data(), posted_on=None).posted_on is None

@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from enum import StrEnum
@@ -83,6 +83,14 @@ REVIEW_STATE_FIELDS: tuple[str, ...] = (
 def new_id() -> UUID:
     """레코드 id. DB의 `gen_random_uuid()`와 같은 역할을 애플리케이션에서 한다."""
     return uuid4()
+
+
+def _unique_by_url(items: Iterable[Attachment]) -> tuple[Attachment, ...]:
+    """URL 기준 중복 제거(순서 유지)."""
+    unique: dict[str, Attachment] = {}
+    for item in items:
+        unique.setdefault(item.url, item)
+    return tuple(unique.values())
 
 
 def _require_non_empty(value: str, field_name: str) -> str:
@@ -157,10 +165,38 @@ def _as_str_mapping(value: Mapping[str, object], field_name: str) -> Mapping[str
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class Attachment:
+    """첨부파일 하나. **이름을 함께 보관한다** — 확장자로 종류를 알아야 하고, 운영자가 검수에서
+    "HWP를 열어봐야 하는 공고"를 알아볼 수 있어야 한다.
+
+    URL만 저장하면 안 되는 이유: 이 게시판들의 다운로드 URL은 `/board/download/…/6337/57439f…`
+    처럼 파일명을 담지 않는다(실측).
+    """
+
+    name: str
+    url: str
+
+    def __post_init__(self) -> None:
+        _set(self, "name", _require_non_empty(self.name, "attachment.name"))
+        _set(self, "url", _require_non_empty(self.url, "attachment.url"))
+
+    @property
+    def is_image(self) -> bool:
+        """파일명이 이미지 확장자인가. **사실 판정일 뿐 "Gemini에 보낼 대상"이 아니다.**
+
+        무엇을 멀티모달로 보낼지는 `pipeline/structure.py`가 정한다 — Gemini는 PDF도 직접
+        읽으므로 이미지 목록으로 대상을 정하면 내용이 PDF에만 있는 공고가 누락된다. 지원 형식은
+        SDK 문서를 확인해야 하고(CLAUDE.md), 그건 이 레코드가 알 일이 아니다.
+        """
+        return self.name.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class SourceData:
     """① 원자료 + 원장 (SPEC §6 ①).
 
-    **원문 증거 필드**(`raw_text`·`image_urls`·`raw_meta`·`source_url`)는 write-once —
+    **원문 증거 필드**(`raw_text`·`title`·`posted_on`·`image_urls`·`attachments`·`raw_meta`·
+    `source_url`)는 write-once —
     갱신 경로를 두지 않는다. 예외는 운영자 opt-out·법적 삭제(가드레일 #4).
     **처리 상태 필드**(`structured_at`·`structure_attempts`·`last_structure_error`)만
     실행 중 갱신되며, 전이는 `with_verdict_recorded` / `with_failed_attempt`로만 한다.
@@ -177,12 +213,24 @@ class SourceData:
     source_key: str
     external_id: str
     source_url: str
+    #: 게시판 목록의 제목 **그대로**. 정리·요약한 제목은 `review_data.title`이다.
+    #: 별도 컬럼인 이유: `raw_meta`에 묻어두면 운영자가 원자료 표를 열었을 때 무슨 공고인지
+    #: 안 보이고, 원장 대조에서 Store가 어댑터의 키 이름을 알아야 한다(계층 침범).
+    title: str
     run_id: UUID
     fetched_at: datetime
     raw_text: str
     id: UUID = field(default_factory=new_id)
-    #: 본문·첨부 이미지 URL. 구조화 직전 바이트 fetch용. 빈 튜플 = 이미지 없음.
+    #: 목록에 표시된 게시일. **백필 컷오프(`--months N`)의 유일한 기준**이다(SPEC §4) —
+    #: 구조화 전이라 `review_data.posted_at`이 아직 없다. 목록에 날짜가 없는 게시판이 있어
+    #: `None`을 허용하고, 그런 소스는 페이지 수로 범위를 정한다.
+    posted_on: date | None = None
+    #: **본문에 인라인으로 박힌** 이미지 URL. 구조화 직전 바이트 fetch용. 빈 튜플 = 없음.
     image_urls: tuple[str, ...] = ()
+    #: **첨부파일 전부**(이름 + URL). 이미지만이 아니라 HWP·PDF도 담는다 — 원문 증거를 최대한
+    #: 남기고, 구조화가 `Attachment.is_image`로 Gemini에 보낼 것을 고른다. 못 읽는 형식은
+    #: 운영자 검수로 넘어간다(URL이 있으니 사람이 열 수 있다).
+    attachments: tuple[Attachment, ...] = ()
     #: 작성일·조회수·첨부 등 게시판 원필드(비정형).
     raw_meta: Mapping[str, JsonValue] = field(default_factory=dict)
     #: 판정 완료 시각. None = 미처리/실패 → 재구조화 대상.
@@ -197,11 +245,18 @@ class SourceData:
         _set(self, "source_key", normalize_source_key(self.source_key))
         _set(self, "external_id", _require_non_empty(self.external_id, "external_id"))
         _set(self, "source_url", _require_non_empty(self.source_url, "source_url"))
+        _set(self, "title", _require_non_empty(self.title, "title"))
+        if self.posted_on is not None:
+            # `datetime`은 `date`의 서브클래스라 그냥 통과한다 → date 컬럼에 시각이 섞인다.
+            _set(self, "posted_on", require_plain_date(self.posted_on))
         _require_non_negative(self.structure_attempts, "structure_attempts")
         _set(self, "fetched_at", ensure_utc(self.fetched_at))
         if self.structured_at is not None:
             _set(self, "structured_at", ensure_utc(self.structured_at))
-        _set(self, "image_urls", tuple(self.image_urls))
+        # 순서를 지키며 중복 제거 — 같은 파일을 두 번 받으면 바이트 fetch와 Gemini 비용이
+        # 두 배다. **여기 한 곳에서만** 한다(어댑터·RawPosting은 있는 대로 보고한다).
+        _set(self, "image_urls", tuple(dict.fromkeys(self.image_urls)))
+        _set(self, "attachments", _unique_by_url(self.attachments))
         _set(self, "raw_meta", _freeze_json_mapping(self.raw_meta, "raw_meta"))
 
     @property

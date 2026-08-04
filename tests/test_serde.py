@@ -32,6 +32,7 @@ from minjob_ingest.domain import (
 )
 from minjob_ingest.models import (
     REVIEW_STATE_FIELDS,
+    Attachment,
     CrawlRun,
     ReviewData,
     SourceData,
@@ -58,10 +59,13 @@ def _full_source_data() -> SourceData:
         source_key="YTUS",
         external_id="25553",
         source_url="https://www.ytus.ac.kr/board/view/trXXR/25553",
+        title="오천중앙교회 부목사 청빙",
+        posted_on=date(2026, 7, 28),
         run_id=new_id(),
         fetched_at=FIXED_NOW,
         raw_text="오천중앙교회에서 부목사님을 모십니다.",
         image_urls=("https://a/1.jpg", "https://a/2.jpg"),
+        attachments=(Attachment(name="공고.hwp", url="https://a/dl/1"),),
         raw_meta={"views": 408, "attach": ["공고.hwp"], "nested": {"page": 1}, "flag": True},
         structured_at=FIXED_NOW + timedelta(minutes=3),
         structure_attempts=2,
@@ -225,6 +229,7 @@ def test_encodes_enum_as_its_value() -> None:
 def test_encodes_tuple_as_array_and_mapping_as_object() -> None:
     row = to_row(_full_source_data())
     assert row["image_urls"] == ["https://a/1.jpg", "https://a/2.jpg"]
+    assert row["attachments"] == [{"name": "공고.hwp", "url": "https://a/dl/1"}]
     assert row["raw_meta"] == {
         "views": 408,
         "attach": ["공고.hwp"],
@@ -238,6 +243,7 @@ def test_encodes_none_for_unset_optionals() -> None:
         source_key="YTUS",
         external_id="1",
         source_url="https://x/1",
+        title="제목",
         run_id=new_id(),
         fetched_at=FIXED_NOW,
         raw_text="본문",
@@ -245,6 +251,7 @@ def test_encodes_none_for_unset_optionals() -> None:
     row = to_row(minimal)
     assert row["structured_at"] is None
     assert row["content_hash"] is None
+    assert row["posted_on"] is None  # 목록에 날짜가 없는 게시판
     assert row["image_urls"] == []
 
 
@@ -324,6 +331,34 @@ def test_rejects_string_where_array_expected() -> None:
     row = dict(to_row(_full_source_data()))
     row["image_urls"] = "https://a/1.jpg"
     with pytest.raises(SerdeError, match="배열"):
+        row_to_source_data(row)
+
+
+def test_attachments_must_be_a_list() -> None:
+    row = dict(to_row(_full_source_data()))
+    row["attachments"] = {"name": "공고.hwp", "url": "https://a/1"}
+    with pytest.raises(SerdeError, match="배열"):
+        row_to_source_data(row)
+
+
+def test_attachment_entry_must_be_an_object() -> None:
+    row = dict(to_row(_full_source_data()))
+    row["attachments"] = ["공고.hwp"]
+    with pytest.raises(SerdeError, match="객체"):
+        row_to_source_data(row)
+
+
+def test_attachment_requires_name_and_url() -> None:
+    row = dict(to_row(_full_source_data()))
+    row["attachments"] = [{"name": "공고.hwp"}]
+    with pytest.raises(SerdeError, match="name·url"):
+        row_to_source_data(row)
+
+
+def test_attachment_rejects_non_string_fields() -> None:
+    row = dict(to_row(_full_source_data()))
+    row["attachments"] = [{"name": 1, "url": "https://a/1"}]
+    with pytest.raises(SerdeError, match="name·url"):
         row_to_source_data(row)
 
 

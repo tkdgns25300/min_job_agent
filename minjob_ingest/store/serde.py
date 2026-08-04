@@ -48,7 +48,15 @@ from minjob_ingest.domain import (
     SourceHealthStatus,
     StipendPeriod,
 )
-from minjob_ingest.models import CrawlRun, JsonValue, ReviewData, SourceData, SourceHealth
+from minjob_ingest.models import (
+    Attachment,
+    CrawlRun,
+    JsonValue,
+    ReviewData,
+    SourceData,
+    SourceHealth,
+)
+from minjob_ingest.store.base import LedgerEntry
 
 #: 이 모듈이 다루는 레코드들.
 type StagingRecord = SourceData | ReviewData | SourceHealth | CrawlRun
@@ -81,6 +89,8 @@ def _encode(value: object, where: str) -> JsonValue:
         return to_iso_date(value)
     if isinstance(value, UUID):
         return str(value)
+    if isinstance(value, Attachment):
+        return {"name": value.name, "url": value.url}
     if value is None or isinstance(value, str | bool | int | float):
         return value
     if isinstance(value, Mapping):
@@ -104,7 +114,10 @@ def row_to_source_data(row: Row) -> SourceData:
             run_id=_uuid(row, "run_id"),
             fetched_at=_timestamp(row, "fetched_at"),
             raw_text=_str(row, "raw_text", allow_empty=True),
+            title=_str(row, "title"),
+            posted_on=_optional_date(row, "posted_on"),
             image_urls=_str_tuple(row, "image_urls"),
+            attachments=_attachments(row),
             raw_meta=_json_mapping(row, "raw_meta"),
             structured_at=_optional_timestamp(row, "structured_at"),
             structure_attempts=_int(row, "structure_attempts"),
@@ -350,3 +363,28 @@ def _str_mapping(row: Row, key: str) -> Mapping[str, str]:
             raise SerdeError(f"{key}: 문자열 → 문자열 매핑이어야 함 ({map_key!r}: {item!r})")
         snapshot[map_key] = item
     return MappingProxyType(snapshot)
+
+
+def ledger_entry_of_row(row: Row) -> LedgerEntry:
+    """원장 대조용 두 컬럼만 꺼낸다 — 레코드 전체를 디코딩하지 않는다.
+
+    목록 페이지당 수백 행을 훑으므로 `raw_text`·`attachments`까지 디코딩하면 낭비다.
+    """
+    _check_columns(row, SourceData)
+    return LedgerEntry(title=_str(row, "title"), posted_on=_optional_date(row, "posted_on"))
+
+
+def _attachments(row: Row) -> tuple[Attachment, ...]:
+    """`[{"name":…,"url":…}]` → `Attachment`들. 모양이 어긋나면 `SerdeError`(손상 행)."""
+    value = row["attachments"]
+    if not isinstance(value, list):
+        raise SerdeError(f"attachments: 배열이어야 함 ({type(value).__name__})")
+    parsed: list[Attachment] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise SerdeError(f"attachments[{index}]: 객체여야 함")
+        name, url = item.get("name"), item.get("url")
+        if not isinstance(name, str) or not isinstance(url, str):
+            raise SerdeError(f"attachments[{index}]: name·url이 문자열이어야 함")
+        parsed.append(Attachment(name=name, url=url))
+    return tuple(parsed)

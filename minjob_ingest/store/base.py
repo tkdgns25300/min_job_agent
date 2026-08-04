@@ -18,7 +18,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date
 from typing import Protocol
 
 from minjob_ingest.domain import CrawlMode
@@ -29,16 +31,62 @@ class StoreError(Exception):
     """저장소 상태가 계약과 어긋날 때(없는 run 종료, 증거 필드 변경 시도 등)."""
 
 
+@dataclass(frozen=True, slots=True)
+class LedgerEntry:
+    """원장에 이미 있는 글의 식별 정보. `external_id`가 여전히 같은 글을 가리키는지 확인용.
+
+    원장 판정 자체는 **`(source_key, external_id)`만으로** 한다(SPEC §4) — 이 값들은 그
+    번호가 다른 글로 바뀌었는지 보는 **경보**일 뿐이다.
+    """
+
+    title: str
+    posted_on: date | None
+
+    def points_to_another_posting(self, *, title: str, posted_on: date | None) -> bool:
+        """같은 번호인데 **제목과 게시일이 둘 다** 다른가.
+
+        둘 다 다르면 그 번호가 완전히 다른 글을 가리킨다는 뜻이고, 원인은 두 가지다:
+        게시판이 번호를 재사용했거나(그 공고를 영구히 놓친다), 사이트 개편으로 우리가 엉뚱한
+        칸을 읽기 시작했거나(모든 행이 이 모양이 된다). 둘 다 **조용히 건너뛰면 안 되는** 일이다.
+
+        하나만 다른 경우는 **정상으로 본다** — 작성자가 제목에 `[끌어올림]`·`(마감)`을 붙이거나
+        날짜를 손보는 일이 흔하고, 그때 경보를 울리면 상시 잡음이 되어 아무도 안 본다.
+        """
+        return _differs(self.title, title) and self.posted_on != posted_on
+
+
+def _differs(stored: str, fresh: str) -> bool:
+    """공백 차이는 같은 것으로 본다 — 게시판이 `&nbsp;`를 흔하게 쓴다.
+
+    `str.split()`이 NBSP(U+00A0)도 공백으로 취급하므로 따로 치환하지 않는다.
+    """
+    return _collapsed(stored) != _collapsed(fresh)
+
+
+def _collapsed(value: str) -> str:
+    return " ".join(value.split())
+
+
 class Store(Protocol):
     """스테이징 4테이블 접근. 구현: `JsonStore`(Phase 1) → `SupabaseStore`(ROADMAP 1-6)."""
 
     # ── 원장·수집 (SPEC §4) ──────────────────────────────────────
 
-    def seen_external_ids(self, source_key: str, external_ids: Sequence[str]) -> set[str]:
-        """이미 수집한 식별자만 골라 반환한다.
+    def seen_postings(
+        self, source_key: str, external_ids: Sequence[str]
+    ) -> Mapping[str, LedgerEntry]:
+        """이미 수집한 식별자와 그때 저장한 제목·게시일을 반환한다.
 
         목록 페이지당 **한 번** 부른다(행마다 조회하면 31곳 곱하기 수백 행이 된다).
-        "이미 본 글에서 중단"이 아니라 **unseen만 고르는** 데 쓴다(SPEC §4).
+        "이미 본 글에서 중단"이 아니라 **unseen만 고르는** 데 쓴다(SPEC §4) — 반환된 키에
+        없는 것이 새 글이다.
+
+        제목·게시일을 함께 주는 이유: 호출자가 목록에서 방금 읽은 값과 대조해
+        `LedgerEntry.points_to_another_posting`으로 번호가 다른 글로 바뀌었는지 본다.
+        **추가 요청이 없다** — 양쪽 값을 이미 손에 들고 있다.
+
+        키는 **호출자가 넘긴 원본 문자열**이다(정규화된 값이 아니다) — 호출자가 이 결과로
+        자기 목록을 걸러내기 때문이다.
         """
         ...
 

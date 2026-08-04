@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import fields
 from pathlib import Path
 from typing import Final
@@ -23,10 +23,11 @@ from typing import Final
 from minjob_ingest.clock import utc_now
 from minjob_ingest.domain import CrawlMode, ReviewStatus, normalize_source_key
 from minjob_ingest.models import CrawlRun, ReviewData, SourceData, SourceHealth
-from minjob_ingest.store.base import StoreError
+from minjob_ingest.store.base import LedgerEntry, StoreError
 from minjob_ingest.store.serde import (
     Row,
     SerdeError,
+    ledger_entry_of_row,
     ledger_key_of_row,
     row_to_review_data,
     row_to_source_data,
@@ -69,24 +70,32 @@ class JsonStore:
 
     # ── 원장·수집 ────────────────────────────────────────────────
 
-    def seen_external_ids(self, source_key: str, external_ids: Sequence[str]) -> set[str]:
+    def seen_postings(
+        self, source_key: str, external_ids: Sequence[str]
+    ) -> Mapping[str, LedgerEntry]:
         # 저장 시엔 모델이 정규화하므로 조회도 같은 정규화를 거쳐야 원장이 빗나가지 않는다.
         # (빗나가면 이미 수집한 글의 상세를 매 실행 다시 요청한다 — 가드레일 #7.)
         wanted = {external_id.strip(): external_id for external_id in external_ids}
         if not wanted:
-            return set()
+            return {}
         key = normalize_source_key(source_key)
-        seen: set[str] = set()
-        # 본문을 디코딩하지 않는다 — 원장 판정에 필요한 두 컬럼만 본다.
+        seen: dict[str, LedgerEntry] = {}
+        # 본문(`raw_text`)은 디코딩하지 않는다 — 원장 판정에 필요한 네 컬럼만 본다.
         for row in self._read_rows(_SOURCE_DATA_FILE):
             try:
                 stored_key, stored_id = ledger_key_of_row(row)
             except SerdeError as err:
                 self._on_corrupt_row(_SOURCE_DATA_FILE, err)
                 continue
-            # 호출자가 넘긴 원본 문자열을 돌려준다 — 호출자는 이 집합으로 자기 목록을 걸러낸다.
-            if stored_key == key and stored_id in wanted:
-                seen.add(wanted[stored_id])
+            if stored_key != key or stored_id not in wanted:
+                continue
+            try:
+                entry = ledger_entry_of_row(row)
+            except SerdeError as err:
+                self._on_corrupt_row(_SOURCE_DATA_FILE, err)
+                continue
+            # 호출자가 넘긴 원본 문자열을 키로 돌려준다 — 호출자가 자기 목록을 이걸로 걸러낸다.
+            seen[wanted[stored_id]] = entry
         return seen
 
     def save_source_data(self, record: SourceData) -> bool:

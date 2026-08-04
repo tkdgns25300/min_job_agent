@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import fields, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Final
 from uuid import UUID
@@ -25,12 +25,13 @@ from minjob_ingest.domain import (
 )
 from minjob_ingest.models import (
     MAX_STRUCTURE_ATTEMPTS,
+    Attachment,
     ReviewData,
     SourceData,
     SourceHealth,
     new_id,
 )
-from minjob_ingest.store.base import Store, StoreError
+from minjob_ingest.store.base import LedgerEntry, Store, StoreError
 from minjob_ingest.store.json_store import _MUTABLE_STATE_FIELDS, FILE_VERSION, JsonStore
 from minjob_ingest.store.serde import SerdeError, to_row
 
@@ -65,6 +66,8 @@ def _source_data(external_id: str = "25553", *, run_id: object = None) -> Source
         source_key="YTUS",
         external_id=external_id,
         source_url=f"https://www.ytus.ac.kr/board/view/trXXR/{external_id}",
+        title=f"공고 {external_id}",
+        posted_on=FIXED_NOW.date(),
         run_id=run_id if run_id is not None else new_id(),  # type: ignore[arg-type]
         fetched_at=FIXED_NOW,
         raw_text="오천중앙교회에서 부목사님을 모십니다.",
@@ -111,14 +114,14 @@ def test_json_store_satisfies_store_protocol(store: JsonStore) -> None:
 
 
 def test_empty_store_reports_nothing_seen(store: JsonStore) -> None:
-    assert store.seen_external_ids("YTUS", ["1", "2"]) == set()
+    assert store.seen_postings("YTUS", ["1", "2"]) == {}
 
 
 def test_seen_ids_are_scoped_by_source(store: JsonStore) -> None:
     store.save_source_data(_source_data("100"))
     # 같은 글번호를 다른 게시판이 써도 별개다(UNIQUE는 두 컬럼 조합).
-    assert store.seen_external_ids("YTUS", ["100", "200"]) == {"100"}
-    assert store.seen_external_ids("PUTS", ["100"]) == set()
+    assert set(store.seen_postings("YTUS", ["100", "200"])) == {"100"}
+    assert store.seen_postings("PUTS", ["100"]) == {}
 
 
 def test_save_is_idempotent_on_ledger_key(store: JsonStore) -> None:
@@ -141,15 +144,95 @@ def test_duplicate_save_keeps_the_first_evidence(store: JsonStore) -> None:
 
 
 def test_seen_ids_with_empty_request_does_not_read(store: JsonStore) -> None:
-    assert store.seen_external_ids("YTUS", []) == set()
+    assert store.seen_postings("YTUS", []) == {}
 
 
 def test_seen_ids_normalizes_the_lookup_key(store: JsonStore) -> None:
     # 저장 때는 모델이 정규화하므로 조회도 같은 정규화를 거쳐야 원장이 빗나가지 않는다.
     store.save_source_data(_source_data("100"))
-    assert store.seen_external_ids(" YTUS ", ["100"]) == {"100"}
-    # 반환값은 호출자가 넘긴 원본이어야 한다 — 호출자가 이 집합으로 자기 목록을 걸러낸다.
-    assert store.seen_external_ids("YTUS", [" 100"]) == {" 100"}
+    assert set(store.seen_postings(" YTUS ", ["100"])) == {"100"}
+    # 반환 키는 호출자가 넘긴 원본이어야 한다 — 호출자가 이걸로 자기 목록을 걸러낸다.
+    assert set(store.seen_postings("YTUS", [" 100"])) == {" 100"}
+
+
+# ── 원장 대조: 번호가 다른 글로 바뀌었는지 ─────────────────────
+
+
+def test_seen_postings_returns_the_stored_title_and_date(store: JsonStore) -> None:
+    """제목·게시일을 함께 돌려주므로 **추가 요청 없이** 목록 값과 대조할 수 있다."""
+    store.save_source_data(replace(_source_data("100"), title="삼성교회 담임목사 청빙"))
+    entry = store.seen_postings("YTUS", ["100"])["100"]
+    assert entry.title == "삼성교회 담임목사 청빙"
+    assert entry.posted_on == FIXED_NOW.date()
+
+
+def test_same_posting_is_not_flagged() -> None:
+    entry = LedgerEntry(title="삼성교회 담임목사 청빙", posted_on=date(2026, 8, 3))
+    assert not entry.points_to_another_posting(
+        title="삼성교회 담임목사 청빙", posted_on=date(2026, 8, 3)
+    )
+
+
+def test_whitespace_and_nbsp_differences_are_not_a_change() -> None:
+    """게시판이 `&nbsp;`를 흔하게 쓴다 — 눈에 안 보이는 차이로 경보가 울리면 안 된다.
+
+    ⚠️ 날짜를 **다르게** 준다. 같게 주면 AND 조건 때문에 제목 비교가 결과에 영향을 못 줘
+    정규화를 지워도 테스트가 통과한다(실제로 그랬다).
+    """
+    entry = LedgerEntry(title="삼성교회  담임목사 청빙", posted_on=date(2026, 8, 3))
+    assert not entry.points_to_another_posting(
+        title="삼성교회\xa0담임목사  청빙", posted_on=date(2026, 8, 10)
+    )
+
+
+def test_title_only_change_is_treated_as_an_edit() -> None:
+    """작성자가 `[끌어올림]`·`(마감)`을 붙이는 일이 흔하다 — 경보로 만들면 상시 잡음이 된다."""
+    entry = LedgerEntry(title="내당교회에서 부목사님을 모십니다.", posted_on=date(2026, 8, 2))
+    assert not entry.points_to_another_posting(
+        title="[끌어올림]내당교회에서 부목사님을 모십니다.", posted_on=date(2026, 8, 2)
+    )
+
+
+def test_date_only_change_is_treated_as_an_edit() -> None:
+    entry = LedgerEntry(title="삼성교회 담임목사 청빙", posted_on=date(2026, 8, 3))
+    assert not entry.points_to_another_posting(
+        title="삼성교회 담임목사 청빙", posted_on=date(2026, 8, 10)
+    )
+
+
+def test_both_changed_means_the_number_points_elsewhere() -> None:
+    """제목과 날짜가 둘 다 다르면 그 번호가 다른 글을 가리킨다.
+
+    원인은 둘이다 — 게시판이 번호를 재사용(그 공고를 영구히 놓친다), 또는 사이트 개편으로
+    엉뚱한 칸을 읽기 시작(모든 행이 이 모양이 된다). 둘 다 조용히 건너뛰면 안 된다.
+    """
+    entry = LedgerEntry(title="삼성교회 담임목사 청빙", posted_on=date(2026, 8, 3))
+    assert entry.points_to_another_posting(title="○○교회 부목사 청빙", posted_on=date(2026, 9, 15))
+
+
+def test_missing_dates_on_both_sides_are_equal() -> None:
+    """목록에 날짜가 없는 게시판 — 제목만 다르면 수정으로 본다."""
+    entry = LedgerEntry(title="가", posted_on=None)
+    assert not entry.points_to_another_posting(title="나", posted_on=None)
+
+
+def test_date_appearing_where_there_was_none_counts_as_different() -> None:
+    entry = LedgerEntry(title="가", posted_on=None)
+    assert entry.points_to_another_posting(title="나", posted_on=date(2026, 8, 3))
+
+
+def test_corrupt_entry_row_is_skipped_not_fatal(
+    lenient_store: JsonStore, corruption_log: list[str], data_dir: Path
+) -> None:
+    """원장 키는 읽히는데 제목이 깨진 행 — 전체 조회를 죽이면 원장을 잃고 31곳을 다시 긁는다."""
+    good = to_row(_source_data("1"))
+    broken = dict(to_row(_source_data("2")))
+    broken["title"] = 12345  # 문자열이어야 함
+    _write_raw(data_dir, "source_data.json", [good, broken])
+
+    seen = lenient_store.seen_postings("YTUS", ["1", "2"])
+    assert set(seen) == {"1"}
+    assert len(corruption_log) == 1
 
 
 # ── 구조화 대상 조회 ─────────────────────────────────────────────
@@ -204,10 +287,13 @@ _EVIDENCE_TAMPERINGS: Final = {
     "source_key": "PUTS",
     "external_id": "9999",
     "source_url": "https://elsewhere.example/1",
+    "title": "바꿔치기한 제목",
+    "posted_on": FIXED_NOW.date() - timedelta(days=30),
     "run_id": UUID("00000000-0000-4000-8000-00000000ffff"),
     "fetched_at": FIXED_NOW - timedelta(days=1),
     "raw_text": "바꿔치기",
     "image_urls": ("https://x/injected.png",),
+    "attachments": (Attachment(name="끼워넣은.hwp", url="https://x/dl/9"),),
     "raw_meta": {"injected": True},
     "content_hash": "deadbeef",
 }
@@ -441,7 +527,7 @@ def test_ledger_ignores_corrupt_row(
 ) -> None:
     good = to_row(_source_data("1"))
     _write_raw(data_dir, "source_data.json", [good, {"external_id": 5}])
-    assert lenient_store.seen_external_ids("YTUS", ["1"]) == {"1"}
+    assert set(lenient_store.seen_postings("YTUS", ["1"])) == {"1"}
     assert corruption_log
 
 
