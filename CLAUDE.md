@@ -94,13 +94,13 @@ minjob_ingest/                 ★ 패키지 (= import 이름)
 config/
 ├── sources.json              ★ 소스 레지스트리 (전송 정본 · 라이브 검증값)
 └── heresy-ref.json           이단 참고 목록 (사람이 관리 · git 이력 = 감사)
-tests/{fixtures/, test_*.py}
+tests/{fixtures/ ← gitignored, test_*.py}
 data/                         로컬 저장소 (gitignored)
 ```
 
 > ⚠️ 위 트리에서 `sources/adapters`·`fetch`·`pipeline`·`store`·`lib`는 **아직 없는 목표 구조**다. 드리프트할 수 있으니 "계약"으로 신뢰하지 말 것.
 >
-> **커밋하지 않는 자동생성물**: `.venv/`·`__pycache__/`·`minjob_ingest.egg-info/`(pip 메타데이터)·`.mypy_cache/`·`.ruff_cache/`·`.pytest_cache/`·`data/`. 전부 `.gitignore`에 있다 — 지워도 도구가 다시 만든다.
+> **커밋하지 않는 것**: `.venv/`·`__pycache__/`·`minjob_ingest.egg-info/`·`.mypy_cache/`·`.ruff_cache/`·`.pytest_cache/`·`data/` (자동생성물 — 지워도 도구가 다시 만든다) + **`tests/fixtures/`**(게시판 HTML 원본 · 가드레일 #11 · `snapshot`으로 다시 받는다). 전부 `.gitignore`에 있다.
 >
 
 ## Commands
@@ -197,8 +197,8 @@ min_job 가드레일을 승계·구체화한다. 근거는 SPEC·CONTRACT·min_j
 7. **예의 있는 크롤.** 위 fetch 기본값(간격·타임아웃)과 **한 호스트 1요청** 원칙을 지킨다. ⚠️ **robots `Disallow`는 따르지 않는다** — 운영자 판단(2026-07-30 · 문제없음 확인). 대신 **`Crawl-delay`는 따르고**(서버 용량 신고이므로 · 2026-08-04) `Retry-After`도 준수한다. 부하 보호의 본체는 **요청 간격·호스트당 1요청·타임아웃·페이지 상한**이다. `RESPECT_ROBOTS_DISALLOW` 스위치는 살려둔다 — 게시판 한 곳이 요청하면 되돌릴 수 있어야 한다. 원장으로 증분해 **같은 글을 다시 긁지 않는다**. 개발 중 반복 실행으로 사이트를 두드리지 않는다 — **테스트는 fixture로, 네트워크를 타지 않는다**.
 8. **재공고는 보존.** 같은 교회·자리의 다른 시점 공고를 합치지 않는다(min_job 차별점). dedup은 "같은 글의 중복 수집·교차게시"까지이며 **자동 병합이 아니라 후보 표시**다.
 9. **경계를 넘지 않는다.** 이 리포에서 **`../min_job`의 파일을 수정하지 않는다**(연동 요구는 문서로 전달). min_job은 staging 마이그레이션을 만들지 않는다.
-10. **프로덕션 수집은 운영자가 실행한다.** 에이전트(Claude)는 코드·config·문서를 만들고 **검증 목적의 소량 요청만** 한다(보드당 목록 1~2건 수준, 반복 금지). 전 소스 실행·백필·대량 AI 호출은 운영자가 CLI로 한다.
-11. **커밋 위생.** 수집 산출물(`data/`)·`.env`를 커밋하지 않는다. **fixture는 개인정보를 마스킹**한 뒤 커밋한다(원본 HTML엔 실제 연락처가 있다). `heresy-ref.json`은 민감 자료 — 리포 공개 전 재검토.
+10. **프로덕션 수집·유료 호출은 운영자가 실행한다.** 에이전트(Claude)는 코드·config·문서를 만들고, **개발·검증 목적의 게시판 요청은 fetch 정책(#7: 간격·호스트당 1요청·타임아웃)을 지키는 한 자유롭게** 한다 — fixture 확보·셀렉터 검증에 필요하다(운영자 허가 2026-08-04 · 이전의 "보드당 1~2건" 제한은 개발에 과했다). **단 유료 API 호출(Gemini)과 전량 실제 수집·백필은 운영자가 CLI로 한다** — 비용과 산출물에 책임이 있는 쪽이 실행한다.
+11. **커밋 위생.** 수집 산출물(`data/`)·`.env`를 커밋하지 않는다. ⚠️ **fixture(`tests/fixtures/`)도 커밋하지 않는다**(2026-08-04 변경 · 이 리포는 **공개**다). 원본 HTML엔 실제 연락처·실명이 있다. 전에는 "마스킹 후 커밋"이었는데 마스킹 패턴의 구멍 2개(구분자 없는 번호·잘린 도메인)로 3건이 공개 이력에 올라갔고 **검사 코드가 같은 구멍을 공유해 통과했다** → 이력 재작성으로 제거. **올리지 않으면 놓칠 것도 없다.** `.gitignore` + `tests/test_fixture_hygiene.py`가 지킨다. `heresy-ref.json`은 민감 자료 — 공개 리포이므로 커밋 전 반드시 재검토.
 
 ## Clean Code Principles
 

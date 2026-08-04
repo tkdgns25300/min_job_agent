@@ -30,3 +30,10 @@ build/
 .DS_Store
 .vscode/
 .idea/
+
+# fixture(게시판 HTML 원본) — 커밋하지 않는다.
+# 원본에는 실제 연락처·실명이 있고 이 리포는 공개다. "마스킹해서 올린다"는 패턴이 완벽해야
+# 성립하는데 실제로 구멍 2개로 3건이 새어나갔다(2026-08-04) → 아예 올리지 않는다(가드레일 #11).
+# 받는 방법은 tests/fixtures/README.md.
+tests/fixtures/*
+!tests/fixtures/README.md

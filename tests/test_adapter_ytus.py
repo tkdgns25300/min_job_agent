@@ -368,7 +368,7 @@ def test_table_cells_become_separate_lines() -> None:
 
     YTUS 본문엔 표가 없지만 `base.py`는 31곳 공용이고 표 양식 본문이 흔하다.
     """
-    from minjob_ingest.sources.adapters.base import normalized_text, parse_html
+    from minjob_ingest.sources.adapters.base import normalized_text
 
     element = parse_html("<div><table><tr><td>교회명</td><td>도원교회</td></tr></table></div>")
     wrapper = element.select_one("div")
@@ -437,60 +437,3 @@ def test_missing_body_container_is_an_error(refs: tuple[PostingRef, ...]) -> Non
 
 
 #: fixture별 "담임목사 :" 라벨 **실측 개수**. `all(...)`은 0건 매치에서도 통과하므로
-#: (실제로 detail.html이 그랬다) 개수를 고정해 검사가 헛도는 것을 막는다. fixture를 다시
-#: 받아 이 값이 달라지면 마스킹을 재확인해야 한다는 신호다.
-#: `detail_with_image.html`이 0인 이유: 포스터형 공고라 본문에 양식 라벨이 없다.
-#: 마스킹된 유선번호 **실측 개수**. 0을 허용하면 `all(빈 리스트)`가 통과해 검사가 헛돈다.
-_MASKED_PHONES: Final = {
-    "list.html": 17,
-    "detail.html": 5,
-    "detail_with_image.html": 3,
-    "list_page2.html": 14,
-}
-
-_NAME_LABELS: Final = {
-    "list.html": 12,
-    "list_page2.html": 11,
-    "detail.html": 2,
-    "detail_with_image.html": 0,
-}
-
-
-@pytest.mark.parametrize(
-    "name", ["list.html", "list_page2.html", "detail.html", "detail_with_image.html"]
-)
-def test_fixture_carries_no_personal_data(name: str) -> None:
-    """커밋된 fixture에 실제 연락처·실명이 남아 있으면 안 된다(가드레일 #11).
-
-    ⚠️ **원문(raw HTML)을 검사한다.** 렌더링된 텍스트만 보면 놓친다 — 이 게시판은 상세 링크의
-    `title="..."` 속성에 공고 본문을 통째로 넣어서, 실제로 그 안의 연락처 8건이 마스킹을
-    피해 커밋됐다. fixture를 다시 받을 때 이 테스트가 그 실수를 막는다.
-    """
-    import re
-
-    raw = (_FIXTURES / name).read_text(encoding="utf-8")
-    mobiles = re.findall(r"01[016-9][-.)\s]{0,2}\d{3,4}[-.\s]{0,2}\d{4}", raw)
-    landlines = re.findall(r"0\d{1,2}[-.)]\s?\d{3,4}[-.\s]\d{4}", raw)
-    # TLD를 글자로 한정 — CDN 버전 문자열(`pretendard@v1.3.9`)을 이메일로 오탐하지 않는다.
-    emails = re.findall(r"[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}", raw)
-    # 태그로 쪼개진 이름(`<span>담임목사 </span><span>: </span><span>홍길동</span>`)도 잡으려면
-    # 원문이 아니라 **렌더링된 텍스트**를 봐야 한다. 둘 다 검사한다.
-    rendered = parse_html(raw).get_text(" ", strip=True)
-    # 콜론을 **필수**로 한다 — 없으면 `"…담임목사 청빙 공고"` 같은 제목까지 이름으로 잡는다.
-    # `\uff1a`는 전각 콜론 — 게시판이 한글 입력기로 쓴 경우가 있다.
-    name_pattern = "담임목사\\s*[:\uff1a](?:&nbsp;|\\s)*([가-힣]{2,3})"
-    names = re.findall(name_pattern, raw) + re.findall(name_pattern, rendered)
-    assert all("0000" in m for m in mobiles), f"마스킹 안 된 휴대폰: {sorted(set(mobiles))}"
-    assert all("0000" in m for m in landlines), f"마스킹 안 된 유선: {sorted(set(landlines))}"
-    # 개수를 고정한다 — `all(빈 리스트)`는 항상 참이라 정규식이 어긋나도 통과한다.
-    assert len(landlines) == _MASKED_PHONES[name], (
-        f"유선 {len(landlines)}건(실측 {_MASKED_PHONES[name]}건)"
-    )
-    assert all(m == "masked@example.com" for m in emails), (
-        f"마스킹 안 된 이메일: {sorted(set(emails))}"
-    )
-    assert all("홍길동" in n for n in names), f"마스킹 안 된 실명: {sorted(set(names))}"
-    # 검사가 실제로 무언가를 봤는지 — 정규식이 조용히 안 맞게 되는 것을 막는다.
-    assert len(names) == _NAME_LABELS[name], (
-        f"이름 라벨 {len(names)}건(실측 {_NAME_LABELS[name]}건)"
-    )
