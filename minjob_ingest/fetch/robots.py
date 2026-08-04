@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Final
 from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
@@ -37,17 +38,29 @@ def allows(parser: RobotFileParser | None, user_agent: str, url: str) -> bool:
     return parser.can_fetch(user_agent, url)
 
 
-def crawl_delay_seconds(parser: RobotFileParser | None, user_agent: str) -> float | None:
+#: 표준 파서가 버리는 소수점 값을 줍기 위한 패턴.
+_CRAWL_DELAY_LINE: Final = re.compile(r"^\s*crawl-delay\s*:\s*([0-9]*\.?[0-9]+)", re.I | re.M)
+
+
+def crawl_delay_seconds(
+    parser: RobotFileParser | None, user_agent: str, raw_text: str = ""
+) -> float | None:
     """사이트가 선언한 요청 간격. 없으면 None.
 
-    `RobotFileParser.crawl_delay`는 문자열·숫자를 섞어 돌려주므로 float로 좁힌다.
+    ⚠️ **표준 `RobotFileParser`는 소수점 값을 조용히 버린다**(`"2.5".isdigit()`이 False라
+    `Crawl-delay: 2.5`가 없는 것으로 처리된다). 그러면 2.5초를 요청한 사이트를 우리 기본
+    1.5초로 두드리게 되므로, 파서가 못 읽었을 때 **원문에서 직접 줍는다**.
+
+    폴백은 UA 그룹을 구분하지 않고 **선언된 값 중 최댓값**을 쓴다 — 우리는 이 값으로 간격을
+    늘리기만 하므로(줄이지 않는다) 보수적인 쪽으로 틀리는 편이 안전하다.
     """
     if parser is None:
         return None
     declared = parser.crawl_delay(user_agent)
-    if declared is None:
-        return None
-    try:
-        return float(declared)
-    except (TypeError, ValueError):
-        return None
+    if declared is not None:
+        try:
+            return float(declared)
+        except (TypeError, ValueError):
+            pass
+    found = [float(m) for m in _CRAWL_DELAY_LINE.findall(raw_text)]
+    return max(found) if found else None

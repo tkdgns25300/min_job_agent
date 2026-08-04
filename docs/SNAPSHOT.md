@@ -31,7 +31,8 @@
 | **교단 태깅** | **공고에서 확정**(①교단 명시 ②교회 명부 ③AI 추정=`ai_guess` ④`UNKNOWN`). 근거 없으면 `UNKNOWN`+운영자 해소. 게시판 교단은 힌트만. **노회 미사용**(SPEC §5.3·CONTRACT §2). `raw_denomination` 보존 |
 | **로그인 소스** | **현재 크롤 31곳에서 제외**(2026-07-27 · 공개 게시판만). 인증 크롤은 **변호사 게이트 통과 후 별도 단계**로만 검토(계정은 운영자 제공 · 크롤러가 로그인 자동화 금지) |
 | **커뮤니티**(카페·밴드·페북) | 나중(Phase 후반). 지금은 공식 게시판만 |
-| **robots.txt** | **따르지 않는다** — 운영자 판단(2026-07-30 · 문제없음 확인). 부하 보호는 **요청 간격 1.5s·호스트당 1요청·타임아웃·페이지 상한**이 담당. 준수 코드는 `RESPECT_ROBOTS` 스위치 뒤에 살아 있어 소스 단위 되돌리기 가능 |
+| **robots.txt** | `Disallow`는 **따르지 않고**(운영자 판단 2026-07-30), `Crawl-delay`는 **따른다**(2026-08-04). 전자는 허락, 후자는 서버 용량 신고 — 무시하면 IP 차단. 스위치 `RESPECT_ROBOTS_DISALLOW`·`RESPECT_CRAWL_DELAY` |
+| **User-Agent** | **31곳 전부 동일한 브라우저 UA**(2026-08-04). 자체 UA는 막힌다(**YTUS 실측 403 vs 브라우저 UA 200**). 어디가 막는지 사전 파악 불가 → 보드별 예외 없음. `spoof_ua`는 실측 기록으로만 잔존 |
 | **브랜치** | `prod`(배포)·`dev`(작업). 릴리스 dev→prod ff-only. commit/push/merge는 명시 요청 시만 |
 
 > 교단 8→9 변경 이유: 검증에서 **합신대 청빙 게시판이 활발**(운영자 실측 ann 30)로 확인돼 기타→독립 key로 복구.
@@ -263,22 +264,23 @@ curl -sL "https://www.ytus.ac.kr/board/list/trXXR" | head   # 영남신대(통�
 
 | | 단계 | 상태 | 파일 |
 |---|---|---|---|
-| ① | **fetch 층** (전송 단일 창구) | ✅ **완료** | `fetch/client.py`(282줄) · `fetch/robots.py`(53줄) · `tests/test_fetch_client.py`(30테스트 · mutation 13/13) |
+| ① | **fetch 층** (전송 단일 창구) | ✅ **완료** | `fetch/client.py` · `fetch/robots.py` · `tests/test_fetch_client.py`(36테스트 · mutation 21/21) |
 | ② | **YTUS 어댑터** (파싱만) | ⬜ 다음 | `sources/adapters/ytus.py` |
 | ③ | **원장 조회 확장** | ⬜ | `store/{base,json_store}.py` 수정 |
 | ④ | **`collect` 명령 + `--dry-run`** | ⬜ | `cli.py` · `pipeline/collect.py` |
-| ⑤ | **관통 확인 + fixture** | ⬜ | `tests/fixtures/YTUS/` |
+| ⑤ | **관통 확인 + fixture** | 🔸 fixture 확보 완료 | `tests/fixtures/YTUS/{list,detail}.html` — 개인정보 마스킹 완료(전화 4·이메일 1·실명 1) |
 
 ### ① fetch 층이 하는 일 (완료 · 재작업 금지)
 
 모든 HTTP가 여기를 지난다(어댑터·파이프라인의 직접 `httpx` import는 ruff TID251로 금지).
-담당: UA 항상 송신(`spoof_ua`면 브라우저 UA) · **config 인코딩 우선**(EUC-KR→cp949) · 타임아웃 20s ·
+담당: **UA 31곳 동일(브라우저) + 브라우저 헤더 세트** · **config 인코딩 우선**(EUC-KR→cp949) · 타임아웃 20s ·
 재시도 3회(429·5xx·연결오류만 · 지수 백오프+지터) · 같은 소스 요청 간격 1.5s · 세션 쿠키(`needs_session`) ·
 **본문 길이 하한 200자**(200 OK + 빈 본문을 성공으로 오판하지 않기).
 
 **하지 않는 것**(의도적):
 - `www_required`·`http_only` → 이미 `list_url`에 있고 레지스트리가 로드 시 강제. 상대 URL은 `urljoin`이 물려준다. **코드 넣지 말 것.**
-- robots → `RESPECT_ROBOTS=False`(운영자 판단 §2). 코드는 스위치 뒤에 살아 있다.
+- robots `Disallow` → `RESPECT_ROBOTS_DISALLOW=False`(운영자 판단 §2). `Crawl-delay`는 준수(`RESPECT_CRAWL_DELAY=True`).
+- `spoof_ua` → UA가 31곳 동일해져 **코드 분기가 없다**(실측 기록으로만 잔존 · §2).
 - `soft_200`·`image_only` → 전송이 아니라 **본문 판정**이라 어댑터·파이프라인 몫.
 
 ### ② 다음에 할 일 — YTUS 어댑터
@@ -292,7 +294,17 @@ YTUS 실측값(`config/sources.json`이 정본):
 공지   .notice-row  → 제외(고정공지는 수집 대상 아님)
 ```
 
-⚠️ **시작 전에 필요한 것**: YTUS 목록 HTML 실물. 받아서 `tests/fixtures/YTUS/list.html`로 저장한 뒤 파싱은 오프라인으로 반복한다(가드레일 #7 — 개발 중 반복 요청 금지). 운영자가 직접 받아 주거나, 에이전트가 검증 목적 1~2건 요청.
+✅ **fixture 확보 완료(2026-08-04)** — `tests/fixtures/YTUS/{list,detail}.html`. 실측으로 확인한 구조:
+```
+목록  tr 21개 = 헤더 1 + 공지 2(tr.notice-row) + 공고 18
+      ⚠️ 목록 "번호"(16718) ≠ URL id(25581) → external_id는 href에서 뽑는다
+      날짜는 4번째 칸(작성일 · 3개월 컷오프용) · 제목 2번째 · 작성자 3번째
+상세  div.boardViewContent (274자) — **양식 게시판**:
+      `교회명 : / 교단명 : 통합 / 담임목사 : / 교회주소 : / 노회명 : / 전화번호 : / 사역시작일 : / 모집부서 :`
+      → **교단이 명시돼 있어 stated로 바로 확정**(SPEC §5.3 최상위 근거 · AI 추정 불필요)
+      → 담임목사 이름은 제3자 개인정보라 추출하지 않는다(가드레일 #4)
+```
+⚠️ **fixture 마스킹 함정**: BeautifulSoup으로 재직렬화하면 **DOM이 변형된다**(본문 274자→16,303자 관측). 개인정보는 파싱으로 **찾고**, 치환은 **원문 문자열에 정확히** 해야 한다. `--save-fixture`가 이 방식을 따라야 한다.
 
 ### ③④⑤ 설계 결정 (이미 확정 · SPEC §10에 기록)
 
@@ -303,6 +315,7 @@ YTUS 실측값(`config/sources.json`이 정본):
 
 ### 미해결 (집에서 결정할 것)
 
-- [ ] **`Crawl-delay`도 무시할지** — `Disallow`는 선호지만 `Crawl-delay`는 "서버가 이 속도를 못 받는다"는 **부하 신호**다. 현재 robots.txt를 아예 안 받으므로 함께 무시된다. 고정 1.5s로 충분할 가능성이 크지만, 차단당하면 이게 원인일 수 있다. 되돌리기 = `RESPECT_ROBOTS=True` 한 줄.
+- [x] **`Crawl-delay` 준수 결정(2026-08-04)** — `Disallow`만 무시하고 `Crawl-delay`는 따른다. 표준 파서가 소수점 값을 버리는 함정까지 처리(§2).
+- [x] **UA 결정(2026-08-04)** — 31곳 동일 브라우저 UA. YTUS가 자체 UA를 403으로 막은 실측이 근거(§2).
 - [ ] **Scrapy 도입 여부** — 마지막 갈림길이었고 `fetch/`를 직접 쓰기로 진행했다(에이전트 권고 = 현 구조 유지: 수집·구조화가 다른 배치라 Scrapy의 item pipeline과 결이 다르고, mypy strict와 충돌). **사실상 결정됨** — 되돌리려면 지금이 마지막.
 - [ ] **`collect --save-fixture`** — 가드레일 #7이 "테스트는 fixture로"를 요구하는데 fixture를 **만드는 수단이 아키텍처에 없다**. ROADMAP 1-1에 항목으로 추가됨.

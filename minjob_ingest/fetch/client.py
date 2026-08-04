@@ -8,8 +8,11 @@
 최소 간격을 스스로 지킨다. 소스 간 병렬은 클라이언트를 여러 개 만들어 한다(31곳의 호스트가
 전부 다르므로 = 호스트당 요청 1개 · SPEC §3).
 
-**플래그 중 이 층이 구현하는 것**: `spoof_ua`(브라우저 UA) · `insecure_tls`(검증 생략) ·
-`needs_session`(쿠키 선확보). **robots는 운영자 판단으로 따르지 않는다**(`RESPECT_ROBOTS`).
+**UA는 전 소스 동일한 브라우저 UA**다(운영자 결정) — 자체 UA로는 403을 주는 게시판이 있고
+어디가 그런지 사전에 알 수 없다. 따라서 `spoof_ua`는 **코드 분기가 아니라 실측 기록**이다.
+
+**플래그 중 이 층이 구현하는 것**: `insecure_tls`(검증 생략) · `needs_session`(쿠키 선확보) ·
+robots **`Crawl-delay`만 준수**(`Disallow`는 운영자 판단으로 무시).
 `www_required`·`http_only`는 **이미 `list_url`에 반영돼 있고 레지스트리가 로드 시
 강제**하므로 여기서 할 일이 없다(상대 URL은 `urljoin`이 호스트·스킴을 물려준다).
 `soft_200`·`image_only`는 전송이 아니라 **본문 판정**이라 호출자 몫이다.
@@ -44,37 +47,54 @@ MIN_REQUEST_INTERVAL_SECONDS: Final = 1.5
 MAX_ATTEMPTS: Final = 3
 _RETRY_BASE_DELAY_SECONDS: Final = 1.0
 _RETRY_MAX_DELAY_SECONDS: Final = 10.0
+#: 서버가 알려준 `Retry-After`도 이 이상은 기다리지 않는다(한 소스가 실행을 붙잡지 않게).
+MAX_RETRY_AFTER_SECONDS: Final = 60.0
 #: 지터 하한 비율 — 여러 소스가 동시에 재시도해 같은 순간에 몰리지 않게 한다.
 _RETRY_JITTER_FLOOR: Final = 0.5
 
 #: 일시적 오류만 재시도한다. 403·404는 재시도해도 같은 답이 온다.
 _RETRYABLE_STATUS: Final = frozenset({408, 425, 429, 500, 502, 503, 504})
 
-#: **UA는 항상 비어있지 않게 보낸다** — 빈 UA에 403·520을 주는 보드가 실측으로 확인됐다
-#: (SUNGKYUL·PGAK·KAICAM). 기본은 정직 UA.
-#: ⚠️ **ASCII만.** HTTP 헤더는 비-ASCII를 담을 수 없어 한글을 넣으면 클라이언트 생성 자체가
-#: `UnicodeEncodeError`로 죽는다(31곳 전부 시작 불가). 게시판 관리자가 로그에서 읽는 값이므로
-#: 정체와 용도를 영어로 밝힌다.
-HONEST_USER_AGENT: Final = (
-    "minjob-ingest/0.1 (church ministry job-posting collector; operator-reviewed)"
-)
-
-#: `spoof_ua` 소스 전용. MTU는 정직 UA에 보안 스텁(0건)을 준다 — 브라우저 UA가 아니면
-#: 크롤이 성공한 것처럼 보이면서 아무것도 못 가져온다.
-BROWSER_USER_AGENT: Final = (
+#: **전 소스 동일한 브라우저 UA**(운영자 결정 2026-08-04).
+#:
+#: 자체 UA(`minjob-ingest/...`)로는 게시판이 막는다 — YTUS 실측: 자체 UA 403(25바이트) vs
+#: 브라우저 UA 200(99KB). 헤더를 다 갖춰도 **UA 문자열만 보고** 거부한다. 31곳 중 어디가
+#: 그런지 사전에 알 수 없고 시간이 지나며 바뀌므로, 보드별 예외가 아니라 기본값으로 둔다.
+#: ⚠️ **ASCII만** — HTTP 헤더는 비-ASCII를 담을 수 없어 클라이언트 생성부터 죽는다.
+USER_AGENT: Final = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
 
+#: UA만 브라우저이고 나머지 헤더가 없으면 그 자체가 눈에 띈다 — 실제 브라우저가 보내는 것을
+#: 함께 보낸다. `Accept-Encoding`은 httpx가 알아서 넣는다.
+_BROWSER_HEADERS: Final = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+#: JSON 티어(`CSU`·`HANIL`)는 페이지의 jQuery AJAX 엔드포인트다 — 실제 페이지가 보내는
+#: 헤더를 맞춘다(서버가 `X-Requested-With`를 확인하는 경우가 있다).
+_AJAX_HEADERS: Final = {
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
 #: 이보다 짧은 본문은 실패로 본다 — 상태코드 200이면서 빈/스텁 응답을 주는 보드가 있다.
 MIN_BODY_LENGTH: Final = 200
 
-#: **robots.txt를 따르지 않는다 — 운영자 판단(2026-07-30, 문제없음 확인).**
-#: 부하 보호는 robots가 아니라 이쪽이 담당한다: 소스별 요청 간격(`MIN_REQUEST_INTERVAL_SECONDS`)
-#: · **한 호스트에 요청 1개**(SourceClient 하나 = 소스 하나) · 타임아웃 · 목록 페이지 상한.
-#: 다시 켜려면 이 값만 True로 — `robots.py`와 판정 경로는 그대로 살려둔다(게시판 한 곳이
-#: 요청하면 그 소스만 되돌릴 수 있어야 한다).
-RESPECT_ROBOTS: Final = False
+#: robots.txt의 두 지시는 **성격이 다르므로 따로 판단한다**(운영자 결정 2026-07-30).
+#:
+#: `Disallow` = "여기 오지 마"(허락의 문제) → **따르지 않는다.** 공개 게시판이고 문제없음을
+#: 확인했다. 다시 켜려면 True로 — 게시판 한 곳이 요청하면 되돌릴 수 있어야 한다.
+RESPECT_ROBOTS_DISALLOW: Final = False
+
+#: `Crawl-delay` = "요청 사이에 N초 쉬어"(서버 용량의 문제) → **따른다.** 우리 기본 1.5초보다
+#: 긴 값을 선언한 사이트를 그 속도로 두드리면 **IP 차단**을 부르고, 차단은 403·타임아웃으로
+#: 나타나 "게시판이 고장났나"로 오진된다. 선언한 곳만 느려지므로 비용이 거의 없다.
+RESPECT_CRAWL_DELAY: Final = True
 
 type Sleeper = Callable[[float], None]
 type Monotonic = Callable[[], float]
@@ -108,6 +128,24 @@ class Response:
         return self.text.lstrip()[:1] in {"{", "["}
 
 
+def _retry_after_seconds(raw: httpx.Response) -> float | None:
+    """429·503의 `Retry-After`(초). 서버가 알려준 대기 시간은 우리 추측보다 정확하다.
+
+    이걸 무시하고 우리 백오프로 밀어붙이는 것이 IP 차단의 흔한 경로다. 날짜 형식(HTTP-date)은
+    쓰는 곳이 드물어 초 단위만 읽고, 비정상적으로 긴 값은 실행을 붙잡지 않도록 상한을 둔다.
+    """
+    header = raw.headers.get("retry-after")
+    if header is None:
+        return None
+    try:
+        seconds = float(header.strip())
+    except ValueError:
+        return None
+    if seconds <= 0:
+        return None
+    return min(seconds, MAX_RETRY_AFTER_SECONDS)
+
+
 class SourceClient:
     """한 소스 전용 HTTP 클라이언트.
 
@@ -134,8 +172,9 @@ class SourceClient:
         self._session_ready = False
         self._robots_loaded = False
         self._robots: RobotFileParser | None = None
+        self._robots_text = ""
         self._client = httpx.Client(
-            headers={"User-Agent": self._user_agent()},
+            headers=dict(_BROWSER_HEADERS),
             timeout=REQUEST_TIMEOUT_SECONDS,
             follow_redirects=True,
             verify=not source.flags.insecure_tls,
@@ -170,22 +209,27 @@ class SourceClient:
 
     def _request(self, method: str, url: str, *, form: Mapping[str, str] | None) -> Response:
         absolute = urljoin(self._source.list_url, url)
-        self._check_robots(absolute)
+        self._apply_robots_policy(absolute)
         self._ensure_session()
         return self._send(method, url, form=form)
 
-    def _check_robots(self, absolute_url: str) -> None:
-        if not RESPECT_ROBOTS:
+    def _apply_robots_policy(self, absolute_url: str) -> None:
+        """`Disallow`와 `Crawl-delay`를 **따로** 적용한다(위 두 상수 참조)."""
+        if not (RESPECT_ROBOTS_DISALLOW or RESPECT_CRAWL_DELAY):
             return
         self._load_robots(absolute_url)
         agent = self._user_agent()
-        if not robots.allows(self._robots, agent, absolute_url):
+        if RESPECT_ROBOTS_DISALLOW and not robots.allows(self._robots, agent, absolute_url):
             raise RobotsDisallowed(f"{self._source.key} {absolute_url}: robots.txt가 막은 경로")
-        # 사이트가 우리보다 긴 간격을 요구하면 그쪽을 따른다.
-        declared = robots.crawl_delay_seconds(self._robots, agent)
-        if declared is not None and declared > self._min_interval:
-            _LOG.info("%s robots Crawl-delay %.1fs 적용", self._source.key, declared)
-            self._min_interval = declared
+        if RESPECT_CRAWL_DELAY:
+            self._honor_crawl_delay(agent)
+
+    def _honor_crawl_delay(self, agent: str) -> None:
+        declared = robots.crawl_delay_seconds(self._robots, agent, self._robots_text)
+        if declared is None or declared <= self._min_interval:
+            return  # 우리 기본값이 더 느리면 그대로 둔다(더 빠르게 만들지 않는다).
+        _LOG.info("%s robots Crawl-delay %.1fs 적용", self._source.key, declared)
+        self._min_interval = declared
 
     def _load_robots(self, absolute_url: str) -> None:
         """호스트당 한 번만 가져온다. 실패는 '제한 없음'으로 본다(robots 부재의 표준 해석)."""
@@ -201,6 +245,7 @@ class SourceClient:
             _LOG.info("%s robots.txt 없음/실패 — 제한 없음으로 진행 (%s)", self._source.key, err)
             return
         self._robots = robots.parse_robots(fetched.text)
+        self._robots_text = fetched.text
 
     def _send(
         self,
@@ -212,10 +257,17 @@ class SourceClient:
     ) -> Response:
         absolute = urljoin(self._source.list_url, url)
         last_error: str = ""
+        retry_after: float | None = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
+            retry_after = None
             self._wait_for_turn()
             try:
-                raw = self._client.request(method, absolute, data=dict(form) if form else None)
+                raw = self._client.request(
+                    method,
+                    absolute,
+                    data=dict(form) if form is not None else None,
+                    headers=_AJAX_HEADERS if form is not None else None,
+                )
             except httpx.HTTPError as err:
                 # 연결·타임아웃 — 메시지가 빈 예외도 있어(TimeoutError) 타입명을 함께 남긴다.
                 last_error = f"{type(err).__name__}: {err}" if str(err) else type(err).__name__
@@ -223,9 +275,10 @@ class SourceClient:
                 if raw.status_code not in _RETRYABLE_STATUS:
                     return self._decoded(absolute, raw, min_body_length)
                 last_error = f"HTTP {raw.status_code}"
+                retry_after = _retry_after_seconds(raw)
 
             if attempt < MAX_ATTEMPTS:
-                delay = self._backoff_delay(attempt)
+                delay = retry_after if retry_after is not None else self._backoff_delay(attempt)
                 _LOG.info(
                     "%s 일시 오류 — %.1fs 후 재시도 %d/%d (%s)",
                     self._source.key,
@@ -279,4 +332,5 @@ class SourceClient:
         return capped * jitter
 
     def _user_agent(self) -> str:
-        return BROWSER_USER_AGENT if self._source.flags.spoof_ua else HONEST_USER_AGENT
+        """robots 판정에 쓰는 UA. 전 소스 동일하다(`spoof_ua` 분기 없음)."""
+        return USER_AGENT
