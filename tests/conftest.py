@@ -13,6 +13,7 @@ import pytest
 from dotenv import load_dotenv
 
 from minjob_ingest.paths import DEFAULT_DOTENV_PATH
+from minjob_ingest.sources.adapters.registry import implemented_keys
 
 
 @pytest.fixture(autouse=True)
@@ -26,3 +27,38 @@ def _block_the_operator_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
 
     # 문자열 타깃 — `settings`는 `load_dotenv`를 재export하지 않는다(strict no_implicit_reexport).
     monkeypatch.setattr("minjob_ingest.settings.load_dotenv", guarded)
+
+
+#: 어댑터 fixture가 놓이는 곳. 커밋되지 않는다(가드레일 #11 · `tests/fixtures/README.md`).
+_FIXTURE_ROOT = Path(__file__).parent / "fixtures"
+
+
+def _adapter_fixture_coverage() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(목록 fixture가 있는 키, 없는 키).
+
+    ⚠️ **한 곳에서만 계산한다.** 요약 출력과 "하나도 없으면 실패" 검사가 서로 다른 계산을 쓰면
+    한쪽이 조용히 어긋난다 — 마스킹과 검증 패턴이 갈라져 개인정보 3건을 놓친 것과 같은 실수다.
+    """
+    keys = implemented_keys()
+    have = tuple(key for key in keys if (_FIXTURE_ROOT / key / "list.html").exists())
+    return have, tuple(key for key in keys if key not in have)
+
+
+@pytest.fixture
+def adapter_fixture_coverage() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    return _adapter_fixture_coverage()
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    """어댑터 fixture 커버리지를 요약에 찍는다.
+
+    ⚠️ fixture는 커밋되지 않으므로(가드레일 #11) 없으면 적합성 검사가 **조용히 skip**된다.
+    숫자를 항상 눈에 보이게 두면 "초록불인데 검증 0건"을 알아챌 수 있다.
+    """
+    have, missing = _adapter_fixture_coverage()
+    total = len(have) + len(missing)
+    line = f"어댑터 fixture 커버리지: {len(have)}/{total} 검증"
+    if missing:
+        line += f"  · 없음: {', '.join(missing)}  (minjob-ingest snapshot --source KEY)"
+    terminalreporter.write_line("")
+    terminalreporter.write_line(line, yellow=bool(missing), green=not missing)
