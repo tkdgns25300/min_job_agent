@@ -46,11 +46,12 @@
 - [x] `fetch/client.py`·`fetch/robots.py` — **UA 31곳 동일(브라우저)+브라우저 헤더**·인코딩(cp949)·타임아웃 20s·재시도 3회·`Retry-After` 준수·소스별 간격 1.5s·robots `Crawl-delay` 준수(`Disallow`는 미준수)·세션 쿠키·본문 길이 하한. **모든 HTTP의 단일 창구** (36테스트 · mutation 21/21)
 - [x] **YTUS fixture 확보**(`tests/fixtures/YTUS/` · 개인정보 마스킹 완료) — 실측 구조는 SNAPSHOT §10
 - [ ] **fixture 저장 경로**(`collect --save-fixture`) — 가드레일 #7이 "테스트는 fixture로"를 요구하는데 fixture를 **만드는 수단이 없다**. 어댑터를 고칠 때마다 게시판을 다시 두드리게 되므로, 받아온 HTML을 `tests/fixtures/<KEY>/`에 저장해 이후 파싱 반복은 오프라인으로 한다
-- [ ] `YTUS` 어댑터 — 목록→상세→`raw_text`+이미지 URL 확보
+- [x] **어댑터 계층** `sources/adapters/{base,ytus}.py` — 순수 파싱(네트워크 없음) · `list_page_url`/`parse_list`/`parse_detail` · 공지 이중신호 · 실측 fixture 3종 · 25테스트 · mutation 15/15
+- [ ] ⚠️ **`external_id` 중복 검사를 run 단위로** — `as_listing`은 **페이지 1장**만 본다. 데일리가 ≤3p를 훑는 중 새 글이 올라와 글이 페이지 경계에서 밀리면 같은 id가 두 페이지에 나와 **한 run에 2회 fetch·구조화**된다(비용). SPEC §10이 요구하는 "한 실행" 범위는 파이프라인(`collect`)이 페이지를 모아 검사해야 성립한다
 - [ ] `source_data` 적재 — 불변·`UNIQUE(source_key, external_id)`(원장)·이미 본 글 skip
 - [ ] **`collect` 명령 + `--dry-run`** — 저장 없이 [행 수·공지 제외 수·**external_id 중복 수**·게시일 범위·원장 신규 수·샘플]을 출력. 31곳 파싱 검증의 도구
 - [ ] **`external_id` 중복은 에러**(SPEC §10 · 단 한 실행 안만 본다) · `PUTS` bd_name 필터 · `CSU`는 1110만 · **`HANSEI`는 처음부터 `catId:artclNo` 복합키**(실행 간 충돌은 가드가 못 잡음)
-- [ ] **id 재사용 탐지** — 원장 조회가 저장된 `list_title`·`list_date`를 함께 돌려주고 목록 값과 비교(추가 요청 0건 · 경고만)
+- [x] **원장 조회 확장** — `SourceData.title`·`posted_on` 컬럼 + `seen_postings`가 `LedgerEntry`(제목·게시일)를 함께 반환 + `points_to_another_posting`(둘 다 다르면 소스 실패). 추가 요청 0건 · mutation 12/12
 - [ ] `--months N` 컷오프 = **목록의 게시일**(구조화 전이라 posted_at 없음) · 날짜 없는 소스는 `--pages N` 폴백
 
 ### 1-2. 구조화 (source_data → review_data)  ← ★ 1소스 전 구간 관통(뼈대 완성)

@@ -1,0 +1,457 @@
+"""YTUS 어댑터 테스트 — 실제 게시판 HTML(fixture)로, 네트워크 없이.
+
+fixture는 2026-08-04 실측본이며 개인정보를 마스킹했다(가드레일 #11). 사이트가 개편되면
+이 테스트가 먼저 깨지는 것이 목적이다 — 조용히 0건이 되는 것보다 낫다.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from typing import Final
+
+import pytest
+
+from minjob_ingest.paths import PROJECT_ROOT
+from minjob_ingest.sources.adapters import ytus
+from minjob_ingest.sources.adapters.base import ParseError, PostingRef, parse_html
+from minjob_ingest.sources.registry import SourceConfig, find_source, load_sources
+
+_FIXTURES: Final = PROJECT_ROOT / "tests" / "fixtures" / "YTUS"
+#: 실측값 — tr 21 = 헤더 1 + 공지 2 + 공고 18.
+_EXPECTED_POSTINGS: Final = 18
+
+
+def _list_html(*rows: str) -> str:
+    """실측과 같은 컨테이너로 감싼 목록 HTML. 셀렉터가 컨테이너를 요구하므로 필수다."""
+    return f'<div class="boardList"><table>{"".join(rows)}</table></div>'
+
+
+def _row(
+    *, num: str = "1", ident: str = "100", title: str = "가", rdate: str = "2026-08-04"
+) -> str:
+    return (
+        f'<tr><td class="num">{num}</td>'
+        f'<td class="title"><a href="/board/view/trXXR/{ident}">{title}</a></td>'
+        f'<td class="author">교회</td><td class="rdate">{rdate}</td>'
+        f'<td class="rnum">1</td></tr>'
+    )
+
+
+@pytest.fixture(scope="module")
+def source() -> SourceConfig:
+    found = find_source(load_sources(None), "YTUS")
+    assert found is not None
+    return found
+
+
+@pytest.fixture(scope="module")
+def list_html() -> str:
+    return (_FIXTURES / "list.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def detail_html() -> str:
+    return (_FIXTURES / "detail.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def detail_with_image_html() -> str:
+    return (_FIXTURES / "detail_with_image.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def refs(list_html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
+    return ytus.parse_list(list_html, source)
+
+
+# ── 페이지 URL ───────────────────────────────────────────────────
+
+
+def test_first_page_is_the_configured_list_url(source: SourceConfig) -> None:
+    assert ytus.list_page_url(source, 1) == source.list_url
+
+
+def test_later_pages_append_the_page_segment(source: SourceConfig) -> None:
+    # 실측: 쿼리 파라미터가 아니라 경로다(/page/2).
+    assert ytus.list_page_url(source, 3) == f"{source.list_url}/page/3"
+
+
+def test_page_zero_is_rejected(source: SourceConfig) -> None:
+    with pytest.raises(ValueError, match="page"):
+        ytus.list_page_url(source, 0)
+
+
+# ── 목록 파싱 ────────────────────────────────────────────────────
+
+
+def test_parses_every_posting_row(refs: tuple[PostingRef, ...]) -> None:
+    assert len(refs) == _EXPECTED_POSTINGS
+
+
+def test_pinned_notices_are_excluded(refs: tuple[PostingRef, ...]) -> None:
+    """고정공지는 공고가 아니다. 포함하면 매일 같은 두 건을 구조화해 돈을 쓴다."""
+    notice_ids = {"9571", "6590"}  # 실측: 작성 유의사항 · 작성 양식
+    assert notice_ids.isdisjoint({ref.external_id for ref in refs})
+
+
+def test_external_id_comes_from_the_url_not_the_displayed_number(
+    refs: tuple[PostingRef, ...],
+) -> None:
+    """실측에서 표시번호 16718 ≠ URL id 25581.
+
+    표시번호를 원장 키로 쓰면 게시판이 번호를 다시 매길 때 같은 글을 새 글로 보거나 그 반대가
+    된다.
+    """
+    newest = refs[0]
+    assert newest.external_id == "25581"
+    assert newest.list_meta["display_no"] == "16718"
+    assert newest.url.endswith("/board/view/trXXR/25581")
+
+
+def test_external_ids_are_unique(refs: tuple[PostingRef, ...]) -> None:
+    assert len({ref.external_id for ref in refs}) == len(refs)
+
+
+def test_detail_urls_are_absolute(refs: tuple[PostingRef, ...]) -> None:
+    # 상대 href를 그대로 두면 fetch 층이 합쳐주긴 하지만, 저장되는 source_url이 깨진다.
+    assert all(ref.url.startswith("https://www.ytus.ac.kr/") for ref in refs)
+
+
+def test_posted_dates_are_parsed(refs: tuple[PostingRef, ...]) -> None:
+    # 백필 컷오프(`--months N`)가 이 값만 보고 판단한다(SPEC §4).
+    assert refs[0].posted_on == date(2026, 8, 4)
+    assert all(ref.posted_on is not None for ref in refs)
+
+
+def test_list_meta_carries_what_reuse_detection_needs(refs: tuple[PostingRef, ...]) -> None:
+    """원장이 "이미 본 글"로 판정할 때 제목·날짜를 대조해 id 재사용을 잡는다(추가 요청 0건)."""
+    meta = refs[0].list_meta
+    assert meta["list_title"] == "안동도원교회에서 유년부전도사님 모십니다."
+    assert meta["list_date"] == "2026-08-04"
+    assert meta["views"] == 15
+
+
+def test_bumped_posting_is_just_another_row(refs: tuple[PostingRef, ...]) -> None:
+    """끌어올림 글도 같은 external_id를 가지므로 원장이 중복으로 걸러낸다(SPEC §4).
+
+    fixture에 "끌어올림-"으로 시작하는 실제 행이 있다 — 특별 취급이 없어야 정상이다.
+    """
+    bumped = [ref for ref in refs if ref.title.startswith("끌어올림")]
+    assert len(bumped) == 1
+    assert bumped[0].external_id.isdigit()
+
+
+# ── 목록 파싱 실패 ───────────────────────────────────────────────
+
+
+def test_missing_table_is_an_error_not_an_empty_list(source: SourceConfig) -> None:
+    """사이트 개편으로 테이블이 사라진 것과 공고 0건은 다르다.
+
+    빈 리스트로 돌려주면 `source_health`에 "정상인데 0건"으로 남아 셀렉터가 깨진 걸 아무도
+    모른다(SPEC §7 소프트 실패).
+    """
+    with pytest.raises(ParseError, match="셀렉터"):
+        ytus.parse_list("<html><body><p>개편 중</p></body></html>", source)
+
+
+def test_table_outside_the_expected_container_is_an_error(source: SourceConfig) -> None:
+    """무자격 `table` 셀렉터는 문서 첫 테이블(검색창 등)을 집어 조용히 0건이 된다."""
+    with pytest.raises(ParseError, match="셀렉터"):
+        ytus.parse_list(f"<table>{_row()}</table>", source)
+
+
+def test_table_without_posting_rows_is_legitimately_empty(source: SourceConfig) -> None:
+    assert ytus.parse_list(_list_html("<tr><th>번호</th><th>제목</th></tr>"), source) == ()
+
+
+def test_duplicate_external_id_is_rejected(source: SourceConfig) -> None:
+    """하위 게시판이 섞이거나 id 추출이 틀리면 한 실행 안에서 중복이 보인다(SPEC §10)."""
+    with pytest.raises(ParseError, match="중복"):
+        ytus.parse_list(_list_html(_row(num="1"), _row(num="2")), source)
+
+
+def test_non_numeric_url_tail_is_rejected(source: SourceConfig) -> None:
+    with pytest.raises(ParseError, match="숫자가 아님"):
+        ytus.parse_list(_list_html(_row(ident="abc")), source)
+
+
+def test_unexpected_date_format_is_rejected(source: SourceConfig) -> None:
+    # 조용히 None으로 흘리면 백필 범위가 무의미해진다.
+    with pytest.raises(ParseError, match="작성일 형식"):
+        ytus.parse_list(_list_html(_row(rdate="2026.08.04")), source)
+
+
+def test_empty_date_cell_is_rejected(source: SourceConfig) -> None:
+    """YTUS는 전 행에 날짜가 있다 — 비면 셀렉터가 깨진 것이고, 백필 범위가 무의미해진다."""
+    with pytest.raises(ParseError, match="작성일 칸"):
+        ytus.parse_list(_list_html(_row(rdate="")), source)
+
+
+def test_empty_number_marks_a_notice_even_without_the_class(source: SourceConfig) -> None:
+    """공지 판정은 두 신호를 독립적으로 본다 — 게시판이 CSS 클래스를 바꿔도 걸려야 한다.
+
+    실측에서 공지행은 `tr.notice-row`이면서 `td.num`이 비어 있다. 클래스만 믿으면 개편 한 번에
+    공지 두 건이 매일 구조화돼 돈을 쓴다.
+    """
+    with pytest.raises(ParseError, match="전부 공지로 판정"):
+        ytus.parse_list(_list_html(_row(num="")), source)
+
+
+def test_empty_title_is_rejected(source: SourceConfig) -> None:
+    """빈 제목이 그대로 저장되면 검수 큐에서 무엇인지 알 수 없는 행이 된다."""
+    with pytest.raises(ParseError, match="비어 있음"):
+        ytus.parse_list(_list_html(_row(title="")), source)
+
+
+def test_adapter_reports_images_as_found(refs: tuple[PostingRef, ...]) -> None:
+    """어댑터는 페이지에 있는 대로 보고한다 — 중복 제거는 `SourceData`가 한다(한 곳에서만)."""
+    html = (
+        '<div class="boardViewContent">'
+        '<img src="/upload/a.jpg"><img src="/upload/a.jpg"><img src="/upload/b.jpg">'
+        "</div>"
+    )
+    raw = ytus.parse_detail(html, refs[0])
+    assert raw.image_urls == (
+        "https://www.ytus.ac.kr/upload/a.jpg",
+        "https://www.ytus.ac.kr/upload/a.jpg",
+        "https://www.ytus.ac.kr/upload/b.jpg",
+    )
+
+
+# ── 상세 파싱 ────────────────────────────────────────────────────
+
+
+def test_detail_body_is_extracted_line_by_line(
+    detail_html: str, refs: tuple[PostingRef, ...]
+) -> None:
+    """양식 게시판이라 항목별 줄이 살아야 AI가 읽기 쉽다."""
+    raw = ytus.parse_detail(detail_html, refs[0])
+    lines = raw.raw_text.splitlines()
+    assert lines[0] == "교회명 : 도원교회"
+    assert "교단명 : 통합" in lines
+
+
+def test_denomination_is_stated_in_the_body(detail_html: str, refs: tuple[PostingRef, ...]) -> None:
+    """교단이 본문에 명시돼 있어 구조화가 `stated`로 확정한다(SPEC §5.3 · AI 추정 불필요)."""
+    raw = ytus.parse_detail(detail_html, refs[0])
+    assert "교단명 : 통합" in raw.raw_text
+
+
+def test_detail_keeps_the_ref(detail_html: str, refs: tuple[PostingRef, ...]) -> None:
+    raw = ytus.parse_detail(detail_html, refs[0])
+    assert raw.ref is refs[0]
+
+
+def test_attachment_outside_the_body_is_collected(
+    detail_with_image_html: str, refs: tuple[PostingRef, ...]
+) -> None:
+    """첨부 이미지는 본문의 **형제** 컨테이너에 렌더된다 — 본문만 훑으면 통째로 잃는다.
+
+    실측 fixture(25579 삼성교회)는 본문이 한 줄이고 상세 내용이 첨부 포스터에만 있다. 이걸
+    놓치면 Gemini가 핵심 정보를 못 보고, 본문까지 없는 공고라면 `ParseError`로 영구 미수집이
+    된다.
+    """
+
+
+def test_all_attachments_are_captured_with_filenames(
+    detail_with_image_html: str, refs: tuple[PostingRef, ...]
+) -> None:
+    """첨부는 **미리보기 컨테이너와 다른 곳**에 전체 목록이 있다.
+
+    미리보기(`pnlAttachedImage`)에는 이미지형만 나오므로 그것만 보면 HWP·PDF를 통째로 잃는다.
+    파일명이 필요한 이유: 다운로드 URL에 파일명이 없어(`/download/…/57439f…`) 이름이 없으면
+    무슨 파일인지 알 수 없고, 구조화가 Gemini에 보낼지도 판단할 수 없다.
+    """
+    raw = ytus.parse_detail(detail_with_image_html, refs[0])
+    assert len(raw.attachments) == 1
+    attachment = raw.attachments[0]
+    assert attachment.name == "삼성교회_담임목사_청빙.jpeg"
+    assert attachment.is_image is True
+    assert attachment.url.startswith("https://www.ytus.ac.kr/board/download/trXXR/25579/")
+
+
+def test_preview_url_is_not_stored_as_an_inline_image(
+    detail_with_image_html: str, refs: tuple[PostingRef, ...]
+) -> None:
+    """미리보기 URL을 `image_urls`에 넣으면 **같은 첨부가 두 번** 저장된다.
+
+    실측: 미리보기 `/board/filelink/trXXR/25579/1/…` 와 다운로드
+    `/board/download/trXXR/25579/file/1/…` 는 같은 파일(글 25579·첨부 1)인데 URL이 달라
+    어떤 중복 제거도 못 잡는다 → 바이트 fetch와 Gemini 비용이 두 배가 된다.
+    `image_urls`는 계약대로 **본문 인라인 전용**이다(SPEC §6 ①).
+    """
+    raw = ytus.parse_detail(detail_with_image_html, refs[0])
+    assert raw.image_urls == ()
+    assert len(raw.attachments) == 1  # 첨부로는 한 번만
+
+
+def test_attachment_list_selector_drift_is_caught() -> None:
+    """첨부 목록 셀렉터가 빗나가면 본문 있는 공고는 "정상인데 첨부 0개"로 통과한다.
+
+    상세의 미리보기와 목록의 첨부 아이콘이 독립 신호라 대조하면 잡힌다.
+    """
+    html = (
+        '<div class="boardViewContent">본문 있음</div>'
+        '<div class="pnlAttachedImage"><img src="/board/filelink/x/1"></div>'
+        '<div class="view-file-RENAMED"><a href="/dl/1">공고.hwp</a></div>'
+    )
+    ref = PostingRef(external_id="1", url="https://www.ytus.ac.kr/board/view/trXXR/1", title="가")
+    with pytest.raises(ParseError, match="첨부가 있다고 표시됐는데"):
+        ytus.parse_detail(html, ref)
+
+
+def test_list_icon_alone_catches_selector_drift() -> None:
+    """미리보기가 없는(비이미지 첨부) 공고는 **목록 아이콘**만이 신호다."""
+    ref = PostingRef(
+        external_id="1",
+        url="https://www.ytus.ac.kr/board/view/trXXR/1",
+        title="가",
+        list_meta={"has_attachment": True},
+    )
+    html = '<div class="boardViewContent">본문 있음</div>'
+    with pytest.raises(ParseError, match="첨부가 있다고 표시됐는데"):
+        ytus.parse_detail(html, ref)
+
+
+def test_list_attachment_icon_is_recorded(refs: tuple[PostingRef, ...]) -> None:
+    """목록의 클립 아이콘이 상세 첨부 파싱을 교차 확인하는 신호가 된다.
+
+    실측: 클립이 있는 행은 5개지만 그중 1개가 공지행이라 **공고는 4건**이다.
+    """
+    assert sum(1 for r in refs if r.list_meta.get("has_attachment")) == 4
+
+
+def test_attachment_name_falls_back_to_the_url() -> None:
+    """링크 텍스트가 비어도 버리지 않는다 — 조용히 버리면 개편 한 번에 전량 유실된다.
+
+    실측: 다운로드 URL 끝 세그먼트가 파일명이다(`/download/…/삼성교회_담임목사_청빙.jpeg`).
+    """
+    html = (
+        '<div class="boardViewContent">본문</div>'
+        '<div class="view-file"><a href="/board/download/x/1/%EA%B3%B5%EA%B3%A0.hwp"></a></div>'
+    )
+    ref = PostingRef(external_id="1", url="https://www.ytus.ac.kr/board/view/trXXR/1", title="가")
+    raw = ytus.parse_detail(html, ref)
+    assert raw.attachments[0].name == "공고.hwp"
+
+
+def test_table_cells_become_separate_lines() -> None:
+    """`td`가 블록 경계가 아니면 `<td>교회명</td><td>도원교회</td>` → `"교회명도원교회"`.
+
+    YTUS 본문엔 표가 없지만 `base.py`는 31곳 공용이고 표 양식 본문이 흔하다.
+    """
+    from minjob_ingest.sources.adapters.base import normalized_text, parse_html
+
+    element = parse_html("<div><table><tr><td>교회명</td><td>도원교회</td></tr></table></div>")
+    wrapper = element.select_one("div")
+    assert wrapper is not None
+    text = normalized_text(wrapper)
+    assert "교회명도원교회" not in text
+    assert "교회명" in text.splitlines()
+
+
+def test_non_image_attachment_is_kept_but_not_marked_for_gemini() -> None:
+    """HWP는 Gemini가 못 읽지만 **URL은 남긴다** — 운영자가 열어볼 수 있어야 한다."""
+    html = (
+        '<div class="boardViewContent">본문</div>'
+        '<div class="view-file"><p class="file-tit">첨부파일</p>'
+        '<a href="/board/download/x/1">청빙공고.hwp</a>'
+        '<a href="/board/download/x/2">지원서.pdf</a></div>'
+    )
+    ref = PostingRef(external_id="1", url="https://www.ytus.ac.kr/board/view/trXXR/1", title="가")
+    raw = ytus.parse_detail(html, ref)
+    assert [(a.name, a.is_image) for a in raw.attachments] == [
+        ("청빙공고.hwp", False),
+        ("지원서.pdf", False),
+    ]
+
+
+def test_attachment_only_posting_is_not_a_failure() -> None:
+    """본문·인라인이미지가 없고 첨부만 있어도 정상이다 — 실패시키면 영구 미수집이 된다."""
+    html = (
+        '<div class="boardViewContent"></div>'
+        '<div class="view-file"><a href="/dl/1">공고.hwp</a></div>'
+    )
+    ref = PostingRef(external_id="1", url="https://www.ytus.ac.kr/board/view/trXXR/1", title="가")
+    raw = ytus.parse_detail(html, ref)
+    assert raw.raw_text == ""
+    assert len(raw.attachments) == 1
+
+
+def test_inline_separator_does_not_split_tokens(
+    detail_html: str, refs: tuple[PostingRef, ...]
+) -> None:
+    """`get_text(" ")`는 span 경계마다 공백을 넣어 `"1 명"`·`"이력서 , "`처럼 벌어진다."""
+    raw = ytus.parse_detail(detail_html, refs[0])
+    assert "모집인원 : 1명" in raw.raw_text
+    assert "제출서류 : 이력서, 자기소개서, 가족관계증명서" in raw.raw_text
+
+
+def test_image_only_body_is_not_a_failure(refs: tuple[PostingRef, ...]) -> None:
+    """본문을 이미지로만 올리는 공고가 있다(`image_only`) — 빈 raw_text가 정상이다."""
+    html = '<div class="boardViewContent"><img src="/upload/notice.jpg"></div>'
+    raw = ytus.parse_detail(html, refs[0])
+    assert raw.raw_text == ""
+    assert raw.image_urls == ("https://www.ytus.ac.kr/upload/notice.jpg",)
+
+
+def test_body_with_neither_text_nor_image_is_an_error(refs: tuple[PostingRef, ...]) -> None:
+    with pytest.raises(ParseError, match="모두 없음"):
+        ytus.parse_detail('<div class="boardViewContent">  </div>', refs[0])
+
+
+def test_missing_body_container_is_an_error(refs: tuple[PostingRef, ...]) -> None:
+    with pytest.raises(ParseError, match="셀렉터"):
+        ytus.parse_detail("<html><body>개편 중</body></html>", refs[0])
+
+
+# ── fixture 위생 (가드레일 #11) ──────────────────────────────────
+
+
+#: fixture별 "담임목사 :" 라벨 **실측 개수**. `all(...)`은 0건 매치에서도 통과하므로
+#: (실제로 detail.html이 그랬다) 개수를 고정해 검사가 헛도는 것을 막는다. fixture를 다시
+#: 받아 이 값이 달라지면 마스킹을 재확인해야 한다는 신호다.
+#: `detail_with_image.html`이 0인 이유: 포스터형 공고라 본문에 양식 라벨이 없다.
+#: 마스킹된 유선번호 **실측 개수**. 0을 허용하면 `all(빈 리스트)`가 통과해 검사가 헛돈다.
+_MASKED_PHONES: Final = {"list.html": 17, "detail.html": 5, "detail_with_image.html": 3}
+
+_NAME_LABELS: Final = {"list.html": 7, "detail.html": 1, "detail_with_image.html": 0}
+
+
+@pytest.mark.parametrize("name", ["list.html", "detail.html", "detail_with_image.html"])
+def test_fixture_carries_no_personal_data(name: str) -> None:
+    """커밋된 fixture에 실제 연락처·실명이 남아 있으면 안 된다(가드레일 #11).
+
+    ⚠️ **원문(raw HTML)을 검사한다.** 렌더링된 텍스트만 보면 놓친다 — 이 게시판은 상세 링크의
+    `title="..."` 속성에 공고 본문을 통째로 넣어서, 실제로 그 안의 연락처 8건이 마스킹을
+    피해 커밋됐다. fixture를 다시 받을 때 이 테스트가 그 실수를 막는다.
+    """
+    import re
+
+    raw = (_FIXTURES / name).read_text(encoding="utf-8")
+    mobiles = re.findall(r"01[016-9][-.)\s]{0,2}\d{3,4}[-.\s]{0,2}\d{4}", raw)
+    landlines = re.findall(r"0\d{1,2}[-.)]\s?\d{3,4}[-.\s]\d{4}", raw)
+    # TLD를 글자로 한정 — CDN 버전 문자열(`pretendard@v1.3.9`)을 이메일로 오탐하지 않는다.
+    emails = re.findall(r"[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}", raw)
+    # 태그로 쪼개진 이름(`<span>담임목사 </span><span>: </span><span>홍길동</span>`)도 잡으려면
+    # 원문이 아니라 **렌더링된 텍스트**를 봐야 한다. 둘 다 검사한다.
+    rendered = parse_html(raw).get_text(" ", strip=True)
+    label = r"담임목사\s*:?\s*"
+    value = r"((?:[가-힣]|&nbsp;|\s){2,10}?)\s*(?:목사)?\s*"
+    next_label = r"(?=교회|교단|노회|전화|사역|모집)"
+    name_pattern = label + value + next_label
+    names = re.findall(name_pattern, raw) + re.findall(name_pattern, rendered)
+    assert all("0000" in m for m in mobiles), f"마스킹 안 된 휴대폰: {sorted(set(mobiles))}"
+    assert all("0000" in m for m in landlines), f"마스킹 안 된 유선: {sorted(set(landlines))}"
+    # 개수를 고정한다 — `all(빈 리스트)`는 항상 참이라 정규식이 어긋나도 통과한다.
+    assert len(landlines) == _MASKED_PHONES[name], (
+        f"유선 {len(landlines)}건(실측 {_MASKED_PHONES[name]}건)"
+    )
+    assert all(m == "masked@example.com" for m in emails), (
+        f"마스킹 안 된 이메일: {sorted(set(emails))}"
+    )
+    assert all("홍길동" in n for n in names), f"마스킹 안 된 실명: {sorted(set(names))}"
+    # 검사가 실제로 무언가를 봤는지 — 정규식이 조용히 안 맞게 되는 것을 막는다.
+    assert len(names) == _NAME_LABELS[name], (
+        f"이름 라벨 {len(names)}건(실측 {_NAME_LABELS[name]}건)"
+    )

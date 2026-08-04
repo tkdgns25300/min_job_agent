@@ -163,7 +163,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 ### Store (`store/*.py`) — 저장 단일 창구
 - 파이프라인은 `Store` 프로토콜만 안다. **파일 경로·SQL·Supabase 클라이언트가 파이프라인에 새지 않는다.**
 - `source_data`는 **write-once**(원문 증거). 일반 경로에서 갱신하지 않는다 — 수정 감지는 리비전 행 추가(Phase 3). **예외: 운영자 opt-out·법적 삭제 요청은 삭제/마스킹이 가능해야 한다**(가드레일 #4).
-- 원장은 `source_data`의 `(source_key, external_id)` 유일성이 담당한다. 별도 원장 테이블을 만들지 않는다.
+- 원장은 `source_data`의 `(source_key, external_id)` 유일성이 담당한다. 별도 원장 테이블을 만들지 않는다. **판정 기준은 이 두 컬럼뿐**이고, 함께 돌려주는 `title`·`posted_on`은 "그 번호가 다른 글로 바뀌었는지" 보는 경보다(둘 다 다르면 소스 실패 · SPEC §4).
 - 프로토콜에 **읽기도 포함**해야 한다: 원장 조회(가능하면 **bulk** — 페이지당 1회), `source_health` 조회(연속 실패 누적·마지막 성공 보존에 필요), 미구조화 목록(상한 있는 배치).
 - **JSON 구현 주의**: 쓰기는 **원자적**(임시파일 → rename)이어야 하고, 병렬 실행 시 **락 또는 append-only(JSONL)** 를 쓴다. 전체 배열 read-modify-write는 레코드 유실·파일 손상을 만든다.
 
