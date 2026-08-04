@@ -47,12 +47,12 @@
 - [x] **YTUS fixture 확보**(`tests/fixtures/YTUS/` · 개인정보 마스킹 완료) — 실측 구조는 SNAPSHOT §10
 - [ ] **fixture 저장 경로**(`collect --save-fixture`) — 가드레일 #7이 "테스트는 fixture로"를 요구하는데 fixture를 **만드는 수단이 없다**. 어댑터를 고칠 때마다 게시판을 다시 두드리게 되므로, 받아온 HTML을 `tests/fixtures/<KEY>/`에 저장해 이후 파싱 반복은 오프라인으로 한다
 - [x] **어댑터 계층** `sources/adapters/{base,ytus}.py` — 순수 파싱(네트워크 없음) · `list_page_url`/`parse_list`/`parse_detail` · 공지 이중신호 · 실측 fixture 3종 · 25테스트 · mutation 15/15
-- [ ] ⚠️ **`external_id` 중복 검사를 run 단위로** — `as_listing`은 **페이지 1장**만 본다. 데일리가 ≤3p를 훑는 중 새 글이 올라와 글이 페이지 경계에서 밀리면 같은 id가 두 페이지에 나와 **한 run에 2회 fetch·구조화**된다(비용). SPEC §10이 요구하는 "한 실행" 범위는 파이프라인(`collect`)이 페이지를 모아 검사해야 성립한다
-- [ ] `source_data` 적재 — 불변·`UNIQUE(source_key, external_id)`(원장)·이미 본 글 skip
-- [ ] **`collect` 명령 + `--dry-run`** — 저장 없이 [행 수·공지 제외 수·**external_id 중복 수**·게시일 범위·원장 신규 수·샘플]을 출력. 31곳 파싱 검증의 도구
-- [ ] **`external_id` 중복은 에러**(SPEC §10 · 단 한 실행 안만 본다) · `PUTS` bd_name 필터 · `CSU`는 1110만 · **`HANSEI`는 처음부터 `catId:artclNo` 복합키**(실행 간 충돌은 가드가 못 잡음)
+- [x] **페이지 경계 중복 처리** — `collect`가 실행 내 스캔한 번호를 모아, 밀려 내려온 글을 **한 번만** 수집한다. 페이지 *안* 중복은 여전히 어댑터 에러(`as_listing`)이고, 페이지 *간* 중복은 정상 현상이라 에러가 아니다(SPEC §4 정정)
+- [x] `source_data` 적재 — 불변·`UNIQUE(source_key, external_id)`(원장)·이미 본 글 skip(상세 요청 안 함)
+- [x] **`collect` 명령 + `--dry-run`** — 어댑터 레지스트리 + 결정(순수 함수: 컷오프·페이지 종료·번호 충돌) + 실행 루프 + 리포트. 소스 단위 격리 · `--dry-run`은 목록 전체 + **상세 표본 1건**(목록만 보면 상세 파싱 미검증) · mutation 17/17
+- [ ] (1-4) `PUTS` bd_name 필터 · `CSU`는 1110만 · **`HANSEI`는 `catId:artclNo` 복합키** — 각 어댑터를 만들 때 적용
 - [x] **원장 조회 확장** — `SourceData.title`·`posted_on` 컬럼 + `seen_postings`가 `LedgerEntry`(제목·게시일)를 함께 반환 + `points_to_another_posting`(둘 다 다르면 소스 실패). 추가 요청 0건 · mutation 12/12
-- [ ] `--months N` 컷오프 = **목록의 게시일**(구조화 전이라 posted_at 없음) · 날짜 없는 소스는 `--pages N` 폴백
+- [x] `--months N` 컷오프 = **목록의 게시일**(구조화 전이라 posted_at 없음 · 달 단위 말일 보정) · `--months 0`이면 날짜로 안 자름 · 페이지 상한은 `--pages`
 
 ### 1-2. 구조화 (source_data → review_data)  ← ★ 1소스 전 구간 관통(뼈대 완성)
 - [ ] Gemini 구조화 호출 + **출력 JSON 계약**(필드·타입) + 한글→enum 매핑(position·region 등)

@@ -55,6 +55,11 @@ def detail_html() -> str:
 
 
 @pytest.fixture(scope="module")
+def list_page2_html() -> str:
+    return (_FIXTURES / "list_page2.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
 def detail_with_image_html() -> str:
     return (_FIXTURES / "detail_with_image.html").read_text(encoding="utf-8")
 
@@ -106,6 +111,29 @@ def test_external_id_comes_from_the_url_not_the_displayed_number(
     assert newest.external_id == "25581"
     assert newest.list_meta["display_no"] == "16718"
     assert newest.url.endswith("/board/view/trXXR/25581")
+
+
+def test_page_two_links_carry_a_page_suffix_and_still_parse(
+    list_page2_html: str, source: SourceConfig
+) -> None:
+    """⚠️ 2페이지 상세 링크는 `/board/view/trXXR/25556/page/2` — **id 뒤에 페이지가 붙는다**.
+
+    URL 마지막 조각을 id로 쓰면 20행 전부 `"2"`가 되어 한 글로 뭉개진다(실측에서 중복 가드가
+    잡았다). id 위치는 `detail_pattern`이 알고 있으니 거기서 구한다.
+    """
+    refs = ytus.parse_list(list_page2_html, source)
+    assert len(refs) == 20
+    assert refs[0].external_id == "25556"
+    assert len({ref.external_id for ref in refs}) == len(refs)
+
+
+def test_source_url_is_canonical_regardless_of_the_page_found_on(
+    list_page2_html: str, source: SourceConfig
+) -> None:
+    """`source_url`에 `/page/2`가 남으면 같은 글을 1페이지에서 찾았을 때와 값이 달라진다."""
+    refs = ytus.parse_list(list_page2_html, source)
+    assert refs[0].url == "https://www.ytus.ac.kr/board/view/trXXR/25556"
+    assert all("/page/" not in ref.url for ref in refs)
 
 
 def test_external_ids_are_unique(refs: tuple[PostingRef, ...]) -> None:
@@ -413,12 +441,24 @@ def test_missing_body_container_is_an_error(refs: tuple[PostingRef, ...]) -> Non
 #: 받아 이 값이 달라지면 마스킹을 재확인해야 한다는 신호다.
 #: `detail_with_image.html`이 0인 이유: 포스터형 공고라 본문에 양식 라벨이 없다.
 #: 마스킹된 유선번호 **실측 개수**. 0을 허용하면 `all(빈 리스트)`가 통과해 검사가 헛돈다.
-_MASKED_PHONES: Final = {"list.html": 17, "detail.html": 5, "detail_with_image.html": 3}
+_MASKED_PHONES: Final = {
+    "list.html": 17,
+    "detail.html": 5,
+    "detail_with_image.html": 3,
+    "list_page2.html": 14,
+}
 
-_NAME_LABELS: Final = {"list.html": 7, "detail.html": 1, "detail_with_image.html": 0}
+_NAME_LABELS: Final = {
+    "list.html": 12,
+    "list_page2.html": 11,
+    "detail.html": 2,
+    "detail_with_image.html": 0,
+}
 
 
-@pytest.mark.parametrize("name", ["list.html", "detail.html", "detail_with_image.html"])
+@pytest.mark.parametrize(
+    "name", ["list.html", "list_page2.html", "detail.html", "detail_with_image.html"]
+)
 def test_fixture_carries_no_personal_data(name: str) -> None:
     """커밋된 fixture에 실제 연락처·실명이 남아 있으면 안 된다(가드레일 #11).
 
@@ -436,10 +476,9 @@ def test_fixture_carries_no_personal_data(name: str) -> None:
     # 태그로 쪼개진 이름(`<span>담임목사 </span><span>: </span><span>홍길동</span>`)도 잡으려면
     # 원문이 아니라 **렌더링된 텍스트**를 봐야 한다. 둘 다 검사한다.
     rendered = parse_html(raw).get_text(" ", strip=True)
-    label = r"담임목사\s*:?\s*"
-    value = r"((?:[가-힣]|&nbsp;|\s){2,10}?)\s*(?:목사)?\s*"
-    next_label = r"(?=교회|교단|노회|전화|사역|모집)"
-    name_pattern = label + value + next_label
+    # 콜론을 **필수**로 한다 — 없으면 `"…담임목사 청빙 공고"` 같은 제목까지 이름으로 잡는다.
+    # `\uff1a`는 전각 콜론 — 게시판이 한글 입력기로 쓴 경우가 있다.
+    name_pattern = "담임목사\\s*[:\uff1a](?:&nbsp;|\\s)*([가-힣]{2,3})"
     names = re.findall(name_pattern, raw) + re.findall(name_pattern, rendered)
     assert all("0000" in m for m in mobiles), f"마스킹 안 된 휴대폰: {sorted(set(mobiles))}"
     assert all("0000" in m for m in landlines), f"마스킹 안 된 유선: {sorted(set(landlines))}"

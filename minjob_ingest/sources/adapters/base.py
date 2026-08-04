@@ -46,6 +46,9 @@ _BLOCK_TAGS: Final = (
     "table",
 )
 
+#: `detail_pattern`의 치환 자리(레지스트리와 같은 값).
+_ID_PLACEHOLDER: Final = "{id}"
+
 _SPACES: Final = re.compile("[ \\t\\u00a0]+")
 _BLANK_LINES: Final = re.compile(r"\n{3,}")
 
@@ -191,6 +194,23 @@ def _filename_from(url: str) -> str:
     """URL 끝 세그먼트를 파일명으로. YTUS 다운로드 URL은 끝에 파일명을 담는다(실측)."""
     last = unquote(urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1])
     return last or "unknown"
+
+
+def external_id_from_url(url: str, *, detail_pattern: str, what: str) -> str:
+    """`detail_pattern`의 `{id}` 자리에 해당하는 값을 URL에서 뽑는다.
+
+    ⚠️ **URL 마지막 조각을 쓰면 안 된다.** 실측(YTUS 2페이지): 상세 링크가
+    `/board/view/trXXR/25556/page/2`처럼 **id 뒤에 페이지가 붙는다** → 마지막 조각은 `2`가 되고
+    한 페이지의 20행이 전부 같은 id를 받는다(중복 가드가 잡았다). 위치는 config가 알고 있으니
+    거기서 구한다.
+
+    캡처는 `/?&#`을 만나면 멈추므로 뒤에 무엇이 붙어도 영향받지 않는다.
+    """
+    prefix, _, _suffix = detail_pattern.partition(_ID_PLACEHOLDER)
+    found = re.search(re.escape(prefix) + r"([^/?&#]+)", url)
+    if found is None:
+        raise ParseError(f"{what}: 상세 URL에서 id를 찾지 못함 ({url}) — 링크 형태가 바뀌었다")
+    return found.group(1)
 
 
 def as_listing(refs: Iterable[PostingRef], *, source_key: str) -> tuple[PostingRef, ...]:

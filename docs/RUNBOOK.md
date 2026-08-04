@@ -7,10 +7,13 @@
 ## 수집
 
 ```bash
-# 최초 1회 — 최근 3개월. 수집만 먼저(무료), 확인 후 구조화(유료)
-.venv/bin/minjob-ingest collect  --source YTUS --months 3    🔴 🌐   # 한 곳으로 먼저 검증
-.venv/bin/minjob-ingest collect  --months 3                  🔴 🌐   # 31곳 전체
-.venv/bin/minjob-ingest structure                            🔴 💰   # 수집분을 AI로 구조화
+# ① 파싱 확인 — 저장 안 함. 목록 + 상세 표본 1건만 요청
+.venv/bin/minjob-ingest collect --source YTUS --dry-run          🌐
+# ② 실제 수집 — 최근 3개월 (아직 AI 안 씀 · 무료)
+.venv/bin/minjob-ingest collect --source YTUS --months 3         🌐
+.venv/bin/minjob-ingest collect --months 3                       🌐   # 어댑터 있는 곳 전부
+# ③ 구조화 — 여기서 처음 과금
+.venv/bin/minjob-ingest structure                            🔴 💰
 
 # 이후 매일
 .venv/bin/minjob-ingest daily                                🔴 🌐💰 # 새 글 수집 + 구조화
@@ -20,7 +23,9 @@
 .venv/bin/minjob-ingest list-sources [KEY]                          # 등록 소스 31곳
 ```
 
-자주 쓰는 옵션: `--source KEY`(한 곳만) · `--months N`(수집 범위) · `--pages N`(목록 페이지 수 상한) · `--dry-run`(저장 안 하고 무엇을 가져올지만)
+`collect` 옵션: `--source KEY`(한 곳만 · 기본은 어댑터 있는 전부) · `--months N`(게시일 범위 · `0`이면 날짜로 안 자름) · `--pages N`(목록 페이지 상한 · 기본 3) · `--dry-run`
+
+> ⚠️ `--dry-run`은 **목록 전체 + 상세 표본 1건**을 요청한다. 목록만 보면 상세 파싱이 검증되지 않기 때문이다. 저장·실행기록은 남지 않는다.
 
 ## 코드를 고친 뒤 — 게이트 (4개 전부 통과해야 커밋)
 

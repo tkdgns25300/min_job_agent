@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from datetime import date
 from typing import Final
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin
 
 from bs4 import Tag
 
@@ -32,12 +32,13 @@ from minjob_ingest.sources.adapters.base import (
     as_listing,
     attachments_in,
     cell_text,
+    external_id_from_url,
     image_urls_in,
     normalized_text,
     parse_html,
     require_one,
 )
-from minjob_ingest.sources.registry import SourceConfig
+from minjob_ingest.sources.registry import SourceConfig, detail_url
 
 SOURCE_KEY: Final = "YTUS"
 
@@ -145,10 +146,12 @@ def _ref_from_row(row: Tag, source: SourceConfig) -> PostingRef:
     if link is None:
         raise ParseError(f"{SOURCE_KEY} 목록 행에 상세 링크가 없음 — 셀렉터 `{_DETAIL_LINK}` 확인")
     href = str(link.get("href") or "").strip()
-    absolute = urljoin(source.list_url, href)
+    external_id = _external_id_from(urljoin(source.list_url, href), source)
     return PostingRef(
-        external_id=_external_id_from(absolute),
-        url=absolute,
+        external_id=external_id,
+        # 목록 링크를 그대로 쓰지 않고 **정규형**으로 만든다 — 2페이지 링크에는 `/page/2`가
+        # 붙어 있어, 같은 글을 1페이지에서 찾았을 때와 `source_url`이 달라진다.
+        url=detail_url(source, external_id),
         title=link.get_text(" ", strip=True),
         posted_on=_posted_on(row),
         list_meta={
@@ -163,12 +166,14 @@ def _ref_from_row(row: Tag, source: SourceConfig) -> PostingRef:
     )
 
 
-def _external_id_from(url: str) -> str:
-    """URL 경로 끝 숫자. **표시번호가 아니라 이 값이 원장 키다**(모듈 docstring 참조)."""
-    last = urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1]
-    if not last.isdigit():
-        raise ParseError(f"{SOURCE_KEY}: 상세 URL 끝이 숫자가 아님 ({url}) — 링크 형태가 바뀌었다")
-    return last
+def _external_id_from(url: str, source: SourceConfig) -> str:
+    """상세 URL의 글번호. **표시번호가 아니라 이 값이 원장 키다**(모듈 docstring 참조)."""
+    if source.detail_pattern is None:  # 레지스트리가 로드 시 보장하지만 타입을 좁힌다
+        raise ParseError(f"{SOURCE_KEY}: detail_pattern이 없다")
+    found = external_id_from_url(url, detail_pattern=source.detail_pattern, what=SOURCE_KEY)
+    if not found.isdigit():
+        raise ParseError(f"{SOURCE_KEY}: 글번호가 숫자가 아님 ({found!r}) — 링크 형태가 바뀌었다")
+    return found
 
 
 def _posted_on(row: Tag) -> date:
