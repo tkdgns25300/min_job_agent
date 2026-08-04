@@ -13,6 +13,7 @@ import calendar
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from math import ceil
 from typing import Final
 from uuid import UUID
 
@@ -177,6 +178,35 @@ class CollectReport:
     samples: tuple[PostingRef, ...]
     #: `--dry-run`에서 상세 파싱을 확인한 표본(없으면 새 글이 없었다는 뜻).
     detail_sample: RawPosting | None = None
+    #: 적용된 게시일 컷오프(`None`이면 날짜로 자르지 않았다).
+    cutoff: date | None = None
+    #: 페이지 상한.
+    max_pages: int = DEFAULT_MAX_PAGES
+    #: ⚠️ **컷오프에 도달하기 전에 페이지 상한에 걸려 멈췄는가.**
+    #: 이걸 알려주지 않으면 "범위 밖 0"만 보고 3개월을 다 받은 줄 안다 — 조용한 미달이다.
+    stopped_at_page_cap: bool = False
+
+    @property
+    def short_of_cutoff(self) -> bool:
+        """요청한 범위를 채우지 못했는가. 채웠으면 마지막 페이지가 컷오프 밖이었을 것이다."""
+        return self.stopped_at_page_cap and self.cutoff is not None
+
+    def pages_needed_estimate(self) -> int | None:
+        """컷오프까지 받으려면 몇 페이지가 필요한가(관측된 게시 속도로 추정).
+
+        정확할 필요는 없다 — 운영자가 `--pages`를 얼마로 줄지 감을 잡는 용도다.
+        """
+        if self.cutoff is None or self.oldest is None or self.newest is None:
+            return None
+        covered = (self.newest - self.oldest).days + 1
+        remaining = (self.oldest - self.cutoff).days
+        if covered < 1 or remaining <= 0 or self.pages_read < 1:
+            return None
+        rows_per_page = self.rows / self.pages_read
+        if rows_per_page < 1:
+            return None
+        rate = self.rows / covered
+        return self.pages_read + ceil(rate * remaining / rows_per_page)
 
 
 #: `--dry-run` 리포트에 넣을 표본 수.
@@ -202,6 +232,7 @@ def collect_source(
     cutoff = None if options.months is None else cutoff_date(options.months, today=today)
     tally = _Tally()
 
+    capped = True  # for-else — break 없이 끝나면 상한에 걸린 것이다
     for page in range(1, options.max_pages + 1):
         listing = adapter.parse_list(client.get(adapter.list_page_url(source, page)).text, source)
         refs = tally.drop_already_scanned(listing)
@@ -219,9 +250,16 @@ def collect_source(
                 store.save_source_data(_record(source, adapter, client, ref, run_id))
             )
         if not plan.has_more_pages:
+            capped = False
             break
 
-    return tally.report(source.key, dry_run=options.dry_run)
+    return tally.report(
+        source.key,
+        dry_run=options.dry_run,
+        cutoff=cutoff,
+        max_pages=options.max_pages,
+        stopped_at_page_cap=capped,
+    )
 
 
 def _record(
@@ -287,7 +325,15 @@ class _Tally:
         if self.detail_sample is None:
             self.detail_sample = adapter.parse_detail(client.get(ref.url).text, ref)
 
-    def report(self, source_key: str, *, dry_run: bool) -> CollectReport:
+    def report(
+        self,
+        source_key: str,
+        *,
+        dry_run: bool,
+        cutoff: date | None,
+        max_pages: int,
+        stopped_at_page_cap: bool,
+    ) -> CollectReport:
         return CollectReport(
             source_key=source_key,
             pages_read=self.pages_read,
@@ -301,4 +347,7 @@ class _Tally:
             newest=max(self.dates, default=None),
             samples=tuple(self.samples),
             detail_sample=self.detail_sample if dry_run else None,
+            cutoff=cutoff,
+            max_pages=max_pages,
+            stopped_at_page_cap=stopped_at_page_cap,
         )

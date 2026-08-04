@@ -9,10 +9,11 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from minjob_ingest.clock import utc_now
+from minjob_ingest.console import Console
 from minjob_ingest.domain import CrawlMode
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.lib.gemini import GeminiClient, GeminiError
@@ -90,6 +91,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             months=int(args.months) or None,
             max_pages=int(args.pages),
             dry_run=bool(args.dry_run),
+            verbose=bool(args.verbose),
         )
     # argparse가 이미 미등록 명령을 걸러내므로, 여기 오는 건 "서브파서는 추가했는데 연결을
     # 잊은" 경우다 — 조용히 성공(0)하는 대신 크래시로 알린다.
@@ -97,14 +99,21 @@ def _dispatch(args: argparse.Namespace) -> int:
 
 
 def _run_collect(
-    *, config_path: Path | None, only: str | None, months: int | None, max_pages: int, dry_run: bool
+    *,
+    config_path: Path | None,
+    only: str | None,
+    months: int | None,
+    max_pages: int,
+    dry_run: bool,
+    verbose: bool,
 ) -> int:
     """게시판에서 공고를 수집한다. ⚠️ **게시판에 실제로 요청한다.**
 
     소스 단위로 격리한다 — 한 곳이 실패해도 나머지를 계속한다(SPEC §3). 종료코드는 실패한
     소스가 있으면 1이다(운영자가 `status` 없이도 알 수 있게).
     """
-    logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
+    _setup_logging(verbose)
+    console = Console()
     settings = Settings.load()
     sources = _collect_targets(load_sources(config_path), only)
     options = CollectOptions(months=months, max_pages=max_pages, dry_run=dry_run)
@@ -130,10 +139,11 @@ def _run_collect(
                 )
         except (AdapterMissing, FetchError, ParseError, LedgerConflict) as err:
             failures[source.key] = f"{type(err).__name__}: {err}"
-            print(f"  ❌ {source.key}: {err}", file=sys.stderr)
+            console.heading(source.key, note=source.board_name)
+            console.error(str(err))
             continue
         saved_total += report.saved
-        _print_report(report, dry_run=dry_run)
+        _print_report(console, report, source, dry_run=dry_run)
 
     if run is not None:
         store.finish_run(
@@ -144,10 +154,19 @@ def _run_collect(
                 error_detail=failures,
             )
         )
-    print(f"\n소스 {len(sources)}곳 · 실패 {len(failures)} · 신규 {saved_total}건")
-    if dry_run:
-        print("(--dry-run — 아무것도 저장하지 않았습니다)")
+    _print_summary(console, len(sources), failures, saved_total, dry_run=dry_run)
     return 1 if failures else 0
+
+
+def _setup_logging(verbose: bool) -> None:
+    """기본은 우리 메시지만 보여준다.
+
+    `httpx`는 INFO에서 요청마다 한 줄씩 찍어 리포트를 덮는다 — 진단이 필요할 때만 켠다.
+    """
+    logging.basicConfig(level=logging.INFO, format="  %(message)s")
+    if not verbose:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def _collect_targets(sources: Sequence[SourceConfig], only: str | None) -> tuple[SourceConfig, ...]:
@@ -161,26 +180,82 @@ def _collect_targets(sources: Sequence[SourceConfig], only: str | None) -> tuple
     return tuple(s for s in enabled_sources(sources) if s.key in implemented)
 
 
-def _print_report(report: CollectReport, *, dry_run: bool) -> None:
-    print(f"\n{report.source_key}  목록 {report.pages_read}p → {report.rows}행")
-    print(
-        f"  새 글 {report.fresh} · 이미 본 글 {report.seen} · 범위 밖 {report.stale}"
-        + (f" · 페이지 밀림 {report.shifted}" if report.shifted else "")
+def _print_report(
+    console: Console, report: CollectReport, source: SourceConfig, *, dry_run: bool
+) -> None:
+    console.heading(report.source_key, note=source.board_name)
+    console.field("목록", f"{report.pages_read}페이지 · {report.rows}행")
+    console.field(
+        "새 글",
+        console.paint(str(report.fresh), "bold") if report.fresh else "0",
+        note="상세를 요청할 것" if report.fresh else None,
     )
+    console.field("이미 본 글", str(report.seen), note="건너뜀" if report.seen else None)
+    if report.stale:
+        console.field("범위 밖", str(report.stale), note="컷오프보다 오래됨")
+    if report.shifted:
+        console.field(
+            "페이지 밀림", str(report.shifted), note="스캔 중 새 글이 올라옴 · 한 번만 수집"
+        )
     if report.newest is not None:
-        print(f"  게시일 {report.oldest} ~ {report.newest}")
-    for ref in report.samples:
-        print(f"    {ref.external_id:<8} {ref.posted_on}  {ref.title[:42]}")
+        span = f"{report.oldest} ~ {report.newest}"
+        console.field("게시일", span, note=f"컷오프 {report.cutoff}" if report.cutoff else None)
+    if not dry_run:
+        console.field("저장", console.paint(f"{report.saved}건", "green", "bold"))
+
+    if report.samples:
+        console.line()
+        for ref in report.samples:
+            console.bullet(
+                f"{console.paint(ref.external_id, 'cyan')}  {ref.posted_on}  {ref.title[:44]}"
+            )
     if report.detail_sample is not None:
         sample = report.detail_sample
-        print(
-            f"  상세 표본 {sample.ref.external_id}: 본문 {len(sample.raw_text)}자"
-            f" · 이미지 {len(sample.image_urls)} · 첨부 {len(sample.attachments)}"
+        console.field(
+            "상세 표본",
+            f"{sample.ref.external_id} · 본문 {len(sample.raw_text)}자"
+            f" · 이미지 {len(sample.image_urls)} · 첨부 {len(sample.attachments)}",
         )
         for attachment in sample.attachments:
-            print(f"    첨부 {attachment.name}")
-    if not dry_run:
-        print(f"  저장 {report.saved}건")
+            console.bullet(console.paint(f"첨부 {attachment.name}", "dim"))
+    _warn_if_short(console, report)
+
+
+def _warn_if_short(console: Console, report: CollectReport) -> None:
+    """페이지 상한에 걸려 요청 범위를 못 채웠으면 알린다.
+
+    이게 없으면 "범위 밖 0"만 보고 3개월을 다 받은 줄 안다 — 조용한 미달이다.
+    """
+    if not report.short_of_cutoff:
+        return
+    needed = report.pages_needed_estimate()
+    hint = (
+        f"--pages {needed} 정도가 필요합니다(관측 속도 기준 추정)"
+        if needed
+        else "--pages 를 늘리세요"
+    )
+    console.warn(
+        f"페이지 상한({report.max_pages}p)에서 멈췄습니다 —"
+        f" 컷오프 {report.cutoff}에 도달하지 않았습니다.",
+        hint,
+    )
+
+
+def _print_summary(
+    console: Console, total: int, failures: Mapping[str, str], saved: int, *, dry_run: bool
+) -> None:
+    console.line()
+    console.line(console.paint("── 요약", "bold"))
+    console.field("소스", f"{total}곳")
+    if failures:
+        console.field("실패", console.paint(f"{len(failures)}곳", "red", "bold"))
+        for key in failures:
+            console.bullet(console.paint(key, "red"))
+    if dry_run:
+        console.line()
+        console.warn("--dry-run — 아무것도 저장하지 않았습니다")
+    else:
+        console.field("신규", console.paint(f"{saved}건", "green", "bold"))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -216,6 +291,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="저장하지 않고 무엇을 가져올지만 출력 (목록 + 상세 표본 1건)",
     )
+    collect.add_argument("--verbose", action="store_true", help="HTTP 요청 로그까지 표시 (진단용)")
     collect.add_argument("--config", default=None, help="sources.json 경로")
     return parser
 

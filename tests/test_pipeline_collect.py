@@ -423,3 +423,73 @@ def test_a_posting_shifted_across_pages_is_collected_once(
     assert report.shifted == 18  # 2페이지의 18건이 이미 스캔된 것으로 걸러졌다
     # 2페이지가 전부 걸러져 컷오프에 드는 행이 0 → 거기서 멈춘다(같은 내용의 반복이므로 맞다).
     assert report.pages_read == 2
+
+
+# ── 페이지 상한 미달 보고 ────────────────────────────────────────
+
+
+def _capped_report(**overrides: object) -> CollectReport:
+    base: dict[str, object] = {
+        "source_key": "YTUS",
+        "pages_read": 3,
+        "rows": 58,
+        "fresh": 58,
+        "seen": 0,
+        "stale": 0,
+        "saved": 0,
+        "shifted": 0,
+        "oldest": date(2026, 7, 10),
+        "newest": date(2026, 8, 4),
+        "samples": (),
+        "cutoff": date(2026, 5, 4),
+        "max_pages": 3,
+        "stopped_at_page_cap": True,
+    }
+    return CollectReport(**{**base, **overrides})  # type: ignore[arg-type]
+
+
+def test_hitting_the_page_cap_before_the_cutoff_is_reported() -> None:
+    """이걸 알려주지 않으면 "범위 밖 0"만 보고 3개월을 다 받은 줄 안다 — 조용한 미달이다."""
+    assert _capped_report().short_of_cutoff
+
+
+def test_reaching_the_cutoff_is_not_a_shortfall() -> None:
+    assert not _capped_report(stopped_at_page_cap=False).short_of_cutoff
+
+
+def test_no_cutoff_cannot_be_short() -> None:
+    """`--months 0`은 범위를 날짜로 정하지 않으므로 미달이라는 개념이 없다."""
+    assert not _capped_report(cutoff=None).short_of_cutoff
+
+
+def test_page_estimate_uses_the_observed_rate() -> None:
+    """운영자가 `--pages`를 얼마로 줄지 감을 잡는 용도 — 정확할 필요는 없다.
+
+    실측: 26일에 58행(3페이지) → 하루 2.2행. 07-10에서 05-04까지 67일이 더 필요.
+    """
+    assert _capped_report().pages_needed_estimate() == 11
+
+
+def test_page_estimate_is_none_without_dates() -> None:
+    assert _capped_report(oldest=None, newest=None).pages_needed_estimate() is None
+
+
+def test_the_loop_reports_the_cap(board_html: tuple[str, str], tmp_path: Path) -> None:
+    """루프가 상한 도달을 실제로 기록하는지 — fixture는 컷오프 안이라 3p까지 간다."""
+    board = _Board(*board_html)
+    report = _collect(board, JsonStore(tmp_path / "data"), CollectOptions(max_pages=1))
+    assert report.stopped_at_page_cap
+    assert report.max_pages == 1
+
+
+def test_the_loop_marks_a_natural_stop(board_html: tuple[str, str], tmp_path: Path) -> None:
+    """컷오프 밖에서 멈추면 상한 도달이 아니다 — 요청 범위를 다 받았다는 뜻이다."""
+    board = _Board(*board_html)
+    report = _collect(
+        board,
+        JsonStore(tmp_path / "data"),
+        CollectOptions(months=3, max_pages=5),
+        today=date(2027, 1, 1),  # fixture 전체가 컷오프 밖
+    )
+    assert not report.stopped_at_page_cap
+    assert report.stale == 18
