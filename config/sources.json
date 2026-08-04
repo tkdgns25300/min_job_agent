@@ -9,7 +9,10 @@
       "encoding": "utf-8",
       "list_url": "https://daeshin.ac.kr/html/05_community/03.php",
       "detail_pattern": "/html/05_community/03.php?AT=V&b_id={id}",
-      "fetch_note": "취업+사역 혼합(청빙 필터 필요). 목록/상세 동일 .php의 AT param. pagination b_page. 인증서 정상(-k 불요)."
+      "fetch_note": "취업+사역 혼합(청빙 필터 필요). 목록/상세 동일 .php의 AT param. pagination b_page. 인증서 정상(-k 불요). ⚠️2026-08-04 재실측: 서버가 중간 인증서를 안 보내 Python에서 CERTIFICATE_VERIFY_FAILED(curl은 macOS 키체인 덕에 성공) → insecure_tls 필요. 이전 메모의 '인증서 정상'은 curl 기준이라 틀렸다.",
+      "flags": {
+        "insecure_tls": true
+      }
     },
     {
       "key": "CALVIN",
@@ -73,7 +76,10 @@
       "encoding": "euc-kr",
       "list_url": "https://puts.ac.kr/www/board/list.general.asp?bd_name=jangshin_jboard04",
       "detail_pattern": "/www/board/view.general.asp?seq={id}&bd_name=jangshin_jboard04",
-      "fetch_note": "EUC-KR·classic ASP. 공지행에 타 게시판(jnotice02) 혼입→bd_name=jangshin_jboard04 필터. pagination page+pagesize=50."
+      "fetch_note": "EUC-KR·classic ASP. 공지행에 타 게시판(jnotice02) 혼입→bd_name=jangshin_jboard04 필터. pagination page+pagesize=50. ⚠️2026-08-04 재실측: SSLV3_ALERT_HANDSHAKE_FAILURE — verify=False로도 안 되고 cipher SECLEVEL=1이 필요하다(insecure_tls가 그 컨텍스트를 만든다). TLS 최소 버전은 내릴 필요 없음.",
+      "flags": {
+        "insecure_tls": true
+      }
     },
     {
       "key": "HTUS",
@@ -184,10 +190,11 @@
       "encoding": "utf-8",
       "list_url": "https://www.kts.ac.kr/home/pinvit",
       "flags": {
-        "www_required": true
+        "www_required": true,
+        "insecure_tls": true
       },
       "detail_pattern": "/home/pinvit/{id}",
-      "fetch_note": "그누보드(bo_table=pinvit). apex 301→www. 인증서 정상(-k 불요 — 문서 오류). bo_notice pinned. pagination page."
+      "fetch_note": "그누보드(bo_table=pinvit). apex 301→www. 인증서 정상(-k 불요 — 문서 오류). bo_notice pinned. pagination page. ⚠️2026-08-04 재실측: 중간 인증서 누락으로 Python CERTIFICATE_VERIFY_FAILED → insecure_tls 필요(이전 '인증서 정상(-k 불요)' 메모는 curl 기준이라 틀렸다)."
     },
     {
       "key": "KOSIN_TH",

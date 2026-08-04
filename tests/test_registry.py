@@ -24,7 +24,10 @@ EXPECTED_FLAG_OWNERS = {
     "www_required": {"KWANGSHIN", "BPU", "HANIL", "KTS", "MTU", "UHS"},
     "http_only": {"CALVIN", "WGST"},
     "spoof_ua": {"MTU"},
-    "insecure_tls": set(),
+    # 2026-08-04 실측 추가: Python의 기본 TLS로는 셋 다 연결 실패한다(curl은 성공 — macOS
+    # 키체인이 중간 인증서를 갖고 있어서다). DAESHIN·KTS는 중간 인증서 누락,
+    # PUTS는 cipher 보안수준이 서버보다 높아 핸드셰이크 자체가 안 된다.
+    "insecure_tls": {"DAESHIN", "KTS", "PUTS"},
     "needs_session": {"CALVIN", "CSU"},
     "image_only": {"PCKWORLD"},
     "soft_200": {"BU", "KAICAM"},

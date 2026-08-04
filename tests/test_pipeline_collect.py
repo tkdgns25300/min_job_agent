@@ -243,7 +243,7 @@ def board_html() -> tuple[str, str]:
     fixtures = PROJECT_ROOT / "tests" / "fixtures" / "YTUS"
     return (
         (fixtures / "list.html").read_text(encoding="utf-8"),
-        (fixtures / "detail_with_image.html").read_text(encoding="utf-8"),
+        (fixtures / "detail_image.html").read_text(encoding="utf-8"),
     )
 
 

@@ -21,6 +21,7 @@ from minjob_ingest.domain import CrawlMode
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.lib.gemini import GeminiClient, GeminiError
 from minjob_ingest.models import SourceHealth
+from minjob_ingest.paths import PROJECT_ROOT
 from minjob_ingest.pipeline.collect import (
     DEFAULT_MONTHS,
     CollectOptions,
@@ -37,6 +38,12 @@ from minjob_ingest.pipeline.health import (
     days_since_last_posting,
     record_failure,
     record_success,
+)
+from minjob_ingest.pipeline.snapshot import (
+    SnapshotResult,
+    fixture_dir,
+    snapshot_source,
+    snapshot_url,
 )
 from minjob_ingest.settings import Settings, VertexConfigError
 from minjob_ingest.sources.adapters.base import ParseError
@@ -55,6 +62,7 @@ _PROGRAM = "minjob-ingest"
 _LIST_SOURCES = "list-sources"
 _CHECK_GEMINI = "check-gemini"
 _COLLECT = "collect"
+_SNAPSHOT = "snapshot"
 #: 요청마다 한 줄씩 찍어 리포트를 덮는 로거들. `--verbose`에서만 켠다.
 _NOISY_LOGGERS = ("httpx", "httpcore")
 _ENABLED_MARKER = "●"
@@ -98,6 +106,15 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
     if command == _CHECK_GEMINI:
         return _run_check_gemini()
+    if command == _SNAPSHOT:
+        config_value = args.config
+        return _run_snapshot(
+            config_path=Path(str(config_value)) if config_value is not None else None,
+            only=str(args.source) if args.source is not None else None,
+            url=str(args.url) if args.url is not None else None,
+            name=str(args.name),
+            verbose=bool(args.verbose),
+        )
     if command == _COLLECT:
         config_value = args.config
         return _run_collect(
@@ -171,6 +188,84 @@ def _collect_all(
         )
     _print_summary(console, len(sources), failures, saved_total, states, dry_run=dry_run)
     return 1 if failures else 0
+
+
+def _run_snapshot(
+    *,
+    config_path: Path | None,
+    only: str | None,
+    url: str | None,
+    name: str,
+    verbose: bool,
+) -> int:
+    """fixture용 HTML을 받아 `tests/fixtures/<KEY>/`에 저장한다. ⚠️ **게시판에 실제로 요청한다.**
+
+    어댑터를 *만들기 전에* 필요하므로 어댑터를 요구하지 않는다. 소스 단위로 격리한다.
+    """
+    console = Console()
+    with _console_logging(console, verbose=verbose):
+        return _snapshot_all(console, config_path, only, url=url, name=name)
+
+
+def _snapshot_all(
+    console: Console, config_path: Path | None, only: str | None, *, url: str | None, name: str
+) -> int:
+    sources = _snapshot_targets(load_sources(config_path), only)
+    if url is not None and len(sources) != 1:
+        raise ConfigError("--url 은 --source 와 함께 한 곳만 지정해야 한다")
+    root = PROJECT_ROOT / "tests" / "fixtures"
+    failures: dict[str, str] = {}
+    for source in sources:
+        console.heading(source.key, note=source.board_name)
+        try:
+            with SourceClient(source) as client:
+                target = fixture_dir(root, source.key)
+                result = (
+                    snapshot_url(client, url, target, name)
+                    if url is not None
+                    else snapshot_source(source, client, target)
+                )
+        except (FetchError, OSError) as err:
+            failures[source.key] = f"{type(err).__name__}: {err}"
+            console.error(str(err))
+            continue
+        _print_snapshot(console, result)
+    _print_snapshot_summary(console, len(sources), failures)
+    return 1 if failures else 0
+
+
+def _snapshot_targets(
+    sources: Sequence[SourceConfig], only: str | None
+) -> tuple[SourceConfig, ...]:
+    """어댑터 유무와 무관하게 **활성 소스 전부**가 대상이다(fixture가 어댑터보다 먼저다)."""
+    if only is None:
+        return tuple(enabled_sources(sources))
+    found = find_source(sources, only)
+    if found is None:
+        raise ConfigError(f"알 수 없는 source_key: {only}")
+    return (found,)
+
+
+def _print_snapshot(console: Console, result: SnapshotResult) -> None:
+    for path in result.saved:
+        size = path.stat().st_size
+        console.field(path.name, f"{size:,}바이트")
+    if result.detail_skipped is not None:
+        console.warn(f"상세 없음 — {result.detail_skipped}")
+
+
+def _print_snapshot_summary(console: Console, total: int, failures: Mapping[str, str]) -> None:
+    console.line()
+    console.line(console.paint("── 요약", "bold"))
+    console.field("대상", f"{total}곳")
+    if failures:
+        console.field("실패", console.paint(f"{len(failures)}곳", "red", "bold"))
+        for key, reason in failures.items():
+            console.bullet(console.paint(f"{key}  {reason}", "red"))
+    else:
+        console.ok("전부 저장했습니다")
+    console.line()
+    console.field("저장 위치", "tests/fixtures/<KEY>/", note="커밋되지 않습니다(가드레일 #11)")
 
 
 def _collect_one(
@@ -417,6 +512,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     subcommands.add_parser(_CHECK_GEMINI, help="Vertex 인증·연결 확인 (실호출 1회)")
+
+    snapshot = subcommands.add_parser(
+        _SNAPSHOT, help="fixture용 HTML 확보 (게시판에 요청함 · 어댑터 없어도 동작)"
+    )
+    snapshot.add_argument("--source", default=None, help="한 곳만 (기본: 활성 전부)")
+    snapshot.add_argument("--url", default=None, help="임의 URL 1장만 받는다 (2페이지·특수 경로)")
+    snapshot.add_argument(
+        "--name", default="page2.html", help="--url 로 받을 때 저장할 파일명 (기본 page2.html)"
+    )
+    snapshot.add_argument("--verbose", action="store_true", help="HTTP 요청 로그까지 표시")
+    snapshot.add_argument("--config", default=None, help="sources.json 경로")
 
     collect = subcommands.add_parser(_COLLECT, help="게시판에서 공고 수집 (게시판에 요청함)")
     collect.add_argument("--source", default=None, help="한 곳만 (기본: 어댑터가 있는 전부)")

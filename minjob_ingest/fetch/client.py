@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import random
+import ssl
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -128,6 +129,27 @@ class Response:
         return self.text.lstrip()[:1] in {"{", "["}
 
 
+def _legacy_tls_context() -> ssl.SSLContext:
+    """`insecure_tls` 소스용 TLS 설정.
+
+    **`verify=False`만으로는 부족하다**(2026-08-04 실측). 세 게시판이 서로 다른 이유로 막혔다:
+
+    - DAESHIN·KTS: 서버가 중간 인증서를 안 보내 `CERTIFICATE_VERIFY_FAILED`
+      → 검증을 끄면 통과 (curl은 macOS 키체인의 중간 인증서를 갖고 있어 성공했다)
+    - PUTS: `SSLV3_ALERT_HANDSHAKE_FAILURE` — 검증을 꺼도 실패한다.
+      Python 기본 컨텍스트의 cipher 보안수준이 서버보다 높아 **핸드셰이크 자체가 안 된다**
+      → `SECLEVEL=1`로 낮추면 통과 (TLS 최소 버전은 내릴 필요 없었다 — 실측으로 확인)
+
+    그래서 플래그 하나가 두 문제를 함께 처리한다. 어차피 검증을 끈 소스이므로 보안 수준이
+    낮아지는 것이 추가 위험을 만들지 않는다(공개 게시판 읽기 전용).
+    """
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.set_ciphers("DEFAULT@SECLEVEL=1")
+    return context
+
+
 def _retry_after_seconds(raw: httpx.Response) -> float | None:
     """429·503의 `Retry-After`(초). 서버가 알려준 대기 시간은 우리 추측보다 정확하다.
 
@@ -177,7 +199,7 @@ class SourceClient:
             headers=dict(_BROWSER_HEADERS),
             timeout=REQUEST_TIMEOUT_SECONDS,
             follow_redirects=True,
-            verify=not source.flags.insecure_tls,
+            verify=_legacy_tls_context() if source.flags.insecure_tls else True,
             transport=transport,
         )
 
