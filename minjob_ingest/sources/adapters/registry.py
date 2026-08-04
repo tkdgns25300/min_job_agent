@@ -83,6 +83,19 @@ def find_adapter(source_key: str) -> Adapter:
     return adapter
 
 
+def needs_detail_request(adapter: Adapter) -> bool:
+    """상세 페이지를 따로 받아야 하나.
+
+    거의 모든 게시판은 그렇다. 예외는 **목록 응답에 본문이 이미 들어 있는** 경우다 —
+    HANIL은 목록 AJAX가 `contents`(본문 HTML)까지 주고, 상세 페이지는 JS가 채우는 빈 껍데기라
+    받아도 제목조차 없다(실측 2026-08-04). 그런 게시판에 상세를 요청하면 글마다 한 번씩
+    **쓸모없는 요청**을 보내는 셈이다.
+
+    선언하지 않은 어댑터는 `True`로 본다 — 29곳에 같은 한 줄을 쓰게 만들지 않는다.
+    """
+    return bool(getattr(adapter, "NEEDS_DETAIL_REQUEST", True))
+
+
 def implemented_keys() -> tuple[str, ...]:
     """어댑터가 있는 게시판. `collect`가 대상을 정할 때 쓴다."""
     return tuple(sorted(ADAPTERS))

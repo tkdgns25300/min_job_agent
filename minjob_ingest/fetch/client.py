@@ -33,6 +33,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 
+from minjob_ingest.domain import FetchTier
 from minjob_ingest.fetch import robots
 from minjob_ingest.sources.registry import SourceConfig
 
@@ -83,8 +84,13 @@ _AJAX_HEADERS: Final = {
     "X-Requested-With": "XMLHttpRequest",
 }
 
-#: 이보다 짧은 본문은 실패로 본다 — 상태코드 200이면서 빈/스텁 응답을 주는 보드가 있다.
+#: 이보다 짧은 HTML 본문은 실패로 본다 — 상태코드 200이면서 빈/스텁 응답을 주는 보드가 있다.
 MIN_BODY_LENGTH: Final = 200
+
+#: ⚠️ **JSON 응답에는 같은 하한을 쓸 수 없다.** 정상적인 JSON이 짧을 수 있다 — CSU API의 오류
+#: 응답이 78자였는데 하한 200에 걸려 "스텁 의심"으로 가려졌고, 정작 서버가 알려준 원인을
+#: 읽을 수 없었다. JSON은 내용 판정을 어댑터가 구조로 한다.
+MIN_JSON_BODY_LENGTH: Final = 2
 
 #: robots.txt의 두 지시는 **성격이 다르므로 따로 판단한다**(운영자 결정 2026-07-30).
 #:
@@ -223,6 +229,12 @@ class SourceClient:
         """상대 URL은 `list_url` 기준으로 합쳐진다(호스트·스킴이 따라온다)."""
         return self._request("GET", url, form=None)
 
+    def _min_body_length(self) -> int:
+        """이 소스의 본문 길이 하한. JSON 티어는 정상 응답이 짧을 수 있어 따로 둔다."""
+        if self._source.fetch_tier is FetchTier.JSON:
+            return MIN_JSON_BODY_LENGTH
+        return MIN_BODY_LENGTH
+
     def post_form(self, url: str, form: Mapping[str, str]) -> Response:
         """JSON 티어 소스용(`CSU`·`HANIL`은 목록이 POST다)."""
         return self._request("POST", url, form=form)
@@ -233,7 +245,7 @@ class SourceClient:
         absolute = urljoin(self._source.list_url, url)
         self._apply_robots_policy(absolute)
         self._ensure_session()
-        return self._send(method, url, form=form)
+        return self._send(method, url, form=form, min_body_length=self._min_body_length())
 
     def _apply_robots_policy(self, absolute_url: str) -> None:
         """`Disallow`와 `Crawl-delay`를 **따로** 적용한다(위 두 상수 참조)."""

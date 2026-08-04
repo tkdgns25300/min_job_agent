@@ -21,7 +21,7 @@ from minjob_ingest.clock import utc_now
 from minjob_ingest.fetch.client import SourceClient
 from minjob_ingest.models import SourceData
 from minjob_ingest.sources.adapters.base import ParseError, PostingRef, RawPosting
-from minjob_ingest.sources.adapters.registry import Adapter
+from minjob_ingest.sources.adapters.registry import Adapter, needs_detail_request
 from minjob_ingest.sources.registry import SourceConfig
 from minjob_ingest.store.base import LedgerEntry, Store
 
@@ -342,7 +342,8 @@ def _record(
     source: SourceConfig, adapter: Adapter, client: SourceClient, ref: PostingRef, run_id: UUID
 ) -> SourceData:
     """상세를 받아 저장 레코드로. 여기가 원문 증거가 만들어지는 유일한 곳이다."""
-    raw = adapter.parse_detail(client.get(ref.url).text, ref)
+    detail_html = client.get(ref.url).text if needs_detail_request(adapter) else ""
+    raw = adapter.parse_detail(detail_html, ref)
     return SourceData(
         source_key=source.key,
         external_id=ref.external_id,
@@ -354,7 +355,9 @@ def _record(
         raw_text=raw.raw_text,
         image_urls=raw.image_urls,
         attachments=raw.attachments,
-        raw_meta=dict(ref.list_meta),
+        # `_`로 시작하는 키는 **어댑터가 자기 `parse_detail`에 넘기는 내부 값**이다(HANIL은
+        # 목록 JSON의 본문을 그렇게 전달한다) — 저장하면 `raw_text`와 그대로 중복된다.
+        raw_meta={key: value for key, value in ref.list_meta.items() if not key.startswith("_")},
     )
 
 
@@ -402,7 +405,10 @@ class _Tally:
         """`--dry-run`에서 상세 파싱을 한 번만 확인한다(요청 1건). 요청했으면 `True`."""
         if self.detail_sample is not None:
             return False
-        self.detail_sample = adapter.parse_detail(client.get(ref.url).text, ref)
+        # 목록에 본문이 든 게시판은 상세를 요청하지 않는다 — 저장 경로와 같은 규칙이어야
+        # `--dry-run`이 실제 수집을 대표한다.
+        detail_html = client.get(ref.url).text if needs_detail_request(adapter) else ""
+        self.detail_sample = adapter.parse_detail(detail_html, ref)
         self.details += 1
         return True
 
