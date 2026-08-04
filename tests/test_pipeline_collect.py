@@ -5,7 +5,8 @@
 
 from __future__ import annotations
 
-from datetime import date
+import re
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Final
 
@@ -22,12 +23,15 @@ from minjob_ingest.pipeline.collect import (
     CollectReport,
     Conflict,
     LedgerConflict,
+    Progress,
+    ProgressSink,
+    _require_dates_for_cutoff,  # 폭주 방지 가드
     collect_source,
     cutoff_date,
     plan_page,
     require_no_conflicts,
 )
-from minjob_ingest.sources.adapters.base import PostingRef
+from minjob_ingest.sources.adapters.base import ParseError, PostingRef
 from minjob_ingest.sources.adapters.registry import find_adapter
 from minjob_ingest.sources.registry import find_source, load_sources
 from minjob_ingest.store.base import LedgerEntry
@@ -269,7 +273,12 @@ class _Board:
 
 
 def _collect(
-    board: _Board, store: JsonStore, options: CollectOptions, *, today: date = _TODAY
+    board: _Board,
+    store: JsonStore,
+    options: CollectOptions,
+    *,
+    today: date = _TODAY,
+    on_progress: ProgressSink | None = None,
 ) -> CollectReport:
     source = find_source(load_sources(None), "YTUS")
     assert source is not None
@@ -289,6 +298,7 @@ def _collect(
             run_id=None if run is None else run.id,
             options=options,
             today=today,
+            on_progress=on_progress,
         )
 
 
@@ -425,7 +435,142 @@ def test_a_posting_shifted_across_pages_is_collected_once(
     assert report.pages_read == 2
 
 
-# ── 페이지 상한 미달 보고 ────────────────────────────────────────
+# ── 진행 알림 ────────────────────────────────────────────────────
+
+
+def test_progress_is_reported_as_work_happens(board_html: tuple[str, str], tmp_path: Path) -> None:
+    """⚠️ **다 끝나고 한 번에 나오면 안 된다** — 상세 227건이면 6분간 무음이다.
+
+    운영자는 멈춘 건지 도는 건지 알 수 없다. 페이지마다 한 번 + 상세마다 한 번 알린다.
+    """
+    seen: list[Progress] = []
+    board = _Board(*board_html)
+    report = _collect(
+        board, JsonStore(tmp_path / "data"), CollectOptions(max_pages=1), on_progress=seen.append
+    )
+    assert len(seen) == 1 + report.saved  # 페이지 1회 + 상세 18회
+    assert seen[0].details_done == 0  # 목록만 읽은 시점
+    assert [p.details_done for p in seen[1:]] == list(range(1, report.saved + 1))
+    assert all(p.fresh == 18 and p.rows == 18 and p.page == 1 for p in seen)
+
+
+def test_progress_names_the_posting_being_fetched(
+    board_html: tuple[str, str], tmp_path: Path
+) -> None:
+    """숫자만 움직이는 것보다 무엇을 받고 있는지 보이는 게 낫다(멈춘 지점도 알 수 있다)."""
+    seen: list[Progress] = []
+    _collect(
+        _Board(*board_html),
+        JsonStore(tmp_path / "data"),
+        CollectOptions(max_pages=1),
+        on_progress=seen.append,
+    )
+    assert seen[0].latest is None  # 목록 단계에는 대상이 없다
+    assert seen[1].latest is not None
+    assert seen[1].latest.external_id == "25581"
+
+
+def test_dry_run_reports_progress_for_the_one_sampled_detail(
+    board_html: tuple[str, str], tmp_path: Path
+) -> None:
+    """`--dry-run`은 상세를 1건만 요청한다 — 나머지 17건까지 진행이 오르면 거짓 보고다."""
+    seen: list[Progress] = []
+    _collect(
+        _Board(*board_html),
+        JsonStore(tmp_path / "data"),
+        CollectOptions(max_pages=1, dry_run=True),
+        on_progress=seen.append,
+    )
+    assert max(p.details_done for p in seen) == 1
+
+
+def test_collect_runs_without_a_progress_sink(board_html: tuple[str, str], tmp_path: Path) -> None:
+    """알림은 선택이다 — 테스트·비대화형에서 콘솔 없이 돌아야 한다."""
+    report = _collect(
+        _Board(*board_html), JsonStore(tmp_path / "data"), CollectOptions(max_pages=1)
+    )
+    assert report.saved == 18
+
+
+# ── 범위는 --months 가 정한다 ────────────────────────────────────
+
+
+class _AgingBoard(_Board):
+    """페이지가 깊어질수록 오래된 글을 주는 게시판 대역.
+
+    `_Board`는 모든 페이지에 같은 목록을 줘서 "컷오프에 닿아 멈춘다"를 확인할 수 없다.
+    여기선 페이지마다 번호를 바꾸고 게시일을 30일씩 밀어, **컷오프가 종료를 결정**하게 한다.
+    """
+
+    _DAYS_PER_PAGE: Final = 30
+
+    def _page_of(self, url: httpx.URL) -> int:
+        """2페이지 이상은 목록 URL 뒤에 `/page/N`이 붙는다(어댑터 `list_page_url`)."""
+        found = re.search(r"/page/(\d+)", url.path)
+        return int(found[1]) if found else 1
+
+    def _aged(self, page: int) -> str:
+        shift = timedelta(days=self._DAYS_PER_PAGE * (page - 1))
+        offset = 1000 * (page - 1)
+        html = re.sub(
+            r"20\d\d-\d\d-\d\d",
+            lambda m: str(date.fromisoformat(m.group()) - shift),
+            self._list,
+        )
+        return re.sub(r"(trXXR/)(\d+)", lambda m: f"{m[1]}{int(m[2]) + offset}", html)
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.paths.append(request.url.path)
+        if "/board/view/" in request.url.path:
+            return httpx.Response(200, text=self._detail)
+        return httpx.Response(200, text=self._aged(self._page_of(request.url)))
+
+
+def test_months_alone_decides_how_deep_to_page(board_html: tuple[str, str], tmp_path: Path) -> None:
+    """⚠️ **`--months 3`이면 3개월치를 가져온다** — 페이지 수를 운영자가 계산하지 않는다.
+
+    예전엔 페이지 상한 기본값이 3이라 이게 `--months`보다 먼저 걸렸다. 활발한 게시판에서
+    `--months 3`을 줘도 4주치만 오고, 리포트가 "11페이지로 다시 하세요"라고 했다. 지금은
+    **컷오프가 종료를 정하고 상한은 폭주 방지용**이며 CLI에 옵션조차 없다.
+
+    대역: 페이지당 30일 · 게시일 07-31~08-04 → 4페이지에서 컷오프(05-04)를 걸치고 5페이지는
+    전부 범위 밖 → 거기서 멈춘다. 옛 기본값(3p)이면 4·5페이지를 못 본다.
+    """
+    board = _AgingBoard(*board_html)
+    report = _collect(
+        board,
+        JsonStore(tmp_path / "data"),
+        CollectOptions(months=3),  # ← 페이지 상한을 주지 않는다(기본 = 안전 상한)
+    )
+    assert report.pages_read == 5
+    assert not report.stopped_at_page_cap  # 컷오프에 닿아 스스로 멈췄다
+    assert report.oldest is not None
+    assert report.oldest >= cutoff_date(3, today=_TODAY)  # 범위 밖은 수집하지 않았다
+
+
+def test_the_default_ceiling_does_not_bind_a_three_month_range() -> None:
+    """기본 상한은 **범위를 정하는 값이 아니다** — 3개월을 못 채울 정도로 낮으면 안 된다."""
+    assert CollectOptions().max_pages >= 100
+
+
+def test_a_cutoff_without_any_list_dates_fails_loudly() -> None:
+    """날짜가 없으면 컷오프가 아무 행도 자르지 못해 **안전 상한까지 걷는다**(조용한 폭주).
+
+    목록에 날짜가 없는 게시판은 `--months 0`을 써야 한다 — 그렇게 말해 준다.
+    """
+    plan = plan_page((_ref("1", on=None), _ref("2", on=None)), {}, cutoff=_TODAY)
+    assert plan.dated == 0
+    with pytest.raises(ParseError, match="게시일이 없어"):
+        _require_dates_for_cutoff("YTUS", plan, cutoff=_TODAY)
+
+
+def test_a_page_with_some_dates_still_applies_the_cutoff() -> None:
+    """일부 행에만 날짜가 없는 건 정상이다 — 그걸로 소스를 세우면 안 된다."""
+    plan = plan_page((_ref("1", on=None), _ref("2", on=_TODAY)), {}, cutoff=_TODAY)
+    _require_dates_for_cutoff("YTUS", plan, cutoff=_TODAY)
+
+
+# ── 안전 상한 미달 보고 ──────────────────────────────────────────
 
 
 def _capped_report(**overrides: object) -> CollectReport:
@@ -460,18 +605,6 @@ def test_reaching_the_cutoff_is_not_a_shortfall() -> None:
 def test_no_cutoff_cannot_be_short() -> None:
     """`--months 0`은 범위를 날짜로 정하지 않으므로 미달이라는 개념이 없다."""
     assert not _capped_report(cutoff=None).short_of_cutoff
-
-
-def test_page_estimate_uses_the_observed_rate() -> None:
-    """운영자가 `--pages`를 얼마로 줄지 감을 잡는 용도 — 정확할 필요는 없다.
-
-    실측: 26일에 58행(3페이지) → 하루 2.2행. 07-10에서 05-04까지 67일이 더 필요.
-    """
-    assert _capped_report().pages_needed_estimate() == 11
-
-
-def test_page_estimate_is_none_without_dates() -> None:
-    assert _capped_report(oldest=None, newest=None).pages_needed_estimate() is None
 
 
 def test_the_loop_reports_the_cap(board_html: tuple[str, str], tmp_path: Path) -> None:

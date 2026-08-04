@@ -1,69 +1,52 @@
 # RUNBOOK — 실행 명령
 
-> 🔴 = 아직 없는 명령(해당 Phase에서 생김) · 🌐 = 게시판에 요청 · 💰 = Gemini 유료 호출
->
-> ⚠️ CLI 명령을 추가·변경하면 **이 파일을 같이 고친다**. 운영자는 이 파일만 보고 실행한다.
+> 🌐 게시판에 요청 · 💰 Gemini 유료 · 🔴 아직 없는 명령
+> venv 활성화 전제(`source .venv/bin/activate`). ⚠️ **CLI를 바꾸면 이 파일도 고친다.**
 
 ## 수집
 
 ```bash
-# ① 파싱 확인 — 저장 안 함. 목록 + 상세 표본 1건만 요청
-.venv/bin/minjob-ingest collect --source YTUS --dry-run          🌐
-# ② 실제 수집 — 최근 3개월 (아직 AI 안 씀 · 무료)
-.venv/bin/minjob-ingest collect --source YTUS --months 3         🌐
-.venv/bin/minjob-ingest collect --months 3                       🌐   # 어댑터 있는 곳 전부
-# ③ 구조화 — 여기서 처음 과금
-.venv/bin/minjob-ingest structure                            🔴 💰
-
-# 이후 매일
-.venv/bin/minjob-ingest daily                                🔴 🌐💰 # 새 글 수집 + 구조화
-
-# 확인
-.venv/bin/minjob-ingest status                               🔴      # 실행 요약·게시판별 상태
-.venv/bin/minjob-ingest list-sources [KEY]                          # 등록 소스 31곳
+minjob-ingest collect --source YTUS --dry-run               🌐    파싱 확인 (저장 안 함)
+minjob-ingest collect --source YTUS --months 3            🌐    실제 수집 (무료)
+minjob-ingest structure                                  🔴 💰   AI 구조화
+minjob-ingest daily                                      🔴 🌐💰  매일 (증분 + 구조화)
+minjob-ingest status                                     🔴      실행·게시판 상태
+minjob-ingest list-sources [KEY]                                 등록 31곳 (요청 없음)
 ```
 
-`collect` 옵션: `--source KEY`(한 곳만 · 기본은 어댑터 있는 전부) · `--months N`(게시일 범위 · `0`이면 날짜로 안 자름) · `--pages N`(목록 페이지 상한 · 기본 3) · `--dry-run` · `--verbose`(HTTP 요청 로그)
+`collect` 옵션 — `--source`(기본: 어댑터 있는 전부) · `--months N`(`0`=날짜 무제한) · `--dry-run` · `--verbose`
 
-> ⚠️ `--dry-run`은 **목록 전체 + 상세 표본 1건**을 요청한다. 목록만 보면 상세 파싱이 검증되지 않기 때문이다. 저장·실행기록은 남지 않는다.
->
-> ⚠️ **`--months`만으로는 부족하다 — `--pages`가 먼저 걸린다.** 기본 3페이지는 데일리용이고, 게시판이 활발하면 3페이지가 2~4주치뿐이다. 3개월을 받으려면 페이지를 늘려야 하며, **미달이면 리포트가 필요한 페이지 수를 추정해 알려준다**:
->
-> ```
-> ⚠ 페이지 상한(3p)에서 멈췄습니다 — 컷오프 2026-05-04에 도달하지 않았습니다.
->   --pages 11 정도가 필요합니다(관측 속도 기준 추정)
-> ```
-> 실측(YTUS): 하루 약 2.2건 → 3개월 ≈ 11페이지.
+⚠️ **범위는 `--months`가 정한다 — 페이지 옵션은 없다.** 컷오프보다 오래된 페이지에 닿으면 스스로 멈춘다. 내부 안전 상한(100p)에 걸리면 경고가 나오는데, 그건 **게시일 파싱이 깨졌다는 뜻**이다.
+⚠️ `--dry-run`은 목록 전체 + **상세 표본 1건**을 요청한다(목록만으론 상세 파싱이 검증되지 않음). 저장·실행기록 없음.
+진행 상황은 게시판마다 한 줄에서 실시간 갱신된다(`⋯ 3p · 60행 · 새 글 54 · 저장 16/54`) → 끝나면 그 자리에 리포트. **로그 파일로 넘기면**(`> run.log`) 진행 줄 없이 리포트만 남는다.
 
-## 코드를 고친 뒤 — 게이트 (4개 전부 통과해야 커밋)
+## 게이트 — 커밋 전 4개 통과
 
 ```bash
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy && .venv/bin/pytest -q
 ```
-
 자동 수정: `.venv/bin/ruff check --fix . && .venv/bin/ruff format .`
 
-## 셋업 (컴퓨터마다 한 번)
+## 셋업 — 컴퓨터마다 1회
 
 ```bash
 python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
-cp .env.example .env                      # Vertex 서비스계정 값 입력(PRIVATE_KEY 개행은 \n)
-.venv/bin/minjob-ingest check-gemini      # 💰 인증 확인
+cp .env.example .env         # Vertex 서비스계정 값 입력 (PRIVATE_KEY 개행은 \n)
+minjob-ingest check-gemini   # 💰 인증 확인
 ```
 
 ## 주의
 
-- **`data/`를 지우면 원장을 잃는다** → 다음 실행이 31곳을 전량 재수집(예의 위반)하고 전량 재구조화한다(과금). Phase 1-6에서 Supabase로 옮기면 해소.
-- `.env`는 커밋되지 않는다. 다른 컴퓨터로 옮길 때 직접 복사.
-- 캐시(`.mypy_cache`·`.ruff_cache`·`.pytest_cache`·`*.egg-info`)는 지워도 된다 — 도구가 다시 만든다.
+- **`data/`를 지우면 원장을 잃는다** → 31곳 전량 재수집 + 전량 재과금. 컴퓨터 옮길 땐 `.env`와 함께 복사(둘 다 커밋 안 됨).
+- 캐시(`.mypy_cache`·`.ruff_cache`·`.pytest_cache`·`*.egg-info`)는 지워도 된다.
 
 ## 안 될 때
 
 | 증상 | 확인 |
 |---|---|
-| `command not found` | `.venv/bin/python -m pip install -e ".[dev]"` 재실행 |
-| Vertex 설정 오류 | `.env`의 값. 오류 메시지가 빠진 변수 이름을 알려준다 |
-| PRIVATE_KEY 형식 오류 | 키 개행이 `\n`(백슬래시+n)으로 들어갔는지 |
-| 한 게시판만 0건 | `status`로 연속 실패·0건 확인. 로그인벽으로 바뀐 것이면 **우회하지 말고 비활성화**(가드레일 #1) |
+| `command not found: collect` | 하위 명령이다 — `minjob-ingest collect` |
+| `command not found: minjob-ingest` | venv 활성화 · 또는 `pip install -e ".[dev]"` 재실행 |
+| Vertex 설정·PRIVATE_KEY 오류 | `.env` 값과 개행(`\n`) — 메시지가 빠진 변수명을 알려준다 |
+| 한 게시판만 0건·실패 | 셀렉터 깨짐 또는 로그인벽. **우회 금지** — 비활성화 후 보고(가드레일 #1) |
 
-> 저장 위치·필드 의미는 [`SPEC.md`](./SPEC.md) §6, 게시판 설정은 `config/sources.json`.
+> 저장 위치·필드 = [SPEC](./SPEC.md) §6 · 게시판 설정 = `config/sources.json`

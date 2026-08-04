@@ -10,23 +10,26 @@
 from __future__ import annotations
 
 import calendar
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
-from math import ceil
 from typing import Final
 from uuid import UUID
 
 from minjob_ingest.clock import utc_now
 from minjob_ingest.fetch.client import SourceClient
 from minjob_ingest.models import SourceData
-from minjob_ingest.sources.adapters.base import PostingRef, RawPosting
+from minjob_ingest.sources.adapters.base import ParseError, PostingRef, RawPosting
 from minjob_ingest.sources.adapters.registry import Adapter
 from minjob_ingest.sources.registry import SourceConfig
 from minjob_ingest.store.base import LedgerEntry, Store
 
-#: 목록 페이지 상한 기본값(SPEC §3). 실행 옵션으로 덮을 수 있다.
-DEFAULT_MAX_PAGES: Final = 3
+#: 목록 페이지 **안전 상한**(폭주 방지용 · SPEC §3).
+#:
+#: ⚠️ 이건 **범위를 정하는 값이 아니다.** 범위는 게시일 컷오프(`--months`)가 정하고, 이 값은
+#: "날짜 판정이 깨졌을 때 500페이지를 걷지 않게" 막는 역할만 한다. 예전엔 기본값이 3이어서
+#: `--months 3`을 줘도 4주치만 가져왔다 — 운영자가 페이지 수를 계산해야 하는 건 설계 결함이다.
+PAGE_SAFETY_CEILING: Final = 100
 
 #: 백필 기본 범위(SPEC §4).
 DEFAULT_MONTHS: Final = 3
@@ -66,6 +69,16 @@ class PagePlan:
     stale: tuple[PostingRef, ...]
     #: 번호가 다른 글을 가리킴 — 소스 실패 대상.
     conflicts: tuple[Conflict, ...]
+
+    @property
+    def rows(self) -> tuple[PostingRef, ...]:
+        """분류 전 이 페이지의 모든 행(충돌은 `seen`에도 있어 중복 세지 않는다)."""
+        return (*self.fresh, *self.seen, *self.stale)
+
+    @property
+    def dated(self) -> int:
+        """게시일이 있는 행 수. 컷오프를 적용할 수 있는지 판단한다."""
+        return sum(1 for ref in self.rows if ref.posted_on is not None)
 
     @property
     def within_cutoff(self) -> int:
@@ -150,9 +163,12 @@ def _is_stale(ref: PostingRef, cutoff: date | None) -> bool:
 class CollectOptions:
     """실행 옵션. 정책 기본값은 모듈 상단 상수이고 여기서 덮는다(CLAUDE.md Fetch)."""
 
-    #: 게시일 컷오프. `None`이면 날짜로 자르지 않고 페이지 수로만 범위를 정한다.
+    #: 게시일 컷오프. **범위는 이 값이 정한다**(운영자가 페이지 수를 계산하지 않는다 —
+    #: 그래서 CLI에 페이지 옵션이 없다). `None`이면 날짜로 자르지 않으므로 그때만
+    #: `max_pages`가 범위 역할을 한다(목록에 날짜가 없는 게시판용).
     months: int | None = DEFAULT_MONTHS
-    max_pages: int = DEFAULT_MAX_PAGES
+    #: 안전 상한. **CLI로 노출하지 않는다** — 폭주 방지용이라 운영자가 만질 값이 아니다.
+    max_pages: int = PAGE_SAFETY_CEILING
     #: 저장하지 않고 무엇을 가져올지만 본다. 목록은 요청하고 **상세는 표본 1건만** 요청한다 —
     #: 상세 파싱이 되는지 확인해야 하고(목록만 보면 반쪽 검증), 게시판 부담은 1건이다.
     dry_run: bool = False
@@ -180,10 +196,11 @@ class CollectReport:
     detail_sample: RawPosting | None = None
     #: 적용된 게시일 컷오프(`None`이면 날짜로 자르지 않았다).
     cutoff: date | None = None
-    #: 페이지 상한.
-    max_pages: int = DEFAULT_MAX_PAGES
-    #: ⚠️ **컷오프에 도달하기 전에 페이지 상한에 걸려 멈췄는가.**
-    #: 이걸 알려주지 않으면 "범위 밖 0"만 보고 3개월을 다 받은 줄 안다 — 조용한 미달이다.
+    #: 적용된 안전 상한.
+    max_pages: int = PAGE_SAFETY_CEILING
+    #: ⚠️ **컷오프에 도달하기 전에 안전 상한에 걸려 멈췄는가.**
+    #: 상한이 넉넉해진 뒤로 이건 정상 상황이 아니다 — 날짜 판정이 깨졌거나 게시판이 예상보다
+    #: 훨씬 활발하다는 신호다.
     stopped_at_page_cap: bool = False
 
     @property
@@ -191,23 +208,29 @@ class CollectReport:
         """요청한 범위를 채우지 못했는가. 채웠으면 마지막 페이지가 컷오프 밖이었을 것이다."""
         return self.stopped_at_page_cap and self.cutoff is not None
 
-    def pages_needed_estimate(self) -> int | None:
-        """컷오프까지 받으려면 몇 페이지가 필요한가(관측된 게시 속도로 추정).
 
-        정확할 필요는 없다 — 운영자가 `--pages`를 얼마로 줄지 감을 잡는 용도다.
-        """
-        if self.cutoff is None or self.oldest is None or self.newest is None:
-            return None
-        covered = (self.newest - self.oldest).days + 1
-        remaining = (self.oldest - self.cutoff).days
-        if covered < 1 or remaining <= 0 or self.pages_read < 1:
-            return None
-        rows_per_page = self.rows / self.pages_read
-        if rows_per_page < 1:
-            return None
-        rate = self.rows / covered
-        return self.pages_read + ceil(rate * remaining / rows_per_page)
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Progress:
+    """지금까지 무엇을 했나 — 진행 표시용 스냅샷.
 
+    **출력 형식은 여기서 정하지 않는다**(파이프라인은 콘솔을 모른다 · CLI가 그린다). 오래 걸리는
+    구간이 무음이면 운영자는 멈춘 건지 도는 건지 알 수 없다 — 상세 227건이면 6분이다.
+    """
+
+    #: 지금 읽은 목록 페이지 번호.
+    page: int
+    #: 누적 목록 행 수.
+    rows: int
+    #: 누적 새 글 수(= 상세를 요청할 대상).
+    fresh: int
+    #: 누적 상세 요청 수.
+    details_done: int
+    #: 방금 처리한 글. 숫자만 움직이는 것보다 무엇을 받고 있는지 보이는 게 낫다.
+    latest: PostingRef | None = None
+
+
+#: 진행 알림 수신자. `None`이면 알리지 않는다(테스트·비대화형).
+ProgressSink = Callable[[Progress], None]
 
 #: `--dry-run` 리포트에 넣을 표본 수.
 _SAMPLE_SIZE: Final = 3
@@ -222,6 +245,7 @@ def collect_source(
     run_id: UUID | None,
     options: CollectOptions,
     today: date,
+    on_progress: ProgressSink | None = None,
 ) -> CollectReport:
     """게시판 하나를 훑는다. 실패는 그대로 던진다 — 소스 격리는 호출자가 한다(SPEC §3).
 
@@ -239,16 +263,21 @@ def collect_source(
         ledger = store.seen_postings(source.key, [ref.external_id for ref in refs])
         plan = plan_page(refs, ledger, cutoff=cutoff)
         require_no_conflicts(source.key, plan.conflicts)
+        _require_dates_for_cutoff(source.key, plan, cutoff=cutoff)
         tally.add(plan, pages_read=page)
+        _notify(on_progress, tally)
 
         for ref in plan.fresh:
             if options.dry_run:
-                tally.sample_detail_once(adapter, client, ref)
-                continue
-            assert run_id is not None  # 위에서 검증
-            tally.saved += int(
-                store.save_source_data(_record(source, adapter, client, ref, run_id))
-            )
+                if not tally.sample_detail_once(adapter, client, ref):
+                    continue
+            else:
+                assert run_id is not None  # 위에서 검증
+                tally.saved += int(
+                    store.save_source_data(_record(source, adapter, client, ref, run_id))
+                )
+                tally.details += 1
+            _notify(on_progress, tally, latest=ref)
         if not plan.has_more_pages:
             capped = False
             break
@@ -259,6 +288,25 @@ def collect_source(
         cutoff=cutoff,
         max_pages=options.max_pages,
         stopped_at_page_cap=capped,
+    )
+
+
+def _notify(sink: ProgressSink | None, tally: _Tally, *, latest: PostingRef | None = None) -> None:
+    if sink is not None:
+        sink(tally.progress(latest=latest))
+
+
+def _require_dates_for_cutoff(source_key: str, plan: PagePlan, *, cutoff: date | None) -> None:
+    """컷오프를 요청했는데 게시일이 하나도 없으면 실패시킨다.
+
+    날짜가 없으면 `--months`가 아무 행도 자르지 못해 **안전 상한까지 계속 페이지를 넘긴다**
+    (조용한 폭주). 목록에 날짜가 없는 게시판은 `--months 0`으로 돌린다(그때는 안전 상한이 범위다).
+    """
+    if cutoff is None or not plan.rows or plan.dated > 0:
+        return
+    raise ParseError(
+        f"{source_key}: 목록에 게시일이 없어 `--months` 범위를 적용할 수 없다 —"
+        f" 어댑터가 목록에서 게시일을 뽑도록 고친다(날짜가 진짜 없는 게시판이면 `--months 0`)"
     )
 
 
@@ -293,6 +341,8 @@ class _Tally:
     stale: int = 0
     saved: int = 0
     shifted: int = 0
+    #: 상세를 실제로 요청한 횟수. `saved`와 다르다 — 이미 있는 행은 저장되지 않는다.
+    details: int = 0
     scanned: set[str] = field(default_factory=set)
     dates: list[date] = field(default_factory=list)
     samples: list[PostingRef] = field(default_factory=list)
@@ -320,10 +370,22 @@ class _Tally:
         )
         self.samples.extend(plan.fresh[: max(0, _SAMPLE_SIZE - len(self.samples))])
 
-    def sample_detail_once(self, adapter: Adapter, client: SourceClient, ref: PostingRef) -> None:
-        """`--dry-run`에서 상세 파싱을 한 번만 확인한다(요청 1건)."""
-        if self.detail_sample is None:
-            self.detail_sample = adapter.parse_detail(client.get(ref.url).text, ref)
+    def sample_detail_once(self, adapter: Adapter, client: SourceClient, ref: PostingRef) -> bool:
+        """`--dry-run`에서 상세 파싱을 한 번만 확인한다(요청 1건). 요청했으면 `True`."""
+        if self.detail_sample is not None:
+            return False
+        self.detail_sample = adapter.parse_detail(client.get(ref.url).text, ref)
+        self.details += 1
+        return True
+
+    def progress(self, *, latest: PostingRef | None) -> Progress:
+        return Progress(
+            page=self.pages_read,
+            rows=self.rows,
+            fresh=self.fresh,
+            details_done=self.details,
+            latest=latest,
+        )
 
     def report(
         self,

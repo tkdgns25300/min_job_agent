@@ -52,7 +52,7 @@
 - [x] **`collect` 명령 + `--dry-run`** — 어댑터 레지스트리 + 결정(순수 함수: 컷오프·페이지 종료·번호 충돌) + 실행 루프 + 리포트. 소스 단위 격리 · `--dry-run`은 목록 전체 + **상세 표본 1건**(목록만 보면 상세 파싱 미검증) · mutation 17/17
 - [ ] (1-4) `PUTS` bd_name 필터 · `CSU`는 1110만 · **`HANSEI`는 `catId:artclNo` 복합키** — 각 어댑터를 만들 때 적용
 - [x] **원장 조회 확장** — `SourceData.title`·`posted_on` 컬럼 + `seen_postings`가 `LedgerEntry`(제목·게시일)를 함께 반환 + `points_to_another_posting`(둘 다 다르면 소스 실패). 추가 요청 0건 · mutation 12/12
-- [x] `--months N` 컷오프 = **목록의 게시일**(구조화 전이라 posted_at 없음 · 달 단위 말일 보정) · `--months 0`이면 날짜로 안 자름 · 페이지 상한은 `--pages`
+- [x] `--months N` 컷오프 = **목록의 게시일**(구조화 전이라 posted_at 없음 · 달 단위 말일 보정) · `--months 0`이면 날짜로 안 자름 · **범위는 컷오프가 정하고 페이지 상한(100p)은 폭주 방지용 · CLI 옵션 없음**
 
 ### 1-2. 구조화 (source_data → review_data)  ← ★ 1소스 전 구간 관통(뼈대 완성)
 - [ ] Gemini 구조화 호출 + **출력 JSON 계약**(필드·타입) + 한글→enum 매핑(position·region 등)

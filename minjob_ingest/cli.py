@@ -11,18 +11,20 @@ import logging
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from uuid import UUID
 
 from minjob_ingest.clock import utc_now
-from minjob_ingest.console import Console
+from minjob_ingest.console import Console, ProgressLine
 from minjob_ingest.domain import CrawlMode
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.lib.gemini import GeminiClient, GeminiError
 from minjob_ingest.pipeline.collect import (
-    DEFAULT_MAX_PAGES,
     DEFAULT_MONTHS,
     CollectOptions,
     CollectReport,
     LedgerConflict,
+    Progress,
+    ProgressSink,
     collect_source,
 )
 from minjob_ingest.settings import Settings, VertexConfigError
@@ -89,7 +91,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             config_path=Path(str(config_value)) if config_value is not None else None,
             only=str(args.source) if args.source is not None else None,
             months=int(args.months) or None,
-            max_pages=int(args.pages),
             dry_run=bool(args.dry_run),
             verbose=bool(args.verbose),
         )
@@ -103,7 +104,6 @@ def _run_collect(
     config_path: Path | None,
     only: str | None,
     months: int | None,
-    max_pages: int,
     dry_run: bool,
     verbose: bool,
 ) -> int:
@@ -112,38 +112,27 @@ def _run_collect(
     소스 단위로 격리한다 — 한 곳이 실패해도 나머지를 계속한다(SPEC §3). 종료코드는 실패한
     소스가 있으면 1이다(운영자가 `status` 없이도 알 수 있게).
     """
-    _setup_logging(verbose)
     console = Console()
-    settings = Settings.load()
+    _setup_logging(console, verbose)
     sources = _collect_targets(load_sources(config_path), only)
-    options = CollectOptions(months=months, max_pages=max_pages, dry_run=dry_run)
-    store = JsonStore(settings.data_dir)
+    store = JsonStore(Settings.load().data_dir)
     # dry-run은 아무것도 쓰지 않는다 — 실행 기록(crawl_run)도 남기지 않는다.
     run = None if dry_run else store.start_run(CrawlMode.BACKFILL)
-    today = utc_now().date()
 
     failures: dict[str, str] = {}
     saved_total = 0
     for source in sources:
-        try:
-            adapter = find_adapter(source.key)
-            with SourceClient(source) as client:
-                report = collect_source(
-                    source,
-                    adapter,
-                    client,
-                    store,
-                    run_id=None if run is None else run.id,
-                    options=options,
-                    today=today,
-                )
-        except (AdapterMissing, FetchError, ParseError, LedgerConflict) as err:
-            failures[source.key] = f"{type(err).__name__}: {err}"
-            console.heading(source.key, note=source.board_name)
-            console.error(str(err))
-            continue
-        saved_total += report.saved
-        _print_report(console, report, source, dry_run=dry_run)
+        report = _collect_one(
+            console,
+            source,
+            store,
+            run_id=None if run is None else run.id,
+            options=CollectOptions(months=months, dry_run=dry_run),
+            failures=failures,
+        )
+        if report is not None:
+            saved_total += report.saved
+            _print_report(console, report, dry_run=dry_run)
 
     if run is not None:
         store.finish_run(
@@ -158,15 +147,88 @@ def _run_collect(
     return 1 if failures else 0
 
 
-def _setup_logging(verbose: bool) -> None:
+def _collect_one(
+    console: Console,
+    source: SourceConfig,
+    store: JsonStore,
+    *,
+    run_id: UUID | None,
+    options: CollectOptions,
+    failures: dict[str, str],
+) -> CollectReport | None:
+    """게시판 하나. 실패는 `failures`에 담고 `None`을 돌려준다 — 나머지 소스는 계속 돈다.
+
+    잡는 예외는 **예상된 실패만**이다(어댑터 없음·전송·파싱·원장 충돌). 그 밖의 예외는 버그이므로
+    그대로 터뜨려 눈에 보이게 한다.
+    """
+    # 제목을 먼저 낸다 — 진행 줄이 그 아래에서 갱신되고, 그 자리에 최종 리포트가 온다.
+    console.heading(source.key, note=source.board_name)
+    line = console.progress()
+    try:
+        with SourceClient(source) as client:
+            return collect_source(
+                source,
+                find_adapter(source.key),
+                client,
+                store,
+                run_id=run_id,
+                options=options,
+                today=utc_now().date(),
+                on_progress=_progress_renderer(console, line, dry_run=options.dry_run),
+            )
+    except (AdapterMissing, FetchError, ParseError, LedgerConflict) as err:
+        failures[source.key] = f"{type(err).__name__}: {err}"
+        console.error(str(err))
+        return None
+    finally:
+        line.clear()
+
+
+class _ConsoleHandler(logging.Handler):
+    """로그를 Console로 흘린다.
+
+    ⚠️ 진행 줄이 있는 동안 로그를 **직접** 찍으면 그 줄에 겹쳐 쓰이고 다음 갱신이 덮어 **사라진다**
+    (재시도·`Crawl-delay` 경고가 그렇게 조용히 없어진다). Console을 지나면 진행 줄이 먼저 지워진다.
+    """
+
+    def __init__(self, console: Console) -> None:
+        super().__init__()
+        self._console = console
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if record.levelno >= logging.WARNING:
+            self._console.warn(message)
+        else:
+            self._console.line(f"  {self._console.paint(message, 'dim')}")
+
+
+def _setup_logging(console: Console, verbose: bool) -> None:
     """기본은 우리 메시지만 보여준다.
 
     `httpx`는 INFO에서 요청마다 한 줄씩 찍어 리포트를 덮는다 — 진단이 필요할 때만 켠다.
     """
-    logging.basicConfig(level=logging.INFO, format="  %(message)s")
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(_ConsoleHandler(console))
+    root.setLevel(logging.INFO)
     if not verbose:
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def _progress_renderer(console: Console, line: ProgressLine, *, dry_run: bool) -> ProgressSink:
+    """진행 스냅샷 → 한 줄. 형식을 아는 건 CLI뿐이다(파이프라인은 콘솔을 모른다)."""
+
+    def render(progress: Progress) -> None:
+        parts = [f"{progress.page}p", f"{progress.rows}행", f"새 글 {progress.fresh}"]
+        if not dry_run:
+            parts.append(f"저장 {progress.details_done}/{progress.fresh}")
+        latest = progress.latest
+        tail = f"  {latest.external_id} {latest.title}" if latest is not None else ""
+        line.update(f"  {console.paint('⋯ ' + ' · '.join(parts), 'dim')}{tail}")
+
+    return render
 
 
 def _collect_targets(sources: Sequence[SourceConfig], only: str | None) -> tuple[SourceConfig, ...]:
@@ -180,10 +242,7 @@ def _collect_targets(sources: Sequence[SourceConfig], only: str | None) -> tuple
     return tuple(s for s in enabled_sources(sources) if s.key in implemented)
 
 
-def _print_report(
-    console: Console, report: CollectReport, source: SourceConfig, *, dry_run: bool
-) -> None:
-    console.heading(report.source_key, note=source.board_name)
+def _print_report(console: Console, report: CollectReport, *, dry_run: bool) -> None:
     console.field("목록", f"{report.pages_read}페이지 · {report.rows}행")
     console.field(
         "새 글",
@@ -222,22 +281,18 @@ def _print_report(
 
 
 def _warn_if_short(console: Console, report: CollectReport) -> None:
-    """페이지 상한에 걸려 요청 범위를 못 채웠으면 알린다.
+    """안전 상한에 걸려 요청 범위를 못 채웠으면 알린다.
 
-    이게 없으면 "범위 밖 0"만 보고 3개월을 다 받은 줄 안다 — 조용한 미달이다.
+    이게 없으면 "범위 밖 0"만 보고 3개월을 다 받은 줄 안다 — 조용한 미달이다. 범위는 `--months`가
+    정하고 상한은 폭주 방지용이므로, **여기 걸리는 것은 정상 상황이 아니다** — 게시일 파싱이
+    깨졌다는 뜻이다(운영자가 옵션으로 풀 문제가 아니라 어댑터를 봐야 한다).
     """
     if not report.short_of_cutoff:
         return
-    needed = report.pages_needed_estimate()
-    hint = (
-        f"--pages {needed} 정도가 필요합니다(관측 속도 기준 추정)"
-        if needed
-        else "--pages 를 늘리세요"
-    )
     console.warn(
-        f"페이지 상한({report.max_pages}p)에서 멈췄습니다 —"
-        f" 컷오프 {report.cutoff}에 도달하지 않았습니다.",
-        hint,
+        f"안전 상한 {report.max_pages}페이지까지 읽었는데도 컷오프 {report.cutoff}에"
+        " 도달하지 못했습니다.",
+        "게시일 파싱이 깨졌을 가능성이 높습니다 — 어댑터의 날짜 셀렉터를 확인하세요.",
     )
 
 
@@ -279,12 +334,6 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MONTHS,
         help=f"게시일 기준 수집 범위 (기본 {DEFAULT_MONTHS}개월 · 0이면 날짜로 자르지 않음)",
-    )
-    collect.add_argument(
-        "--pages",
-        type=int,
-        default=DEFAULT_MAX_PAGES,
-        help=f"목록 페이지 상한 (기본 {DEFAULT_MAX_PAGES})",
     )
     collect.add_argument(
         "--dry-run",
