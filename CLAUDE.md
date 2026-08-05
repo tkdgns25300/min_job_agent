@@ -135,7 +135,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
   - `flags`: `www_required` · `http_only` · `spoof_ua`(브라우저 UA 필수) · `insecure_tls` · `needs_session`(상세가 쿠키 요구) · `image_only`(본문이 이미지 — 빈 raw_text가 정상) · `soft_200`(잘못된 요청에도 200 → 본문으로 검증).
   - **2026-08-05 추가**: `list_has_dates`(목록에 게시일이 있나 · `false`면 컷오프를 만들지 않는다) · `list_page_limit`(날짜 없는 게시판의 범위 — CLI에 페이지 옵션이 없으므로 여기 적는다).
   - **추가하지 않기로 한 것**: `page_param`·`notice_marker`. 29곳을 실제로 만들어 보니 페이징이 쿼리·경로·POST 본문·행 오프셋으로 갈리고 공지 표시가 클래스·아이콘·번호칸 글자로 갈려서, **한 필드로 담으면 절반이 예외가 된다**. 어댑터 상단 상수로 두는 편이 읽기 쉽다.
-- **로드 시 검증**(스타트업 assert + 테스트): key 대문자·유일 · `denomination_hint ∈ CONTRACT §1 ∪ {null}` · `flags` 키 화이트리스트 · `detail_pattern`이 있으면 `{id}` 포함. ⚠️ **예외 2곳**: `CSU`(API 호출이라 URL 템플릿 없음) · `HANSEI`(경로에 카테고리 id가 끼어 목록 href를 그대로 사용) — 사유는 `fetch_note`에.
+- **로드 시 검증**(스타트업 assert + 테스트): key 대문자·유일 · `denomination_hint ∈ CONTRACT §1 ∪ {null}` · `flags` 키 화이트리스트 · `detail_pattern`이 있으면 `{id}` 포함. ⚠️ **예외 1곳**: `HANSEI`(비활성 — 게시판 소멸). ~~`CSU`~~는 2026-08-05에 해소됐다 — SPA라 URL이 없다고 봤지만 공유용 상세 URL(`?m1=page_ministry_detail&…&board_content_id={id}`)이 실제로 존재한다.
 - **소스 추가/제외 = 이 JSON 편집.** 제외는 삭제가 아니라 `enabled: false` + `disabled_reason`(이력 보존·재활성 대비).
 - `fetch_note`는 라이브 검증 메모(세션 필요·soft 실패·공지행·pagination)다. **지우거나 요약하지 말 것** — 재취득 불가.
 

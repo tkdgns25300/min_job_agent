@@ -32,14 +32,14 @@ minjob-ingest snapshot --source KEY                         🌐    fixture용 H
 ## 어댑터
 
 게시판 1곳 = 파일 1개(`minjob_ingest/sources/adapters/<key 소문자>.py`). **파일을 놓으면 자동 등록**된다.
-현재 **29곳** 구현(활성 30곳 중) — `CSU`는 목록 API가 익명 세션을 거부해 미구현, `HANSEI`는 게시판 소멸로 비활성.
+현재 **30곳 구현 = 활성 전부**. `HANSEI`는 게시판 소멸로 제외(31곳 등록 중 30곳 활성).
 
 fixture(`tests/fixtures/<KEY>/`)는 **커밋되지 않는다**(가드레일 #11). 새 컴퓨터에서 어댑터 테스트를 돌리려면 먼저 받아야 한다:
 ```bash
 minjob-ingest snapshot                     🌐  활성 전부 (게시판당 최대 2요청)
 minjob-ingest snapshot --source YTUS       🌐  한 곳만
 ```
-테스트 요약 맨 아래에 `어댑터 fixture 커버리지: N/29 검증`이 찍힌다 — 이 숫자가 낮으면 초록불이어도 검증이 건너뛰어진 것이다.
+테스트 요약 맨 아래에 `어댑터 fixture 커버리지: N/30 검증`이 찍힌다 — 이 숫자가 낮으면 초록불이어도 검증이 건너뛰어진 것이다.
 
 ## 게이트 — 커밋 전 4개 통과
 

@@ -111,8 +111,13 @@ def test_real_config_keeps_fetch_notes(real_sources: tuple[SourceConfig, ...]) -
 def test_real_config_sources_without_detail_template(
     real_sources: tuple[SourceConfig, ...],
 ) -> None:
-    # CSU=API 호출, HANSEI=경로에 카테고리 id가 섞여 템플릿 불가 → 목록 링크를 그대로 쓴다.
-    assert {s.key for s in real_sources if s.detail_pattern is None} == {"CSU", "HANSEI"}
+    """템플릿으로 상세 URL을 만들 수 없는 소스.
+
+    ⚠️ 2026-08-05에 **CSU가 여기서 빠졌다** — SPA라 URL이 없다고 봤지만, 실제 공유 URL이
+    `/?m1=page_ministry_detail&menu_id=1110&board_content_id={id}`로 존재하고 200을 준다.
+    남은 하나(HANSEI)는 게시판이 소멸해 비활성이다.
+    """
+    assert {s.key for s in real_sources if s.detail_pattern is None} == {"HANSEI"}
 
 
 def test_real_config_detail_patterns_are_usable(real_sources: tuple[SourceConfig, ...]) -> None:

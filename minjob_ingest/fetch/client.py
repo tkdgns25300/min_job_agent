@@ -28,7 +28,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Final, Self
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
 
 import httpx
@@ -79,9 +79,16 @@ _BROWSER_HEADERS: Final = {
 
 #: JSON 티어(`CSU`·`HANIL`)는 페이지의 jQuery AJAX 엔드포인트다 — 실제 페이지가 보내는
 #: 헤더를 맞춘다(서버가 `X-Requested-With`를 확인하는 경우가 있다).
+#: AJAX POST에 붙이는 헤더. ⚠️ **세 값 전부 필요하다**(CSU 실측 2026-08-05).
+#:
+#: `Content-Type`에 **`charset=UTF-8`이 붙어야** 한다 — httpx 기본값은 charset 없이 보내고,
+#: 그 상태로는 CSU가 본문을 읽지 못해 `{"code":22000,"유효하지 않은 세션입니다"}`를 준다.
+#: 메시지가 "세션"이라 쿠키를 찾게 만들지만 **쿠키는 애초에 필요 없다**(브라우저 요청에도
+#: `Cookie` 헤더가 없다). `Origin`·`Referer`는 같은 출처에서 온 XHR임을 서버가 확인한다.
 _AJAX_HEADERS: Final = {
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "X-Requested-With": "XMLHttpRequest",
+    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
 }
 
 #: 이보다 짧은 HTML 본문은 실패로 본다 — 상태코드 200이면서 빈/스텁 응답을 주는 보드가 있다.
@@ -229,6 +236,16 @@ class SourceClient:
         """상대 URL은 `list_url` 기준으로 합쳐진다(호스트·스킴이 따라온다)."""
         return self._request("GET", url, form=None)
 
+    def _ajax_headers(self, absolute_url: str) -> dict[str, str]:
+        """POST에 붙일 헤더. `Origin`·`Referer`는 이 소스 기준으로 만든다."""
+        origin = urlsplit(absolute_url)
+        return {
+            **_AJAX_HEADERS,
+            "Origin": f"{origin.scheme}://{origin.netloc}",
+            # 목록 페이지에서 부른 XHR인 것처럼 — 서버가 같은 출처 확인에 쓴다(CSU 실측).
+            "Referer": self._source.list_url,
+        }
+
     def _min_body_length(self) -> int:
         """이 소스의 본문 길이 하한. JSON 티어는 정상 응답이 짧을 수 있어 따로 둔다."""
         if self._source.fetch_tier is FetchTier.JSON:
@@ -299,8 +316,10 @@ class SourceClient:
                 raw = self._client.request(
                     method,
                     absolute,
-                    data=dict(form) if form is not None else None,
-                    headers=_AJAX_HEADERS if form is not None else None,
+                    # ⚠️ `data=`가 아니라 인코딩한 본문을 직접 넣는다 — httpx가 `data=`에
+                    # `Content-Type`을 스스로 붙여 우리 charset 지정을 덮어쓴다.
+                    content=urlencode(form) if form is not None else None,
+                    headers=self._ajax_headers(absolute) if form is not None else None,
                 )
             except httpx.HTTPError as err:
                 # 연결·타임아웃 — 메시지가 빈 예외도 있어(TimeoutError) 타입명을 함께 남긴다.
