@@ -4,12 +4,14 @@
 적용한다. 여기 중복해서 쓰지 않는다.
 
 fixture는 2026-08-04 실측본이고 커밋되지 않는다(가드레일 #11) —
-`minjob-ingest snapshot --source PGAK` 으로 받는다.
+`minjob-ingest snapshot --source PGAK` 으로 받는다. 첨부가 달린 상세 표본 `detail_file.html`은
+`--url ".../view.asp?boarddetailseq=435901&boardid=B5FF8" --name detail_file.html`로 받는다.
 """
 
 from __future__ import annotations
 
 from datetime import date
+from html import escape
 from pathlib import Path
 from typing import Final
 
@@ -24,6 +26,10 @@ _FIXTURES: Final = Path(__file__).parent / "fixtures" / "PGAK"
 _EXPECTED_POSTINGS: Final = 12
 #: 상세 페이지가 아래에 다시 그리는 목록에 들어 있는 **다른 공고**의 제목 조각.
 _OTHER_POSTING: Final = "대림동 삼일교회"
+#: 첨부 4개가 달린 실측 공고(`detail_file.html`). 1페이지 목록에 있어 `refs`로 대조할 수 있다.
+_WITH_FILES: Final = "435901"
+#: 첨부 파일 호스트 — CMS 벤더의 별도 도메인이다(게시판 호스트가 아니다 · 실측).
+_FILE_HOST: Final = "https://pds.rh2.kr/pgak/"
 
 pytestmark = pytest.mark.skipif(
     not (_FIXTURES / "list.html").exists(),
@@ -71,6 +77,24 @@ def _mobile_row() -> str:
 
 def _list_html(*rows: str) -> str:
     return f'<table class="board-list"><tbody>{"".join(rows)}</tbody></table>'
+
+
+def _detail_html(*, body: str, files: str = "") -> str:
+    """상세 마크업의 뼈대. **본문은 escape한다** — 실물도 textarea에 escape돼 들어 있다(실측).
+
+    첨부가 없는 공고에는 `div.tag_box`가 아예 렌더되지 않는다(실측) — 그것까지 재현한다.
+    """
+    box = (
+        f'<div class="tag_box"><p class="tit">첨부파일</p>'
+        f'<div class="file-list-container">{files}</div></div>'
+        if files
+        else ""
+    )
+    return (
+        '<div id="viewBoard"><div id="contents">'
+        f'<textarea id="temp-raw-content">{escape(body)}</textarea>'
+        f'<div id="contentWrap"></div></div>{box}</div>'
+    )
 
 
 # ── 목록 ─────────────────────────────────────────────────────────
@@ -129,7 +153,51 @@ def test_the_body_is_not_the_relisted_board(refs: tuple[PostingRef, ...], detail
     raw = pgak.parse_detail(detail_html, refs[0])
     assert _OTHER_POSTING in detail_html
     assert _OTHER_POSTING not in raw.raw_text
+    # 이 공고엔 첨부가 없다(`div.tag_box`가 아예 렌더되지 않는다 · 실측).
     assert raw.attachments == ()
+
+
+def test_attachments_come_from_the_file_list_box(refs: tuple[PostingRef, ...]) -> None:
+    """첨부가 달린 실제 공고(435901)로 셀렉터를 고정한다(2026-08-05 실측 · 표본 7건 중 1건).
+
+    ⚠️ 목록에 첨부 표시 칸이 없어 `has_attachment` 대조 신호가 없다 — 셀렉터가 빗나가도
+    "정상인데 첨부 0개"로 조용히 통과한다. 그래서 실측값을 여기 못으로 박는다.
+
+    파일명은 **앵커 텍스트**에서 온다 — URL(`이슬람 소개1_ts1784808688052.hwpx`)에는 업로드
+    타임스탬프가 끼어 있어 그대로 쓰면 운영자가 받은 파일과 이름이 달라진다.
+    """
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("PGAK detail_file.html 없음 — 모듈 docstring의 `--url`로 받는다")
+    ref = next(found for found in refs if found.external_id == _WITH_FILES)
+    raw = pgak.parse_detail(path.read_text(encoding="utf-8"), ref)
+    assert [attachment.name for attachment in raw.attachments] == [
+        "6하원칙으로 설득하기.hwp",
+        "이슬람 소개1.hwpx",
+        "이슬람은 어떻게 생겨났나.hwpx",
+        "인격.hwp",
+    ]
+    assert all(found.url.startswith(_FILE_HOST) for found in raw.attachments)
+    assert not any(attachment.is_image for attachment in raw.attachments)
+    # ⚠️ 첨부 상자의 `<img>`는 확장자 아이콘(`hwp.gif`)이다 — 이미지로 저장하면 AI가 그걸 읽는다.
+    assert raw.image_urls == ()
+
+
+def test_a_body_link_is_not_an_attachment(refs: tuple[PostingRef, ...]) -> None:
+    """⚠️ 첨부는 **첨부 상자에서만** 온다 — 본문까지 훑으면 공고에 적힌 교회 홈페이지가 첨부가 된다.
+
+    공용 상자(`div.tag_box`)를 셀렉터로 쓰지 않는 이유도 여기 있다 — 그 상자는 태그 목록도 담는다
+    (스킨 CSS `view.css`의 `.tag_box .tag span`).
+    """
+    html = _detail_html(
+        body='교회 홈페이지 <a href="http://example-church.kr/notice.hwp">공고문</a>',
+        files='<div class="file-item"><span class="file-name">'
+        f'<a href="{_FILE_HOST}real_ts1.hwp">이력서양식.hwp</a></span></div>',
+    )
+    raw = pgak.parse_detail(html, refs[0])
+    assert [found.name for found in raw.attachments] == ["이력서양식.hwp"]
+    assert not any("example-church.kr" in found.url for found in raw.attachments)
+    assert raw.raw_text == "교회 홈페이지 공고문"
 
 
 def test_the_js_rendered_container_is_not_the_body(

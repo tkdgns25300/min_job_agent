@@ -4,7 +4,9 @@
 적용한다. 여기 중복해서 쓰지 않는다.
 
 fixture는 2026-08-04 실측본이고 커밋되지 않는다(가드레일 #11) —
-`minjob-ingest snapshot --source SUNGKYUL` 로 받는다.
+`minjob-ingest snapshot --source SUNGKYUL` 로 받는다. 첨부가 달린 상세 `detail_file.html`은
+`--url "https://www.sungkyul.org/NOS-Board/bbs.php?uid=8155&idx=com9&retype=view"
+--name detail_file.html`으로 받는다(2026-08-05 실측 · 첨부 2건).
 """
 
 from __future__ import annotations
@@ -142,3 +144,37 @@ def test_prev_next_links_are_not_attachments(
     raw = sungkyul.parse_detail(detail_html, refs[0])
     assert raw.attachments == ()
     assert raw.image_urls == ()
+
+
+def test_attachment_bearing_posting_is_measured() -> None:
+    """첨부가 달린 실제 공고로 셀렉터를 고정한다(2026-08-05 실측 · uid 8155 · `detail_file.html`).
+
+    ⚠️ 목록에 첨부 표시 칸이 없어 대조 신호가 없다 — 표본 공고에 첨부가 없으면 셀렉터가 틀려도
+    "정상인데 첨부 0개"로 조용히 통과한다. 그래서 첨부 있는 공고를 따로 받아 여기서 못을 박는다.
+
+    실측: `첨부파일` 행의 `<td>`에 `<a class="a3" href="./down.php?…&num=N">파일명</a>`이
+    ` | `로 이어진다 — **파일명은 링크 텍스트에만** 있고 URL에는 없다(`down.php?…num=1`).
+    """
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음 — 모듈 docstring의 `--url`로 받는다")
+    ref = PostingRef(
+        external_id="8155",
+        url="https://www.sungkyul.org/NOS-Board/bbs.php?uid=8155&idx=com9&retype=view",
+        title="높은뜻위례교회 담임목사 청빙 공고",
+        posted_on=date(2026, 7, 20),
+    )
+    raw = sungkyul.parse_detail(path.read_text(encoding="utf-8"), ref)
+    assert [(a.name, a.url) for a in raw.attachments] == [
+        (
+            "높은뜻위례교회 담임목사 청빙 공고.txt",
+            "https://www.sungkyul.org/NOS-Board/down.php?idx=com9&uid=8155&num=1",
+        ),
+        (
+            "높은뜻위례교회 담임목사 청빙 공고.hwpx",
+            "https://www.sungkyul.org/NOS-Board/down.php?idx=com9&uid=8155&num=2",
+        ),
+    ]
+    # 이 공고는 본문이 "첨부 파일을 확인해 주십시요"뿐이다 — 첨부를 놓치면 내용이 통째로 없다.
+    assert not any(a.is_image for a in raw.attachments)
+    assert "첨부된 파일을 확인해" in raw.raw_text

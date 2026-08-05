@@ -20,7 +20,17 @@
 넓히면 다른 공고 12건의 제목이 이 공고의 증거로 저장된다.
 
 이 게시판은 Cloudflare 뒤에 있고 빈 UA에 520을 준다(`fetch_note`) — 전송 층 문제이고 파싱과는
-무관하다. 첨부 표시 칸이 없어 상세 첨부의 교차 확인 신호도 없다.
+무관하다.
+
+**첨부(2026-08-05 실측 · 표본 7건 중 1건):** 상세 본문 상자(`div#contents`)의 **형제**로
+`div.tag_box > p.tit(첨부파일) + div.file-list-container > div.file-item`이 붙는다. 첨부가 없는
+공고에는 `tag_box`가 아예 없다. 파일 링크는 `span.file-name > a[href]`이고 앵커 텍스트가 원본
+파일명(`이슬람 소개1.hwpx`)이다 — 다운로드 URL은 `pds.rh2.kr`의 타임스탬프 이름
+(`이슬람 소개1_ts1784808688052.hwpx`)이라 URL만으로는 이름이 다르다.
+
+⚠️ **목록에 첨부 표시 칸이 없고 상세 제목칸에도 없다** — 스킨 CSS(`view.css`)에
+`.titles .icon_file` 규칙이 있는데도 첨부 4개인 공고에서 그 요소가 렌더되지 않았다(실측).
+그래서 `require_attachment_evidence`로 대조할 독립 신호가 없다.
 """
 
 from __future__ import annotations
@@ -28,7 +38,7 @@ from __future__ import annotations
 from typing import Final
 from urllib.parse import urljoin
 
-from bs4 import Tag
+from bs4 import BeautifulSoup, Tag
 
 from minjob_ingest.sources.adapters.base import (
     ListRequest,
@@ -37,6 +47,7 @@ from minjob_ingest.sources.adapters.base import (
     RawPosting,
     as_int,
     as_listing,
+    attachments_in,
     cell_text,
     external_id_from_url,
     image_urls_in,
@@ -69,6 +80,11 @@ _PAGE_PARAM: Final = "page"
 #: 브라우저 JS가 채운다(실측). 그래서 값을 꺼내 **한 번 더 파싱**한다 — 그러지 않으면 본문이
 #: `1.교회소개<br /> …`처럼 태그가 글자로 남고, 본문 안 이미지를 통째로 잃는다.
 _RAW_CONTENT: Final = "div#contents textarea#temp-raw-content"
+#: 첨부 목록. ⚠️ **`div.tag_box`를 셀렉터로 쓰면 안 된다** — 그 상자는 첨부 전용이 아니라
+#: 태그 목록도 담는 공용 상자다(스킨 CSS `view.css`에 `.tag_box .tag span` 규칙이 있다 · 실측).
+#: `div#viewBoard`로 한정하는 이유: 상세 페이지 **아래에 목록이 다시 그려지고**
+#: (`div.BOARD_skin_basic_list_wrap`) 그쪽에 같은 class가 생기면 남의 첨부가 섞인다.
+_ATTACHMENTS: Final = "div#viewBoard div.file-list-container"
 
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
@@ -90,31 +106,35 @@ def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
 
 
 def parse_detail(html: str, ref: PostingRef) -> RawPosting:
-    """상세 HTML → 본문 + 본문 안 이미지.
+    """상세 HTML → 본문 + 본문 안 이미지 + 첨부.
 
-    ⚠️ **첨부는 수집하지 않는다.** 이 게시판은 목록에 첨부 칸이 없고, 실측한 상세에 첨부 영역이
-    아예 없어(HTML에 `file`을 담은 class·id가 하나도 없다) 위치를 알 수 없다. 본문까지 범위를
-    넓히면 공고에 적힌 교회 홈페이지 링크가 첨부로 저장된다 — 잘못된 첨부는 없는 첨부보다 나쁘다
-    (DAESHIN 실측). 첨부가 달린 공고를 만나면 그 글로 실측해 채운다.
+    ⚠️ **첨부는 본문 밖에서만 온다**(`_ATTACHMENTS`). 본문까지 범위를 넓히면 공고에 적힌 교회
+    홈페이지 링크가 첨부로 저장된다 — 잘못된 첨부는 없는 첨부보다 나쁘다(DAESHIN 실측).
+
+    ⚠️ **첨부 상자의 `<img>`는 이미지가 아니라 확장자 아이콘**이다
+    (`img.rh2.kr/board/skin_basic/file/hwp.gif`) — `image_urls`를 본문에서만 모으는 이유다.
+    첨부가 이미지 파일이면 `Attachment.name`이 `.jpg`로 끝나 구조화가 알아본다.
     """
-    body = _content_of(html, ref)
+    soup = parse_html(html)
+    body = _content_of(soup, ref)
     raw_text = normalized_text(body)
     images = image_urls_in(body, base_url=ref.url)
-    if not raw_text and not images:
+    attachments = attachments_in(soup.select_one(_ATTACHMENTS), base_url=ref.url)
+    if not raw_text and not images and not attachments:
         raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 본문·이미지가 모두 없음 —"
+            f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 —"
             f" 셀렉터 `{_RAW_CONTENT}` 확인"
         )
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images)
+    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=attachments)
 
 
-def _content_of(html: str, ref: PostingRef) -> Tag:
+def _content_of(soup: BeautifulSoup, ref: PostingRef) -> Tag:
     """숨은 textarea에 든 본문 HTML을 꺼내 **다시 파싱**한다(모듈 상단 `_RAW_CONTENT` 참조).
 
     렌더 대상(`div#contentWrap`)은 정적 HTML에서 항상 비어 있으므로 그것을 읽으면 모든 공고가
     빈 본문이 된다 — 조용한 실패의 교과서적 형태다.
     """
-    holder = require_one(parse_html(html), _RAW_CONTENT, what=f"{SOURCE_KEY} 상세 본문")
+    holder = require_one(soup, _RAW_CONTENT, what=f"{SOURCE_KEY} 상세 본문")
     stored = holder.get_text()
     if not stored.strip():
         raise ParseError(f"{SOURCE_KEY} {ref.external_id}: 본문 textarea가 비었음")

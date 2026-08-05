@@ -17,11 +17,37 @@
 연도 복원은 KTS의 `gnuboard_list_date`를 함께 쓴다(그누보드 계열 공용 · base.py 공용화 후보).
 
 ⚠️ 도메인은 `hapdong.ac.kr`이지만 교단은 예장**합신**이다(합동 아님 · config `fetch_note`).
+
+**첨부 실측(2026-08-05 · wr_id 15254·15246·15215 · fixture `detail_file.html` = 15254)**:
+첨부는 머리 패널(`div.view-head`) 안의 `div.list-group`에 다운로드 링크로 온다.
+
+```html
+<div class="panel panel-default view-head">        <!-- 첨부 없으면 + no-attach -->
+  <div class="panel-heading">…작성자·조회·날짜…</div>
+  <div class="list-group font-12">
+    <a class="… view_file_download …" href="…/bbs/download.php?bo_table=e03&wr_id=…&no=0">
+      <span class="label … view-cnt">4</span><i class="fa fa-download"></i>
+      이력서_자기소개서.hwp (93.5K)
+      <span class="en font-11 text-muted"><i class="fa fa-clock-o"></i> 7일전</span></a>
+  </div>
+</div>
+```
+
+⚠️ **링크 텍스트를 그대로 파일명으로 쓸 수 없다** — 다운로드 횟수·크기·등록일이 섞여
+`4 이력서_자기소개서.hwp (93.5K) 7일전`이 되고, 확장자가 끝에 오지 않아 `is_image`가 **항상
+거짓**이 된다(KTS와 같은 결함). URL(`download.php?…&no=0`)에는 파일명이 없어 복원할 곳도
+링크 텍스트뿐이다 → `_file_name`이 chrome을 걷어낸다.
+
+⚠️ **이미지 첨부는 본문의 형제 상자(`div.view-img`)에 온다** — 실측 4건 전부 비어 있었지만
+스킨은 그 상자를 **항상 렌더**하고 `a.view_image` 팝업 핸들러도 함께 내려온다(그누보드5
+`#bo_v_img` 계열). KTS는 이 상자를 빼먹어 이미지 첨부 하나를 통째로 잃었다 — 같은 계열이므로
+여기서도 함께 읽는다. 빈 상자는 아무것도 만들지 않으므로 오염 위험이 없다.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import Final
 from urllib.parse import urljoin
 
@@ -35,6 +61,7 @@ from minjob_ingest.sources.adapters.base import (
     RawPosting,
     as_int,
     as_listing,
+    attachments_in,
     cell_text,
     external_id_from_url,
     gnuboard_list_date,
@@ -66,13 +93,22 @@ _PAGE_PARAM: Final = "page"
 _VIEW: Final = "div.view-wrap"
 _BODY: Final = "div.view-content"
 #: 첨부 유무를 알려주는 **독립 신호**. 첨부가 없으면 머리 패널에 `no-attach`가 붙는다(실측).
+#: 첨부 목록도 이 패널 안에 있어(위 docstring) 그대로 첨부 범위가 된다 — 범위를 상세 전체로
+#: 넓히면 댓글에 붙은 링크까지 첨부가 된다.
 _VIEW_HEAD: Final = "div.view-head"
 _NO_ATTACH_CLASS: Final = "no-attach"
-#: 첨부 링크는 스킨 클래스가 아니라 **그누보드 공용 다운로드 경로**로 찾는다 — 첨부가 달린
-#: 공고를 실측하지 못했고(1페이지 15건 전부 `no-attach`), 경로는 스킨이 바뀌어도 남는다.
+#: 이미지 첨부 상자 — 본문의 **형제**다(위 docstring · KTS `#bo_v_img`와 같은 자리).
+_IMAGE_BOX: Final = "div.view-img"
+#: 첨부 링크는 스킨 클래스가 아니라 **그누보드 공용 다운로드 경로**로 찾는다 —
+#: 경로는 스킨이 바뀌어도 남는다(`a.view_file_download` 클래스는 스킨 것이다).
 _FILE_LINK: Final = 'a[href*="download.php"]'
 _FILE_HREF: Final = re.compile(r"(?:https?://[^\s'\"]+|/)[^\s'\"]*download\.php[^\s'\"]*")
 _UNNAMED_FILE: Final = "attachment"
+#: 링크 텍스트에 섞인 chrome — 다운로드 횟수 배지(`span.view-cnt`)·등록일(`span.text-muted`)·
+#: 폰트 아이콘. 파일명은 이 사이의 **맨 텍스트 노드**다(위 docstring).
+_NAME_NOISE: Final = "span.view-cnt, span.text-muted, i"
+#: 파일명 뒤에 붙는 크기 표기 `(93.5K)`·`(768.2K)`.
+_SIZE_SUFFIX: Final = re.compile(r"\s*\(\s*\d+(?:\.\d+)?\s*[KMGT]?B?\s*\)\s*$", re.IGNORECASE)
 
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
@@ -92,14 +128,21 @@ def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
 
 
 def parse_detail(html: str, ref: PostingRef) -> RawPosting:
-    """상세 HTML → 본문 + 이미지 + 첨부."""
+    """상세 HTML → 본문 + 이미지 + 첨부.
+
+    첨부는 **두 상자**에 나뉘어 있다 — 파일 목록(머리 패널)과 이미지 첨부 상자(본문의 형제).
+    모듈 docstring의 실측을 참조.
+    """
     soup = parse_html(html)
     view = require_one(soup, _VIEW, what=f"{SOURCE_KEY} 상세")
     body = require_one(view, _BODY, what=f"{SOURCE_KEY} 상세 본문")
+    image_box = view.select_one(_IMAGE_BOX)
     raw_text = normalized_text(body)
-    images = image_urls_in(body, base_url=ref.url)
-    files = _attachments(view, base_url=ref.url)
-    _check_attachments_found(view, ref, files=files)
+    box_images = image_urls_in(image_box, base_url=ref.url)
+    images = image_urls_in(body, base_url=ref.url) + box_images
+    files = _attachments(view, base_url=ref.url) + attachments_in(image_box, base_url=ref.url)
+    # 대조에 세는 것은 **첨부 영역에서 온 것만**이다 — 본문 이미지는 첨부의 증거가 아니다.
+    _check_attachments_found(view, ref, found=(*files, *box_images))
     if not raw_text and not images and not files:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
@@ -108,36 +151,50 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
 
 
 def _attachments(view: Tag, *, base_url: str) -> tuple[Attachment, ...]:
-    """첨부 = 상세 안의 다운로드 링크. **범위를 상세로 제한**한다(푸터의 사이트 공용 파일 배제).
+    """파일 첨부 = 머리 패널 안의 다운로드 링크(모듈 docstring의 실측).
 
+    범위를 머리 패널로 제한한다 — 상세 전체로 넓히면 댓글·푸터의 링크가 첨부가 된다.
     href가 `javascript:` 래퍼일 수도 있어(같은 그누보드인 PCK가 그렇다) 문자열에서 실제 경로를
     꺼낸다. 못 꺼내면 조용히 버리지 않고 실패한다 — 첨부 유실은 사후에 알 수 없다.
     """
+    head = view.select_one(_VIEW_HEAD)
     found: list[Attachment] = []
-    for link in view.select(_FILE_LINK):
+    for link in () if head is None else head.select(_FILE_LINK):
         href = str(link.get("href") or "")
         matched = _FILE_HREF.search(href)
         if matched is None:
             raise ParseError(f"{SOURCE_KEY}: 첨부 링크에서 URL을 못 뽑음 ({href[:60]!r})")
-        name = link.get_text(" ", strip=True) or _UNNAMED_FILE
-        found.append(Attachment(name=name, url=urljoin(base_url, matched.group(0))))
+        found.append(Attachment(name=_file_name(link), url=urljoin(base_url, matched.group(0))))
     return tuple(found)
 
 
-def _check_attachments_found(view: Tag, ref: PostingRef, *, files: tuple[Attachment, ...]) -> None:
+def _file_name(link: Tag) -> str:
+    """링크 텍스트에서 **파일명만** 뽑는다(모듈 docstring의 chrome 실측).
+
+    다운로드 횟수·아이콘·등록일을 걷어내고 뒤에 붙은 크기 표기를 떼면 파일명이 남는다.
+    URL에는 파일명이 없으므로(`download.php?…&no=0`) 여기가 유일한 출처다 — 비면 이름 없는
+    첨부로 남기고 버리지 않는다.
+    """
+    working = parse_html(str(link))
+    for noise in working.select(_NAME_NOISE):
+        noise.decompose()
+    return _SIZE_SUFFIX.sub("", working.get_text(" ", strip=True)).strip() or _UNNAMED_FILE
+
+
+def _check_attachments_found(view: Tag, ref: PostingRef, *, found: Sequence[object]) -> None:
     """첨부가 있다는 **독립 신호**(머리 패널에 `no-attach`가 없음)와 대조한다.
 
-    이 게시판은 첨부 있는 공고를 실측하지 못했다 — 교차 확인이 없으면 첨부 셀렉터가 처음부터
-    틀렸어도 "본문 있으니 정상"으로 통과해 아무도 모른다.
+    목록에 첨부 아이콘이 없는 게시판이라 이것이 유일한 교차 확인이다 — 없으면 첨부 셀렉터가
+    빗나갔어도 "본문 있으니 정상"으로 통과해 아무도 모른다(2026-08-05 실측 전까지 그랬다).
     """
     head = view.select_one(_VIEW_HEAD)
     if head is None:
         raise ParseError(f"{SOURCE_KEY} {ref.external_id}: 셀렉터 `{_VIEW_HEAD}` 없음 — 개편 의심")
     classes: list[str] = head.get_attribute_list("class")
-    if _NO_ATTACH_CLASS not in classes and not files:
+    if _NO_ATTACH_CLASS not in classes and not found:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 첨부가 있다고 표시됐는데 목록이 비었음 —"
-            f" 셀렉터 `{_FILE_LINK}` 확인"
+            f" 셀렉터 `{_FILE_LINK}`·`{_IMAGE_BOX}` 확인"
         )
 
 

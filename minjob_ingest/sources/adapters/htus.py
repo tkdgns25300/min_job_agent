@@ -23,11 +23,9 @@ from __future__ import annotations
 
 import re
 from typing import Final
-from urllib.parse import urljoin
 
 from bs4 import Tag
 
-from minjob_ingest.models import Attachment
 from minjob_ingest.sources.adapters.base import (
     ListRequest,
     ParseError,
@@ -35,6 +33,7 @@ from minjob_ingest.sources.adapters.base import (
     RawPosting,
     as_int,
     as_listing,
+    attachments_in,
     cell_text,
     id_from_js,
     image_urls_in,
@@ -64,7 +63,6 @@ _BODY: Final = "div.board_view_content"
 #: `?b_id=…&page=1&w_id=24346&m=`처럼 `detail_pattern` 사이에 `page`가 끼어들어 접두사가 어긋난다.
 _ID_IN_HREF: Final = re.compile(r"[?&]w_id=(\d+)")
 #: 첨부 링크 텍스트 끝의 파일 크기(`… (33.50 KB)`). 파일명에서 떼어낸다.
-_SIZE_SUFFIX: Final = re.compile(r"\s*\(\s*[\d.,]+\s*[KMG]?B\s*\)\s*$", re.IGNORECASE)
 
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
@@ -89,29 +87,13 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     raw_text = normalized_text(body)
     images = image_urls_in(body, base_url=ref.url)
-    files = _attachments(soup.select_one(_FILE_CELL), base_url=ref.url)
+    files = attachments_in(soup.select_one(_FILE_CELL), base_url=ref.url)
     require_attachment_evidence(ref, source_key=SOURCE_KEY, selector=_FILE_CELL, found=files)
     if not raw_text and not images and not files:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
         )
     return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
-
-
-def _attachments(cell: Tag | None, *, base_url: str) -> tuple[Attachment, ...]:
-    """첨부파일 행의 다운로드 링크. 파일명에서 크기 접미사를 뗀다(모듈 docstring).
-
-    `base.attachments_in`을 쓰지 않는 이유가 그 접미사다 — 링크 텍스트를 그대로 파일명으로
-    쓰면 `.hwp (33.50 KB)`가 저장돼 확장자 판정이 어긋난다.
-    """
-    if cell is None:
-        return ()
-    return tuple(
-        Attachment(name=name, url=urljoin(base_url, href))
-        for link in cell.select("a[href]")
-        if (href := str(link.get("href") or "").strip())
-        and (name := _SIZE_SUFFIX.sub("", link.get_text(" ", strip=True)))
-    )
 
 
 def _has_posting_number(row: Tag) -> bool:

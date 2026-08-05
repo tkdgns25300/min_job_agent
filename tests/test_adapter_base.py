@@ -15,11 +15,14 @@ from typing import Final
 
 import pytest
 
+from minjob_ingest.models import Attachment
 from minjob_ingest.sources.adapters.base import (
     ParseError,
     PostingRef,
+    attachments_in,
     external_id_from_query,
     page_query_request,
+    parse_html,
     require_attachment_evidence,
     require_date,
     require_numeric_id,
@@ -183,3 +186,60 @@ def test_all_rows_filtered_is_an_error() -> None:
 def test_no_rows_at_all_is_not_an_error() -> None:
     """마지막 페이지는 정상적으로 비어 있다 — 페이징이 그걸 필요로 한다."""
     require_some_kept([], [], source_key="T", filtered_by="공지 판정")
+
+
+# ── 첨부 이름·링크 (30곳 공유) ───────────────────────────────────
+
+
+def _attachments(html: str) -> tuple[Attachment, ...]:
+    return attachments_in(parse_html(html), base_url="https://x.test/board/1")
+
+
+def test_a_generic_title_is_not_used_as_the_filename() -> None:
+    """⚠️ `title` 속성에 파일명을 담는 게시판도(MOKWON) 일반 라벨을 담는 게시판도(KBTUS) 있다.
+
+    라벨을 파일명으로 저장하면 확장자가 없어져 `is_image`가 거짓이 되고, URL에서 이름을
+    복원할 기회까지 잃는다 → 파일명 형태일 때만 쓴다.
+    """
+    found = _attachments('<a href="/d/x" title="내려받기"></a>')
+    assert found[0].name != "내려받기"
+
+
+def test_a_filename_shaped_title_is_used() -> None:
+    found = _attachments('<a href="/download.do?q=abc" title="이력서.hwp"></a>')
+    assert found[0].name == "이력서.hwp"
+
+
+def test_link_text_wins_over_the_title() -> None:
+    """링크 텍스트가 파일명인 게시판이 대다수다 — `title`은 폴백이어야 한다."""
+    found = _attachments('<a href="/d/x" title="내려받기">공고문.pdf</a>')
+    assert found[0].name == "공고문.pdf"
+
+
+def test_a_trailing_size_is_stripped_from_the_name() -> None:
+    """`이력서.hwp (33.50 KB)`를 그대로 쓰면 확장자가 끝에 오지 않아 `is_image`가 깨진다."""
+    found = _attachments('<a href="/d/x">사진.jpg (1.2 MB)</a>')
+    assert found[0].name == "사진.jpg"
+    assert found[0].is_image is True
+
+
+def test_internal_whitespace_in_the_name_is_collapsed() -> None:
+    """앵커 안이 `<img>` + 파일명 + nbsp·줄바꿈 + 크기 한 덩어리인 게시판이 있다(KBTUS)."""
+    found = _attachments('<a href="/d/x"><img src="/i.gif">양식.hwp\xa0\n\t (57KB)</a>')
+    assert found[0].name == "양식.hwp"
+
+
+@pytest.mark.parametrize("href", ["mailto:a@b.com", "tel:0212345678", "javascript:down(1)", "#"])
+def test_links_that_can_never_be_files_are_skipped(href: str) -> None:
+    """⚠️ 본문에 첨부 영역이 섞인 게시판에서 이것들이 첨부로 저장된다(HANIL 실측 4건).
+
+    저장하면 구조화가 "첨부 파일"을 열려 하고 아무것도 받지 못한다.
+    """
+    assert _attachments(f'<a href="{href}">뭔가</a>') == ()
+
+
+def test_a_script_download_takes_its_name_from_the_query() -> None:
+    """다운로드가 스크립트면 경로 끝은 `view_image.php`다 — 파일명은 쿼리에 있다(KTS 실측)."""
+    found = _attachments('<a href="/bbs/view_image.php?bo_table=x&fn=poster.jpg"></a>')
+    assert found[0].name == "poster.jpg"
+    assert found[0].is_image is True

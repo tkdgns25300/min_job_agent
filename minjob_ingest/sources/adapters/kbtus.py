@@ -6,8 +6,15 @@
 목록  /job/CMS/Board/Board.do?mCode=MN014        2페이지 이상은 &page={n}
       table.board-list-table tr 20 = 헤더 1 + 공지 1(tr.isnotice) + 공고 18
       칸: td.num td.cate([파트]/[풀타임]/[기타]) td.subject td.writer td.date(YYYY-MM-DD) td.cnt
+      첨부 표시: 제목 칸의 img.isFileIcon(alt="첨부파일") — 18건 중 8건
 상세  같은 Board.do의 &mode=view&mgr_seq=91&board_seq={id}    본문 = div.board-view-contents
+      첨부 ul.board-view-filelist(div.board-view-winfo 안)
 ```
+
+**첨부 실측(2026-08-05)**: 표본 4건(37416 HWP · 37365 HWP · 37322 HWP · 37298 DOCX) 전부
+`ul.board-view-filelist`에 다운로드 링크가 있었다. `div.board-view-files`(이미지 전용 상자)는
+네 건 모두 **빈 채로 렌더**돼 실측하지 못했지만, CMS가 "본문에 없는 이미지 첨부"용으로 두는
+자리라 그대로 둔다 — 있으면 `image_urls`로 온다.
 
 ⚠️ **상세 링크가 `href="javascript:URL_encode(...)"` 다.** 그 함수는 인자를 URL 인코딩해
 `location.href="?"+…`로 넘길 뿐이므로 **실제 요청은 평범한 GET 쿼리**다(실측: 함수 본문 확인).
@@ -38,6 +45,7 @@ from minjob_ingest.sources.adapters.base import (
     normalized_text,
     page_query_request,
     parse_html,
+    require_attachment_evidence,
     require_date,
     require_one,
     require_some_kept,
@@ -69,9 +77,15 @@ _BOILERPLATE: Final = "div.allim-box"
 #: "첨부파일이 이미지일 경우, **본문에 없는** 이미지일 경우 보여준다"(CMS 주석 실측).
 #: 본문과 겹치지 않으므로 `image_urls`에 넣어도 중복 저장이 되지 않는다.
 _IMAGE_ONLY_ATTACHMENTS: Final = "div.board-view-files"
-#: 첨부 다운로드 목록 자리(CMS 주석 `첨부파일 목록`). ⚠️ 첨부가 달린 공고를 아직 실측하지
-#: 못했다 — 목록에도 첨부 표시 칸이 없어 교차 확인 신호가 없다.
-_FILE_LIST: Final = "div.board-view-winfo"
+#: 첨부 다운로드 목록(CMS 주석 `첨부파일 목록`). ⚠️ **`div.board-view-winfo`를 그대로 쓰면 안
+#: 된다** — 그 상자는 "추가 정보"라 CMS가 임시 필드도 같이 렌더한다. 첨부는 `ul`에서만 온다.
+_FILE_LIST: Final = "div.board-view-winfo ul.board-view-filelist"
+#: 목록의 첨부 아이콘. 상세 첨부 셀렉터가 빗나갔는지 교차 확인하는 **독립 신호**다.
+_ATTACH_MARK: Final = "img.isFileIcon"
+_SUBJECT_CELL: Final = "td.subject"
+#: ⚠️ 앵커 텍스트가 `파일명.hwp (57KB)`다 — 크기를 떼지 않으면 파일명이 확장자로 끝나지 않아
+#: **이미지 첨부의 `is_image`가 거짓**이 되고(구조화가 Gemini에 안 보낸다) 운영자에게도
+#: 지저분하게 보인다(2026-08-05 실측).
 
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
@@ -106,6 +120,9 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     raw_text = normalized_text(body)
     images = image_urls_in(body, soup.select_one(_IMAGE_ONLY_ATTACHMENTS), base_url=ref.url)
     files = attachments_in(soup.select_one(_FILE_LIST), base_url=ref.url)
+    require_attachment_evidence(
+        ref, source_key=SOURCE_KEY, selector=_FILE_LIST, found=(*files, *images)
+    )
     if not raw_text and not images and not files:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
@@ -145,5 +162,6 @@ def _ref_from_row(row: Tag, source: SourceConfig) -> PostingRef:
             "display_no": cell_text(row, _NUM_CELL) or None,
             # 게시판이 스스로 붙인 고용형태 구분([파트]/[풀타임]/[기타]) — 구조화의 근거가 된다.
             "category": cell_text(row, "td.cate") or None,
+            "has_attachment": bool(row.select(f"{_SUBJECT_CELL} {_ATTACH_MARK}")),
         },
     )

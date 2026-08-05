@@ -102,7 +102,36 @@ def test_no_detail_request_is_needed() -> None:
 def test_body_comes_from_the_listing(refs: tuple[PostingRef, ...]) -> None:
     raw = hanil.parse_detail("", refs[0])
     assert "안양일심교회" in raw.raw_text
-    assert len(raw.attachments) == 1  # 본문 HTML 안의 첨부 링크
+
+
+def test_contact_emails_are_not_attachments(refs: tuple[PostingRef, ...]) -> None:
+    """⚠️ 이 게시판 본문에는 지원 문의 `mailto:`가 들어 있다.
+
+    그것을 첨부로 저장하면 구조화가 "첨부 파일"을 열려 하고 아무것도 받지 못한다.
+    실제로 4건이 그렇게 저장되고 있었다(2026-08-05) — base가 이제 걸러낸다.
+    """
+    for ref in refs:
+        for attachment in hanil.parse_detail("", ref).attachments:
+            assert not attachment.url.startswith("mailto:"), attachment.url
+
+
+def test_a_posting_with_a_file_is_still_collected(source: SourceConfig) -> None:
+    """첨부 다운로드 경로를 아직 모르지만(모듈 docstring) **공고를 버리지 않는다**.
+
+    본문이 내용을 담고 있어 유실이 아니고, `has_attachment`가 "파일이 있다"는 사실을 남겨
+    운영자가 검수에서 원문을 열 수 있다.
+    """
+    page2 = _FIXTURES / "list_page2.html"
+    if not page2.exists():
+        pytest.skip("list_page2.html 없음")
+    marked = [
+        ref
+        for ref in hanil.parse_list(page2.read_text(encoding="utf-8"), source)
+        if ref.list_meta.get("has_attachment")
+    ]
+    assert marked, "isFile=Y 인 공고가 없다 — 신호가 사라졌다"
+    raw = hanil.parse_detail("", marked[0])
+    assert raw.raw_text.strip()  # 본문은 살아 있다
 
 
 def test_passing_detail_html_is_rejected(refs: tuple[PostingRef, ...]) -> None:

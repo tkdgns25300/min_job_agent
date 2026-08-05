@@ -6,8 +6,15 @@
 목록  /mt1954/html/sub06/0602.html          2페이지 이상은 ?mode=L&GotoPage={n}
       table.board_list tr 16 = 헤더 1(th) + 공지 1(tr.bbs_notice) + 공고 14
       칸: td.ntt_no td.title td.wrt td.inq_cnt td.reg_date(YYYY-MM-DD) td.atch_nm
+      첨부 표시: td.atch_nm 안의 `a > span.bd_file_icon`("첨부파일있음")
 상세  같은 .html의 ?mode=V&no={id}          목록/상세가 한 파일이고 mode로 갈린다
+      본문 div.bbs--view--content · 첨부 div.bbs--view--file(본문의 형제)
 ```
+
+**첨부 실측(2026-08-05)**: 1·2·20페이지 45행은 `td.atch_nm`가 전부 빈칸이었고 **8페이지에서
+3건**을 찾았다(586·585 단일 `DownloadFile`, 577 다중 `DownloadList`). 상세는 첨부를
+`div.bbs--view--file`에 `a[title=파일명]`으로 렌더한다(다중이면 `a`가 여럿 · 실측 5개).
+다운로드는 같은 파일의 `?mode=D&no={id}&file_id=…`다.
 
 ⚠️ **`external_id`가 숫자가 아니다** — `no`는 32자리 hex다
 (`501103573814a8ef882b3f885d1fb33b`). `require_numeric_id`를 쓰면 전 행이 탈락한다.
@@ -62,10 +69,11 @@ _PAGE_QUERY: Final = "?mode=L&GotoPage="
 _ID_PATTERN: Final = re.compile(r"^[0-9a-f]{32}$")
 #: 본문(실측). 상세도 목록과 같은 파일이라 좁혀야 사이트 내비게이션·안내문이 섞이지 않는다.
 _BODY: Final = "div.bbs--view--content"
-#: 공고 카드 전체(제목·작성자 + 본문). ⚠️ **첨부 범위**로만 쓴다 — 첨부가 달린 공고를 아직
-#: 실측하지 못해(목록 1페이지 15행 전부 `td.atch_nm` 빈칸) PCMS가 파일 목록을 본문 안에 두는지
-#: 카드 아래에 두는지 모른다. 카드 밖으로는 넓히지 않는다(사이트 공용 파일이 들어온다 · DAESHIN).
-_POSTING_VIEW: Final = "div.bbs--view"
+#: 첨부 목록 — 카드 안에서 **본문과 형제**인 별도 상자다(2026-08-05 실측). 첨부가 없는 공고엔
+#: 이 상자가 렌더되지 않는다.
+#: ⚠️ **공고 카드(`div.bbs--view`)를 첨부 범위로 쓰면 안 된다** — 본문의 교회 홈페이지·`mailto:`
+#: 링크가 첨부로 저장된다(실측: `http://www.toc.or.kr/`·`mailto:` 2건이 실제로 섞였다).
+_FILE_BOX: Final = "div.bbs--view--file"
 
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
@@ -94,14 +102,15 @@ def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
 def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     """상세 HTML → 본문 + 이미지 + 첨부.
 
-    첨부는 **공고 카드 안으로 제한**한다 — 밖으로 넓히면 사이트 공용 링크가 들어온다(DAESHIN 실측).
+    첨부는 **첨부 상자 안으로 제한**한다 — 카드 전체로 넓히면 본문의 홈페이지·`mailto:` 링크가,
+    카드 밖으로 넓히면 사이트 공용 파일이 첨부로 들어온다(둘 다 실측).
     """
     soup = parse_html(html)
     body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     raw_text = normalized_text(body)
     images = image_urls_in(body, base_url=ref.url)
-    files = attachments_in(soup.select_one(_POSTING_VIEW), base_url=ref.url)
-    require_attachment_evidence(ref, source_key=SOURCE_KEY, selector=_POSTING_VIEW, found=files)
+    files = attachments_in(soup.select_one(_FILE_BOX), base_url=ref.url)
+    require_attachment_evidence(ref, source_key=SOURCE_KEY, selector=_FILE_BOX, found=files)
     if not raw_text and not images and not files:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"

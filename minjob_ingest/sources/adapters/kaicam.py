@@ -22,15 +22,49 @@
 PGAK의 페이저(`list.asp?boardid=…&page=2`)에서 `page`로 확인했다(2페이지 fixture로 검증).
 
 표시번호(730)와 원장 키(`boarddetailseq`=436518)는 다르다 — 표시번호는 게시판이 다시 매긴다.
+
+**첨부 실측(2026-08-05 · 431478 · fixture `detail_file.html`)**: 본문 상자(`div#contents`)의
+**형제**로 두 상자가 붙는다. 첨부가 없는 공고에는 **둘 다 아예 없다**(표본 5건 실측).
+
+```html
+<div id="divAttachCount"><img …icon_attach.gif><strong>3</strong>개의 첨부파일이 있습니다.</div>
+<div id="fileAttachList" class="fileAttachList"><table><tr>
+  <td class="icon" onclick="alert('권한이 없습니다.');"><img …/white2022/file/hwp.gif"></td>
+  <td onclick="alert('권한이 없습니다.');">
+    <span class="file" data-sub="https://pds.rh2.kr/kaicam" id="file_downloadCount_0">
+      서식1. 이력서 및 개인정보 수집동의서_ts1779548611765.hwp</span>
+    <span class="size">0.1 MB</span></td>
+  <td><span class="download">(다운로드: <span id="downloadCount_0">0</span>)</span></td>
+</tr>…</table></div>
+```
+
+⚠️ **`<a href>`가 하나도 없다** — 다운로드가 JS click이라 base의 `attachments_in`은 여기서
+아무것도 못 찾는다. URL은 `data-sub`(저장 경로 접두사) + 저장 파일명으로 **조립**한다. 같은
+CMS 벤더인 PGAK의 상세는 같은 파일을 `https://pds.rh2.kr/pgak/<이름>_ts<타임스탬프>.<확장자>`
+href로 내려주므로 이 조립이 벤더 규칙과 일치한다(2026-08-05 PGAK 실측 대조).
+표시 이름에서는 `_ts…`를 뗀다 — PGAK가 같은 파일을 그 형태로 보여준다.
+
+⚠️ **첨부 상자의 `<img>`는 이미지가 아니라 확장자 아이콘**(`…/white2022/file/hwp.gif`)이다 —
+`image_urls`를 본문에서만 모으는 이유다. 첨부가 이미지면 이름이 `.jpg`로 끝나 구조화가 알아본다.
+
+💡 `div#divAttachCount`의 "N개의 첨부파일" 은 **독립 신호**다 — 목록에 첨부 표시 칸이 없는
+게시판이라 이것이 유일한 교차 확인이고, 개수까지 맞춰볼 수 있다.
+
+⚠️ 이 게시판은 **포스터를 첨부가 아니라 본문에 붙여 넣는 쪽이 흔하다**(실측 433091·431027 =
+`storage.rh2.kr/kaicam/…jpeg|png`가 `div#contents` 안에 있다) — 본문 이미지 수집이 첨부보다
+먼저 내용을 지킨다.
 """
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Final
 from urllib.parse import urljoin
 
 from bs4 import Tag
 
+from minjob_ingest.models import Attachment
 from minjob_ingest.sources.adapters.base import (
     ListRequest,
     ParseError,
@@ -70,6 +104,22 @@ _PAGE_PARAM: Final = "page"
 _BODY: Final = "div#contents"
 #: 상세 페이지가 제목을 담는 곳. `soft_200` 검증의 기준값이다.
 _DETAIL_TITLE: Final = "#WC_BOARD_TITLES"
+#: 첨부 목록 상자(본문의 형제 · 위 docstring). 첨부가 없는 공고에는 이 상자가 없다.
+_FILE_LIST: Final = "div#fileAttachList"
+#: 그 안의 파일 한 칸. **앵커가 아니라 span**이다 — 이름은 텍스트, 경로 접두사는 속성에 있다.
+_FILE_NAME: Final = "span.file"
+_FILE_BASE_ATTR: Final = "data-sub"
+#: 첨부 개수를 알려주는 독립 신호(`3개의 첨부파일이 있습니다`).
+_ATTACH_COUNT: Final = "div#divAttachCount"
+_DIGITS: Final = re.compile(r"\d+")
+#: 저장 파일명에 붙는 업로드 타임스탬프(`_ts1779548611765`). **확장자 바로 앞만** 지운다 —
+#: 파일명 중간에 우연히 같은 꼴이 있어도 건드리지 않는다.
+_UPLOAD_STAMP: Final = re.compile(r"_ts\d+(?=\.[A-Za-z0-9]{2,5}$)")
+#: ⚠️ **이 게시판의 파일명은 NFD(분해형) 한글이다** — `서식` 이 `ᄉ+ᅥ+ᄉ+ᅵ+ᆨ`로 온다
+#: (2026-08-05 실측 · macOS에서 올린 파일이 그대로 저장된다). 눈으로는 구분되지 않는데
+#: 문자열 비교·검색이 전부 어긋나므로 **표시 이름은 NFC로 정규화**한다.
+#: URL은 정규화하지 않는다 — 저장소 경로가 NFD 그대로라 바꾸면 404가 된다.
+_DISPLAY_FORM: Final = "NFC"
 
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
@@ -91,25 +141,66 @@ def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
 
 
 def parse_detail(html: str, ref: PostingRef) -> RawPosting:
-    """상세 HTML → 본문 + 본문 안 이미지. **받아온 글이 요청한 글인지 먼저 확인한다.**
+    """상세 HTML → 본문 + 본문 안 이미지 + 첨부. **받아온 글이 요청한 글인지 먼저 확인한다.**
 
-    본문이 비어도 실패로 보지 않는다 — 포스터 이미지만 올리는 공고가 있다. 둘 다 없으면
+    본문이 비어도 실패로 보지 않는다 — 포스터 이미지만 올리는 공고가 있다. 셋 다 없으면
     파싱이 빗나간 것이므로 실패다.
 
-    ⚠️ **첨부는 수집하지 않는다.** 목록에 첨부 칸이 없고 실측한 상세에도 첨부 영역이 없다
-    (HTML에 `file`·`attach`를 담은 class·id가 하나도 없다). 위치를 추측해 넓히면 본문의 링크나
-    사이트 공용 파일이 첨부로 저장된다(DAESHIN 실측). 첨부가 달린 공고를 만나면 실측해 채운다.
+    첨부는 **본문 밖의 전용 상자에서만** 온다(위 docstring). 본문까지 범위를 넓히면 공고에 적힌
+    교회 홈페이지 링크가 첨부로 저장된다 — 잘못된 첨부는 없는 첨부보다 나쁘다(DAESHIN 실측).
     """
     soup = parse_html(html)
     _require_same_posting(soup, ref)
     body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     raw_text = normalized_text(body)
     images = image_urls_in(body, base_url=ref.url)
-    if not raw_text and not images:
+    files = _attachments(soup)
+    _require_declared_count(soup, ref, files=files)
+    if not raw_text and not images and not files:
         raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 본문·이미지가 모두 없음 — 셀렉터 `{_BODY}` 확인"
+            f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
         )
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images)
+    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+
+
+def _attachments(soup: Tag) -> tuple[Attachment, ...]:
+    """첨부 목록 상자에서 (표시 이름, 다운로드 URL)을 조립한다(위 docstring의 실측).
+
+    ⚠️ 앵커가 없어 `attachments_in`을 쓸 수 없다. 이름·경로 중 하나라도 비면 조용히 버리지 않고
+    실패한다 — 첨부 유실은 사후에 알 수 없다.
+    """
+    box = soup.select_one(_FILE_LIST)
+    found: list[Attachment] = []
+    for cell in () if box is None else box.select(_FILE_NAME):
+        stored = cell.get_text(" ", strip=True)
+        prefix = str(cell.get(_FILE_BASE_ATTR) or "").strip().rstrip("/")
+        if not stored or not prefix:
+            raise ParseError(
+                f"{SOURCE_KEY}: 첨부 칸에서 이름·경로를 못 뽑음"
+                f" (이름 {stored[:40]!r} · `{_FILE_BASE_ATTR}` {prefix[:40]!r})"
+            )
+        display = unicodedata.normalize(_DISPLAY_FORM, _UPLOAD_STAMP.sub("", stored))
+        found.append(Attachment(name=display, url=f"{prefix}/{stored}"))
+    return tuple(found)
+
+
+def _require_declared_count(soup: Tag, ref: PostingRef, *, files: tuple[Attachment, ...]) -> None:
+    """게시판이 스스로 말한 첨부 개수와 대조한다(`3개의 첨부파일이 있습니다`).
+
+    목록에 첨부 표시 칸이 없어 이것이 **유일한 독립 신호**다. 이 대조가 없으면 파일 상자 셀렉터가
+    빗나가도 "본문 있으니 정상"으로 통과해 아무도 모른다(2026-08-05 실측 전까지 그랬다).
+    개수 상자가 없는 것은 첨부 없는 공고의 정상 모습이다(표본 5건).
+    """
+    declared = soup.select_one(_ATTACH_COUNT)
+    if declared is None:
+        return
+    digits = _DIGITS.search(declared.get_text(" ", strip=True))
+    expected = int(digits.group()) if digits else 0
+    if len(files) != expected:
+        raise ParseError(
+            f"{SOURCE_KEY} {ref.external_id}: 첨부가 {expected}개라고 표시됐는데"
+            f" {len(files)}개만 찾음 — 셀렉터 `{_FILE_LIST} {_FILE_NAME}` 확인"
+        )
 
 
 def _require_same_posting(soup: Tag, ref: PostingRef) -> None:

@@ -55,6 +55,7 @@
   - `snapshot` 명령으로 fixture 확보(어댑터 없이 동작) · 적합성 테스트 1개가 29곳을 순회 검사 · 게시판별 테스트는 실측값만(6~9개)
   - 계약 확장: `list_request`(POST 목록 — HANIL) · `NEEDS_DETAIL_REQUEST`(목록에 본문이 든 게시판) · config `list_has_dates`(PCKWORLD)
   - 어댑터 등록은 **파일을 놓으면 자동**(모듈 발견) — 손으로 관리하는 dict 없음
+  - **첨부·이미지 30곳 전부 실측**(2026-08-05 2차) — 첨부 있는 공고를 찾아 확인했고 조용한 유실 버그 8개를 고쳤다(공고 통째 유실 2 · `is_image` 오판 3 · 본문 링크 오수집 3). `base.py` 전용 테스트 32개 추가. 남은 것: `HANIL` 첨부 다운로드 경로 미해결(사실만 기록 · 본문은 수집됨)
 - [x] **원장 조회 확장** — `SourceData.title`·`posted_on` 컬럼 + `seen_postings`가 `LedgerEntry`(제목·게시일)를 함께 반환 + `points_to_another_posting`(둘 다 다르면 소스 실패). 추가 요청 0건 · mutation 12/12
 - [x] `--months N` 컷오프 = **목록의 게시일**(구조화 전이라 posted_at 없음 · 달 단위 말일 보정) · `--months 0`이면 날짜로 안 자름 · **범위는 컷오프가 정하고 페이지 상한(100p)은 폭주 방지용 · CLI 옵션 없음**
 

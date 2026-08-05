@@ -133,3 +133,84 @@ def test_detail_body_is_the_gnuboard_content_div(refs: tuple[PostingRef, ...]) -
     assert "1.청빙분야" in raw.raw_text
     assert raw.attachments == ()
     assert raw.image_urls == ()
+
+
+# ── 첨부 ─────────────────────────────────────────────────────────
+
+
+def _flagged(external_id: str) -> PostingRef:
+    """목록에서 첨부 표시가 있던 공고처럼 만든 ref. 상세와 대조하는 신호를 살려 둔다."""
+    return PostingRef(
+        external_id=external_id,
+        url=f"https://na.or.kr/ccall/{external_id}",
+        title="첨부 있는 공고",
+        list_meta={"has_attachment": True},
+    )
+
+
+def test_the_list_marks_which_postings_have_files(source: SourceConfig) -> None:
+    """✅ 목록에 첨부 표시(`span.na-ticon.na-file`)가 있다 — 상세 셀렉터를 대조하는 독립 신호다.
+
+    실측: 1페이지 0건 · 2페이지 1건(97). 신호가 사라지면 첨부 유실을 아무도 못 잡는다.
+    """
+    page2 = nazarene.parse_list((_FIXTURES / "list_page2.html").read_text(encoding="utf-8"), source)
+    flagged = [ref.external_id for ref in page2 if ref.list_meta.get("has_attachment")]
+    assert flagged == ["97"]
+
+
+def test_non_image_attachment_comes_from_the_related_section() -> None:
+    """⚠️ `#bo_v_file`은 이 스킨에 없다 — 첨부는 "관련자료"(`#bo_v_data`)에 있다(78 실측).
+
+    그것만 보던 예전 코드는 3.5M PDF를 통째로 잃었다. 파일명은 앵커의 첫 텍스트 노드뿐이라
+    `get_text`로 읽으면 `…pdf 파일크기 (3.5M) 124 회 다운로드`가 된다.
+    """
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음 — `snapshot --url https://na.or.kr/ccall/78`")
+    raw = nazarene.parse_detail(path.read_text(encoding="utf-8"), _flagged("78"))
+    assert [(a.name, a.url) for a in raw.attachments] == [
+        (
+            "예산산성교회 실행제직회 회의록 박상민목사 청빙.pdf",
+            "https://na.or.kr/bbs/download.php?bo_table=ccall&wr_id=78&no=0",
+        )
+    ]
+    assert raw.attachments[0].is_image is False
+
+
+def test_image_attachment_keeps_the_full_size_url() -> None:
+    """⚠️ 이미지 첨부(`#bo_v_img`)의 본문 `<img>`는 **600px 썸네일**이다(97 실측).
+
+    원본은 `a.view_image`의 href(`view_image.php?…&fn=<파일명>.jpg`)뿐이라 첨부로 담아야
+    포스터형 공고를 읽을 수 있다. 파일명은 쿼리에서 복원되고 `is_image`가 참이어야 한다.
+    """
+    path = _FIXTURES / "detail_image.html"
+    if not path.exists():
+        pytest.skip("detail_image.html 없음 — `snapshot --url https://na.or.kr/ccall/97`")
+    raw = nazarene.parse_detail(path.read_text(encoding="utf-8"), _flagged("97"))
+    assert len(raw.attachments) == 1
+    attachment = raw.attachments[0]
+    assert attachment.name.endswith(".jpg")
+    assert "view_image.php" in attachment.url and "fn=" in attachment.url
+    assert attachment.is_image is True
+    # 썸네일은 증거로 남지만 그것만으로는 내용을 읽을 수 없다.
+    assert any("thumb-" in url for url in raw.image_urls)
+
+
+def test_a_flagged_posting_without_attachments_is_an_error() -> None:
+    """목록이 "첨부 있음"이라 했는데 못 찾으면 셀렉터가 빗나간 것이다 — 조용히 통과시키지 않는다."""
+    with pytest.raises(ParseError, match="첨부 표시가 있는데"):
+        nazarene.parse_detail(
+            (_FIXTURES / "detail.html").read_text(encoding="utf-8"), _flagged("124")
+        )
+
+
+def test_related_postings_are_not_attachments(refs: tuple[PostingRef, ...]) -> None:
+    """⚠️ 첨부와 이전글/다음글이 **같은 표**에 있다 — 클래스로 갈리지 않으면 링크가 첨부로 샌다."""
+    mixed = (
+        '<div id="bo_v_con">본문</div>'
+        '<section id="bo_v_data"><ul><li><a href="https://na.or.kr/ccall/123">다음글</a></li>'
+        '<li><a class="view_file_download" href="/bbs/download.php?no=0">양식.hwp'
+        '<span class="sr-only">파일크기</span> (1.2M)</a></li></ul></section>'
+    )
+    raw = nazarene.parse_detail(mixed, refs[0])
+    assert [a.name for a in raw.attachments] == ["양식.hwp"]

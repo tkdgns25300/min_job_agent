@@ -11,6 +11,12 @@
       본문 div.artclView · 첨부 dd.artclInsert(div.artclItem.viewForm 안)
 ```
 
+**첨부 실측(2026-08-05)**: 첨부를 가진 것은 **고정공지 3건뿐**이고 청빙공고에는 없다 — 목록
+1·2·5·20페이지의 공고 40건 전부 `span.attach_file`이 없었다. 셀렉터는 공지 56059(HWP 1개,
+`첨부파일` 라벨)로 고정했다(`tests/fixtures/BU/detail_file.html`). 공고는 교목실이 본문에
+양식대로 옮겨 적는 게시판이라 첨부가 드문 것으로 보이며, 나중에 첨부가 붙어도 목록의
+`span.attach_file` 대조(`require_attachment_evidence`)가 셀렉터 이탈을 잡는다.
+
 ⚠️ **페이징은 `page_link()`가 `pageForm`을 POST하지만 우리는 GET `?page=N`을 쓴다.** 그 폼에는
 페이지마다 새로 발급되는 `layout` 토큰이 들어 있어 `(source, page)`만 받는 계약으로 만들 수
 없다. GET이 실제로 먹는 것을 실측했다(`_curPage`가 2로 바뀌고 표시번호가 2459→2449).
@@ -69,8 +75,11 @@ _ATTACH_MARK: Final = "span.attach_file"
 _PAGE_PARAM: Final = "page"
 #: 본문. 제목(`artclViewTitleWrap`)·메타(`artclViewHead`)·이전다음글(`artclNavi`)의 형제다.
 _BODY: Final = "div.artclView"
-#: 첨부 목록. ⚠️ **본문을 첨부 컨테이너로 쓰면 안 된다** — 이 게시판 본문에는 이메일·홈페이지
-#: 링크가 그대로 들어 있어(실측: `https://hwapyungsong@naver.com/`) 첨부로 저장된다.
+#: 첨부 목록(`dt`가 "첨부파일"인 `dl.artclForm`). ⚠️ **본문을 첨부 컨테이너로 쓰면 안 된다** —
+#: 이 게시판 본문에는 이메일·홈페이지 링크가 그대로 들어 있어(실측:
+#: `https://hwapyungsong@naver.com/`) 첨부로 저장된다.
+#: ⚠️ **`div.artclItem.viewForm` 한정을 지우면 안 된다** — 이전글·다음글도 같은
+#: `dd.artclInsert`이고 href가 `javascript:jf_naviArtclView(...)`다(2026-08-05 실측).
 _FILE_LIST: Final = "div.artclItem.viewForm dd.artclInsert"
 
 

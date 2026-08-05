@@ -23,6 +23,11 @@
 
 ⚠️ **상세 페이지가 목록 50행을 다시 품고 있다**(`table.read_post_align`). 본문·첨부 범위를
 `div#data_content` 밖으로 넓히면 그 링크들이 통째로 섞인다.
+
+**첨부 실측(2026-08-05)**: 27468(총회본부 직원 공개채용)에 HWP 1개가 `ul#attachFileList`로
+렌더된 것을 확인했다(`tests/fixtures/KEHC/detail_file.html`). 첨부가 없는 27537·27558은 그 `ul`
+자체가 없다. ⚠️ **목록에 첨부 표시 칸이 없어** `require_attachment_evidence` 대조를 걸 수 없다 —
+그래서 이 셀렉터는 fixture 테스트가 유일한 방어선이다.
 """
 
 from __future__ import annotations
@@ -79,10 +84,12 @@ _PAGE_SUFFIX: Final = re.compile(r"/page/\d+$")
 _ROWS_PER_PAGE: Final = 50
 
 _BODY: Final = "div#data_content"
-#: 첨부 목록. 이 페이지의 CSS(`#attachFileList li a`)가 알려주는 자리다 — 첨부가 달린 공고를
-#: 아직 실측하지 못해 컨테이너가 렌더되지 않았다.
+#: 첨부 목록 — `div.filelist_area > ul#attachFileList > li > a`(2026-08-05 실측 27468).
+#: 첨부가 없는 공고는 이 `ul` 자체가 렌더되지 않는다.
 #: ⚠️ 첨부를 본문 안에서 찾으면 안 된다 — 본문에 Cloudflare 이메일 난독화 링크
 #: (`/cdn-cgi/l/email-protection`)가 섞여 있어 그것이 첨부로 저장된다(실측).
+#: ⚠️ 범위를 페이지 전체로 넓히면 안 된다 — 사이드바·푸터에 사이트 공용 파일 링크
+#: (`/home/pdfdownload` "헌법유권해석집")가 **모든 상세에** 있어 전 공고에 가짜 첨부가 붙는다.
 _FILE_LIST: Final = "#attachFileList"
 
 

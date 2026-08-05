@@ -7,7 +7,32 @@
       table.jmboardskin1 · tr 17 = 헤더 1(th) + 여백행 1(tr.jTh2) + 공고 15
       칸: td.jNum(표시번호) td.jSubject(링크) td.jWriter td.jDate(YYYY.MM.DD) td.jView
 상세  /main/sub.html?Mode=view&boardID=www38&num={id}    본문 = div.mdView_cont
+      첨부 = div.mdView_cont div.mdView_file #AB_viewFileLayer a  ← **본문 안**이다
 ```
+
+## 첨부 실측(2026-08-05 · 목록 2페이지 30건 + 상세 3건: 7238·7250 + detail.html)
+
+이 게시판은 **같은 게시판인데 텍스트 공고와 이미지 공고가 섞여 있다**(운영자 관찰).
+7250은 본문 텍스트가 **0자**이고 내용 전체가 이미지 1장 + 지원서 양식 `.hwp`다(7238도 제목 한
+줄 16자뿐) — 첨부를 놓치면 공고를 통째로 잃는 쪽이다. detail.html(7319)은 반대로 순수 텍스트다.
+
+⚠️ **첨부 영역이 본문 안에 있다**(`div.mdView_cont > ul > div.mdView_file`). 예전 코드는
+본문에서 첨부를 긁어 **UI 버튼 2개를 첨부로 저장**했다(실측 7238):
+`[ 첨부파일 일괄 다운로드 ]`(`fileListCheck`) · `[첨부파일 1개 ]`(`fileListViewPage`).
+실제 파일 링크는 **`#AB_viewFileLayer` 안에만** 있어 컨테이너로 갈린다.
+
+⚠️ 같은 이유로 **스킨 아이콘이 본문 이미지로 새어 들어갔다** —
+`bul_arrow_down.png`·`bg_addfile_top.png`·`bul_addfile.gif`·`bg_addfile_bottom.png`(실측 4~5개).
+그래서 첨부 영역을 **본문 텍스트·이미지 계산 전에 걷어낸다.**
+
+⚠️ 다운로드 URL이 href에 없다 — `javascript:anyboard.fileDown('3155')`이고 실제 경로는
+`/core/anyboard/download.php?boardID=<boardID>&fileNum=<n>`
+(`/core/script/anyboard/anyboard.js`의 `fileDown` 실측 · GET으로 863KB JPEG 수신 확인).
+`boardID`는 페이지의 `input[name=boardID]`에서 읽는다 — ref에 의존하지 않는다.
+파일명은 링크 텍스트뿐이고 그것으로 `is_image`가 성립한다(`.hwp` vs `.jpg` 실측).
+
+✅ **목록에 첨부 표시가 있다** — `td.jSubject img.mdBoardIcon`(`disk.png` 파일 · `photo.png`
+이미지). 30건 중 8건. 상세 첨부 셀렉터를 검증하는 **독립 신호**라 대조에 쓴다.
 
 ⚠️ **목록과 상세가 같은 `sub.html`인데 파라미터가 다르다** — 목록은 `pageCode=38`,
 상세는 `boardID=www38`이다(같은 게시판을 가리키는 두 이름). config가 둘을 각각 들고 있으므로
@@ -22,11 +47,13 @@ ANYSECURE 암호문(작성자)·등록일·조회수가 제목 뒤에 붙는다(
 
 from __future__ import annotations
 
+import re
 from typing import Final
 from urllib.parse import urljoin
 
-from bs4 import Tag
+from bs4 import BeautifulSoup, Tag
 
+from minjob_ingest.models import Attachment
 from minjob_ingest.sources.adapters.base import (
     ListRequest,
     ParseError,
@@ -34,13 +61,13 @@ from minjob_ingest.sources.adapters.base import (
     RawPosting,
     as_int,
     as_listing,
-    attachments_in,
     cell_text,
     external_id_from_url,
     image_urls_in,
     normalized_text,
     page_query_request,
     parse_html,
+    require_attachment_evidence,
     require_date,
     require_numeric_id,
     require_one,
@@ -59,9 +86,22 @@ _DATE_CELL: Final = "td.jDate"
 #: 두 경우를 한 규칙으로 걸러낸다.
 _NUMBER_CELL: Final = "td.jNum"
 _VIEWS_CELL: Final = "td.jView"
+#: 목록의 첨부 표시(`disk.png`·`photo.png`). 상세 셀렉터를 대조하는 **독립 신호**다(실측).
+_ATTACHMENT_ICON: Final = "td.jSubject img.mdBoardIcon"
 _PAGE_PARAM: Final = "page"
 #: 본문. 안쪽 `#lightgallery`에 에디터 내용이 들어간다.
 _BODY: Final = "div.mdView_cont"
+#: 첨부 영역 — **본문 안**에 있다(모듈 상단). 본문 텍스트·이미지 계산 전에 걷어낸다.
+_FILE_AREA: Final = "div.mdView_file"
+#: 그 안에서 **실제 파일 링크만** 담고 있는 목록. 일괄 다운로드·개수 토글 버튼은 이 밖이다.
+_FILE_LIST: Final = "#AB_viewFileLayer"
+_FILE_LINK: Final = "a[href]"
+#: `javascript:anyboard.fileDown('3155')` → fileNum.
+_FILE_NUM: Final = re.compile(r"fileDown\(\s*'([^']+)'")
+#: 다운로드 경로(모듈 상단 실측). `boardID`는 페이지에서 읽는다.
+_DOWNLOAD_PATH: Final = "/core/anyboard/download.php?boardID={board}&fileNum={num}"
+_BOARD_ID_INPUT: Final = "input[name='boardID']"
+_UNNAMED_FILE: Final = "attachment"
 
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
@@ -88,19 +128,76 @@ def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
 def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     """상세 HTML → 본문 + 이미지 + 첨부.
 
-    ⚠️ 첨부가 달린 공고를 아직 실측하지 못했다 — 목록에 첨부 표시 칸도 없어 교차 확인 신호가
-    없다(YTUS의 `has_attachment` 같은 것). 첨부는 **본문 안에서만** 찾는다. 넓히면 스킨 푸터의
-    SNS 아이콘과 PREV/NEXT 링크가 첨부로 들어온다.
+    ⚠️ **첨부 영역을 먼저 떼어낸다**(모듈 상단 첨부 실측). 그것이 본문 안에 있어서, 남겨 두면
+    UI 문구가 `raw_text`에 · 스킨 아이콘이 `image_urls`에 · 버튼이 `attachments`에 섞인다.
+
+    본문 텍스트가 비는 것은 실패가 아니다 — 내용 전체가 이미지 1장인 공고가 있다(7250 실측).
     """
-    body = require_one(parse_html(html), _BODY, what=f"{SOURCE_KEY} 상세 본문")
+    soup = parse_html(html)
+    body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
+    file_area = body.select_one(_FILE_AREA)
+    files = _attachments(file_area, soup, base_url=ref.url)
+    if file_area is not None:
+        file_area.decompose()
     raw_text = normalized_text(body)
     images = image_urls_in(body, base_url=ref.url)
-    files = attachments_in(body, base_url=ref.url)
+    # 본문 이미지를 증거로 인정하지 않는다 — 첨부 이미지는 본문에도 인라인으로 렌더되므로
+    # 그것까지 세면 파일 목록 셀렉터가 깨져도 통과해 비이미지 첨부(hwp)를 조용히 잃는다.
+    require_attachment_evidence(
+        ref, source_key=SOURCE_KEY, selector=f"{_FILE_AREA} {_FILE_LIST}", found=files
+    )
     if not raw_text and not images and not files:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
         )
     return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+
+
+def _attachments(
+    file_area: Tag | None, soup: BeautifulSoup, *, base_url: str
+) -> tuple[Attachment, ...]:
+    """첨부 영역 → (파일명, 절대 URL). 파일 링크는 `#AB_viewFileLayer` 안에만 있다.
+
+    영역이 있는데 파일을 못 뽑으면 **실패시킨다** — 첨부 영역은 첨부가 있을 때만 생기므로
+    (실측) 빈 목록을 조용히 돌려주면 이미지형 공고를 통째로 잃고도 아무도 모른다.
+    """
+    if file_area is None:
+        return ()
+    listing = file_area.select_one(_FILE_LIST)
+    if listing is None:
+        raise ParseError(
+            f"{SOURCE_KEY}: `{_FILE_AREA}`는 있는데 `{_FILE_LIST}`가 없음 — 사이트 개편 의심"
+        )
+    board_id = _board_id(soup)
+    found: list[Attachment] = []
+    for link in listing.select(_FILE_LINK):
+        href = str(link.get("href") or "")
+        matched = _FILE_NUM.search(href)
+        if matched is None:
+            raise ParseError(f"{SOURCE_KEY}: 첨부 링크에서 fileNum을 못 뽑음 ({href[:60]!r})")
+        name = link.get_text(" ", strip=True) or _UNNAMED_FILE
+        path = _DOWNLOAD_PATH.format(board=board_id, num=matched.group(1))
+        found.append(Attachment(name=name, url=urljoin(base_url, path)))
+    if not found:
+        raise ParseError(
+            f"{SOURCE_KEY}: `{_FILE_LIST}`에 파일 링크가 없음 — 셀렉터 `{_FILE_LINK}` 확인"
+        )
+    return tuple(found)
+
+
+def _board_id(soup: BeautifulSoup) -> str:
+    """다운로드 URL에 필요한 게시판 이름. **페이지가 알려주는 값을 쓴다.**
+
+    `ref.url`에서 뽑을 수도 있지만 그러면 상세 URL 형태 변경에 첨부가 함께 죽는다.
+    """
+    found = soup.select_one(_BOARD_ID_INPUT)
+    value = "" if found is None else str(found.get("value") or "").strip()
+    if not value:
+        raise ParseError(
+            f"{SOURCE_KEY}: 상세에서 boardID를 못 찾음 (`{_BOARD_ID_INPUT}`) —"
+            " 다운로드 URL을 만들 수 없다"
+        )
+    return value
 
 
 def _has_posting_number(row: Tag) -> bool:
@@ -128,6 +225,8 @@ def _ref_from_row(row: Tag, source: SourceConfig) -> PostingRef:
             "list_date": cell_text(row, _DATE_CELL) or None,
             "views": as_int(cell_text(row, _VIEWS_CELL)),
             "display_no": cell_text(row, _NUMBER_CELL) or None,
+            # 상세 첨부 셀렉터를 대조하는 독립 신호(모듈 상단 첨부 실측).
+            "has_attachment": bool(row.select(_ATTACHMENT_ICON)),
         },
     )
 

@@ -126,3 +126,34 @@ def test_writer_mailto_is_not_an_attachment(refs: tuple[PostingRef, ...], detail
     raw = sjs.parse_detail(detail_html, refs[0])
     assert raw.attachments == ()
     assert "mailto" not in raw.raw_text
+
+
+# ── 첨부 ─────────────────────────────────────────────────────────
+
+
+def test_attachment_bearing_posting_is_measured() -> None:
+    """첨부 있는 공고(49798 · `.hwp` 1건)로 `td.attached`를 고정한다(2026-08-05 실측).
+
+    ⚠️ 목록에 첨부 표시가 없어 교차 신호가 없다 — 표본 공고에 첨부가 없으면 셀렉터가 틀려도
+    "정상인데 첨부 0개"로 통과한다. 그래서 첨부 있는 공고를 따로 받아 여기서 못을 박는다.
+
+    파일명은 앵커 텍스트에서 온다(URL의 `downloadname`도 같지만 공백이 섞여 있다) —
+    확장자가 살아야 `is_image` 판정과 구조화의 형식 분기가 성립한다.
+    """
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음 — `snapshot --url …?bbs_idx=49798&…`")
+    ref = PostingRef(
+        external_id="49798",
+        url="https://sjs.ac.kr/ht_ml/w_04ed/4600.php?bbs_idx=49798&pagekind=c&bbsid=main4600",
+        title="동은교회(천안) 담임목사님을 청빙합니다.",
+    )
+    raw = sjs.parse_detail(path.read_text(encoding="utf-8"), ref)
+    assert len(raw.attachments) == 1
+    attachment = raw.attachments[0]
+    assert attachment.name == "담임목사 청빙 서류(1차).hwp"
+    assert attachment.url.startswith("https://sjs.ac.kr/lms_bbs/dn.php?downloadname=")
+    assert "filename=20260719161635.hwp" in attachment.url
+    assert attachment.is_image is False
+    # ⚠️ 첨부 칸의 파일종류 아이콘(`/lms_bbs//img/hwp.gif`)이 본문 이미지로 새면 안 된다.
+    assert raw.image_urls == ()

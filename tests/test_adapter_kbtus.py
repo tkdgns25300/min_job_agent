@@ -126,6 +126,49 @@ def test_detail_has_no_attachment_for_a_text_only_posting(refs: tuple[PostingRef
     assert raw.image_urls == ()
 
 
+def test_attachment_bearing_posting_is_measured(refs: tuple[PostingRef, ...]) -> None:
+    """첨부가 달린 실제 공고로 셀렉터를 고정한다(2026-08-05 실측 · `detail_file.html` = 37416).
+
+    ⚠️ 표본 공고에 첨부가 없으면 셀렉터가 틀려도 "정상인데 첨부 0개"로 통과한다 —
+    그래서 첨부 있는 공고를 따로 받아 여기서 못을 박는다.
+
+    ⚠️ **앵커 텍스트가 `파일명.hwp (57KB)`다.** 크기 표기를 떼지 않으면 파일명이 확장자로
+    끝나지 않아 이미지 첨부의 `is_image`가 거짓이 되고 구조화가 Gemini에 안 보낸다.
+    `(목)` 같은 파일명 안의 괄호는 남아야 하므로 **끝의 크기만** 지운다.
+    """
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음 — `--url ...&board_seq=37416`")
+    marked = [ref for ref in refs if ref.list_meta.get("has_attachment")]
+    assert len(marked) == 8, "목록 첨부 아이콘(img.isFileIcon) 대조 신호가 사라졌다"
+    ref = next(found for found in marked if found.external_id == "37416")
+    raw = kbtus.parse_detail(path.read_text(encoding="utf-8"), ref)
+    assert len(raw.attachments) == 1
+    only = raw.attachments[0]
+    assert only.name == "26년목사청빙공고최종 7.23(목).hwp"
+    assert only.url == (
+        "https://job.kbtus.ac.kr/job/ajx_json/UploadMgr/downloadRun.do?qcode=Qm9hcmQsNTcxNjYsWQ=="
+    )
+    assert only.is_image is False
+
+
+def test_attachment_mark_without_a_file_is_an_error(refs: tuple[PostingRef, ...]) -> None:
+    """목록이 첨부 있다고 했는데 상세에서 못 찾으면 **에러**여야 한다.
+
+    이 대조가 없으면 셀렉터가 빗나가도 본문 있는 공고는 조용히 통과한다 — 내용이 첨부에만
+    있는 공고를 통째로 잃는다.
+    """
+    flagged = PostingRef(
+        external_id=refs[0].external_id,
+        url=refs[0].url,
+        title=refs[0].title,
+        posted_on=refs[0].posted_on,
+        list_meta={"has_attachment": True},
+    )
+    with pytest.raises(ParseError, match="첨부 표시가 있는데"):
+        kbtus.parse_detail((_FIXTURES / "detail.html").read_text(encoding="utf-8"), flagged)
+
+
 def test_all_rows_filtered_as_notices_is_an_error(source: SourceConfig) -> None:
     """⚠️ 공지 판정 기준이 어긋나면 공고 전량이 조용히 사라진다 — 그때는 에러여야 한다.
 

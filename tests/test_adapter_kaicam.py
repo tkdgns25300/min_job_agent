@@ -4,11 +4,14 @@
 적용한다. 여기 중복해서 쓰지 않는다.
 
 fixture는 2026-08-04 실측본이고 커밋되지 않는다(가드레일 #11) —
-`minjob-ingest snapshot --source KAICAM` 으로 받는다.
+`minjob-ingest snapshot --source KAICAM` 으로 받는다. 첨부가 달린 상세 `detail_file.html`은
+`--url "https://home.kaicam.org/webchon.layout/board/white2022/view.asp?boardid=D9537
+&boardmasterseq=2726&boarddetailseq=431478" --name detail_file.html`으로 받는다(2026-08-05 실측).
 """
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import date
 from pathlib import Path
 from typing import Final
@@ -127,7 +130,7 @@ def test_detail_body_is_the_posting_only(refs: tuple[PostingRef, ...], detail_ht
     assert "2)교단: KAICAM(한국독립교회선교단체연합체)" in raw.raw_text
     assert "5)교회 주소:경기도 안산시 단원구 화정천동로2안길31" in raw.raw_text
     assert refs[1].title not in raw.raw_text
-    # 첨부 영역을 실측하지 못해 수집하지 않는다(어댑터 docstring).
+    # 첨부 없는 공고에는 첨부 상자가 **아예 없다**(실측 5건) — 0건이 정상이다.
     assert raw.attachments == ()
 
 
@@ -143,3 +146,66 @@ def test_a_different_posting_is_not_accepted(
     """엉뚱한 글을 받아왔으면 제목이 목록과 어긋난다 — 그걸 이 공고의 증거로 삼지 않는다."""
     with pytest.raises(ParseError, match="상세 제목이 목록과 다름"):
         kaicam.parse_detail(detail_html, refs[1])
+
+
+# ── 첨부 ─────────────────────────────────────────────────────────
+
+
+def _file_detail() -> str:
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음 — 모듈 docstring의 `--url`로 받는다")
+    return path.read_text(encoding="utf-8")
+
+
+def test_attachment_bearing_posting_is_measured() -> None:
+    """첨부가 달린 실제 공고로 셀렉터를 고정한다(2026-08-05 실측 · 431478 · 첨부 3건).
+
+    ⚠️ 첨부 칸에 **`<a href>`가 없다** — 다운로드가 JS click이라 URL을 `data-sub` + 저장
+    파일명으로 조립해야 한다. 표시 이름에서는 업로드 타임스탬프(`_ts…`)를 뗀다.
+    """
+    ref = PostingRef(
+        external_id="431478",
+        url=(
+            "https://home.kaicam.org/webchon.layout/board/white2022/view.asp?"
+            "boardid=D9537&boardmasterseq=2726&boarddetailseq=431478"
+        ),
+        title="문경소망교회 목회자 청빙 공고 (청빙시까지)",
+    )
+    raw = kaicam.parse_detail(_file_detail(), ref)
+    assert [a.name for a in raw.attachments] == [
+        "서식1. 이력서 및 개인정보 수집동의서.hwp",
+        "서식2. 자기소개서.hwp",
+        "2026 문경소망교회 청빙공고.zip",
+    ]
+    # URL은 **게시판이 저장한 그대로**(타임스탬프 + NFD 한글)여야 한다 — 아래 테스트 참조.
+    assert raw.attachments[2].url == unicodedata.normalize(
+        "NFD", "https://pds.rh2.kr/kaicam/2026 문경소망교회 청빙공고_ts1779548617571.zip"
+    )
+    # 확장자 아이콘(`…/white2022/file/hwp.gif`)이 본문 이미지로 새지 않아야 한다.
+    assert raw.image_urls == ()
+
+
+def test_file_names_are_normalized_but_download_urls_are_not() -> None:
+    """⚠️ 이 게시판의 파일명은 **NFD(분해형) 한글**이다(실측) — 눈으로는 구분되지 않는다.
+
+    표시 이름은 NFC로 고쳐 문자열 비교·검색이 되게 하고, URL은 저장소 경로가 NFD 그대로라
+    **정규화하지 않는다**(바꾸면 404). 둘을 같이 정규화하거나 같이 놔두는 실수를 여기서 잡는다.
+    """
+    ref = PostingRef(external_id="431478", url="https://home.kaicam.org/x", title="가")
+    raw = kaicam.parse_detail(_file_detail(), ref)
+    for attachment in raw.attachments:
+        assert unicodedata.is_normalized("NFC", attachment.name), attachment.name
+        assert not unicodedata.is_normalized("NFC", attachment.url), attachment.url
+
+
+def test_the_declared_attachment_count_catches_a_missed_box() -> None:
+    """⚠️ 목록에 첨부 표시 칸이 없다 — `N개의 첨부파일이 있습니다`가 **유일한 독립 신호**다.
+
+    파일 상자가 사라지면(스킨 개편) 개수만 남아 대조가 걸린다. 이 검사가 없으면 첨부 3건이
+    조용히 0건이 되고 "본문 있으니 정상"으로 통과한다.
+    """
+    ref = PostingRef(external_id="431478", url="https://home.kaicam.org/x", title="가")
+    broken = _file_detail().replace('id="fileAttachList"', 'id="renamedByRedesign"', 1)
+    with pytest.raises(ParseError, match="첨부가 3개라고 표시됐는데 0개만"):
+        kaicam.parse_detail(broken, ref)

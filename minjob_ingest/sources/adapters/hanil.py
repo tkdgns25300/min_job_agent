@@ -11,6 +11,14 @@
 상세  받지 않는다 — view.do 는 JS가 채우는 **빈 껍데기**다(115KB인데 공고 제목조차 없다).
 ```
 
+⚠️⚠️ **첨부는 아직 받지 못한다**(2026-08-05 실측). 목록 JSON이 `isFile`·`fileSeq`로 첨부 유무만
+알려주고(표본 20건 중 1건 — 글 104481·`fileSeq=27695`), **다운로드 경로를 못 찾았다**. 상세
+페이지는 JS 껍데기라 링크가 없고, 목록과 같은 `.ajax` 패턴 4가지를 시도해 전부 404였다
+(`article_file_list.ajax`·`file_list.ajax`·`file_download.do`·`common/file/download.do`).
+→ 추측 경로를 넣지 않는다. `has_attachment`로 **사실만 기록**하고 공고는 그대로 수집한다 —
+본문이 내용을 담고 있어 유실이 아니고, 운영자가 검수에서 `source_url`로 열 수 있다(SPEC §5).
+경로를 알게 되면 그때 채운다.
+
 ⚠️ 그래서 `NEEDS_DETAIL_REQUEST = False`다. 상세를 요청하면 글마다 쓸모없는 요청이 하나씩
 늘어난다(3개월 백필이면 수백 건). 본문은 `parse_list`가 `list_meta["_body_html"]`로 넘기고
 `parse_detail`이 텍스트로 바꾼다 — `_` 접두 키는 `collect`가 `raw_meta`에 저장하지 않는다
@@ -90,6 +98,8 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
             f"{SOURCE_KEY} {ref.external_id}: 목록에서 넘어온 본문이 없음 — `contents` 필드 확인"
         )
     fragment = parse_html(body_html)
+    # 본문 안의 파일 링크만 첨부로 삼는다 — 이 게시판의 첨부 영역은 목록 JSON의 `fileSeq`이고
+    # 그 다운로드 경로를 아직 모른다(모듈 docstring). `mailto:` 같은 것은 base가 걸러낸다.
     return RawPosting(
         ref=ref,
         raw_text=normalized_text(fragment),

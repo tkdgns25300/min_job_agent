@@ -135,3 +135,64 @@ def test_detail_body_is_the_colspan_cell_only(refs: tuple[PostingRef, ...]) -> N
     assert "글쓴이" not in raw.raw_text
     assert raw.image_urls == ()
     assert raw.attachments == ()
+
+
+# ── 첨부 ─────────────────────────────────────────────────────────
+
+
+def test_attachment_bearing_posting_is_measured(refs: tuple[PostingRef, ...]) -> None:
+    """첨부 있는 공고(42680 · `.hwp` 1건)로 셀렉터와 **URL 변환**을 고정한다(2026-08-05 실측).
+
+    ⚠️ 목록에 첨부 표시가 없어 교차 신호가 없다 — 이 못이 없으면 `td.file`이 바뀌어도
+    "본문 있으니 정상"으로 통과하고, 첨부에만 내용이 있는 공고를 통째로 잃는다.
+    """
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음 — `snapshot --url …&brd_no=42680`")
+    raw = kwangshin.parse_detail(path.read_text(encoding="utf-8"), refs[0])
+    assert [(a.name, a.url) for a in raw.attachments] == [
+        (
+            "260709- 지원자 서류양식.hwp",
+            "https://www.kwangshin.ac.kr/common/download.do?file_no=18745",
+        )
+    ]
+    # 파일명이 살아야 `is_image` 판정이 성립한다 — 여기서는 hwp라 False가 맞다.
+    assert raw.attachments[0].is_image is False
+
+
+def test_body_links_are_not_attachments(refs: tuple[PostingRef, ...]) -> None:
+    """⚠️ 본문의 교회 홈페이지 링크가 첨부로 새면 안 된다(표본 4/7건이 그랬다 · 2026-08-05).
+
+    첨부는 `td.file`에서만 온다. 본문에서 긁던 예전 코드의 회귀 방지.
+    """
+    body_link = (
+        '<table class="view_tb"><tr><td class="details" colspan="3">'
+        '<a href="http://osongch.kr/">http://osongch.kr</a> 지원 문의</td></tr></table>'
+    )
+    raw = kwangshin.parse_detail(body_link, refs[0])
+    assert raw.attachments == ()
+    assert "osongch" in raw.raw_text  # 본문 증거로는 남는다
+
+
+def test_a_file_row_without_links_is_rejected(refs: tuple[PostingRef, ...]) -> None:
+    """`td.file` 행이 있는데 링크가 없으면 셀렉터가 빗나간 것이다 — 조용한 0건으로 두지 않는다."""
+    broken = (
+        '<table class="view_tb"><tr><td class="details" colspan="3">본문</td></tr>'
+        '<tr><td class="file" colspan="3">첨부파일 <span>양식.hwp</span></td></tr></table>'
+    )
+    with pytest.raises(ParseError, match="첨부 링크가 없음"):
+        kwangshin.parse_detail(broken, refs[0])
+
+
+def test_a_file_link_without_the_js_call_is_rejected(refs: tuple[PostingRef, ...]) -> None:
+    """⚠️ 다운로드 URL도 href에 없다 — `javascript:download(N)`을 못 읽으면 실패해야 한다.
+
+    조용히 `javascript:…`를 URL로 저장하면 구조화가 첨부를 열지 못한다(KTS 실측 계열 사고).
+    """
+    changed = (
+        '<table class="view_tb"><tr><td class="details" colspan="3">본문</td></tr>'
+        '<tr><td class="file" colspan="3">첨부파일'
+        ' <span><a href="/common/other.do">양식.hwp</a></span></td></tr></table>'
+    )
+    with pytest.raises(ParseError, match="file_no를 못 뽑음"):
+        kwangshin.parse_detail(changed, refs[0])

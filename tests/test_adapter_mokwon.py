@@ -51,13 +51,14 @@ def _row(
     title: str = "가",
     date_text: str = "2026-05-18",
     row_class: str = "",
+    atch: str = "",
 ) -> str:
     attr = f' class="{row_class}"' if row_class else ""
     return (
         f'<tr{attr}><td class="ntt_no">{no}</td>'
         f'<td class="title"><a href="?mode=V&amp;no={ident}&amp;GotoPage=1">{title}</a></td>'
         f'<td class="wrt">윤**</td><td class="inq_cnt">88</td>'
-        f'<td class="reg_date">{date_text}</td><td class="atch_nm"></td></tr>'
+        f'<td class="reg_date">{date_text}</td><td class="atch_nm">{atch}</td></tr>'
     )
 
 
@@ -129,3 +130,54 @@ def test_detail_body_is_the_posting_content_only(refs: tuple[PostingRef, ...]) -
     # 이 공고는 본문만 있다(목록 `td.atch_nm`가 15행 전부 빈칸 · 실측).
     assert raw.attachments == ()
     assert raw.image_urls == ()
+
+
+def test_the_list_attachment_cell_is_the_cross_check_signal(source: SourceConfig) -> None:
+    """`td.atch_nm`가 상세 첨부 셀렉터를 검증하는 **독립 신호**다(2026-08-05 실측 8페이지).
+
+    빈 칸이면 `False`, 첨부가 있으면 PCMS가 이 `a > span.bd_file_icon`을 넣는다 — 아래 마크업은
+    실측본 그대로다. 이 판정이 죽으면 상세 셀렉터가 빗나가도 아무도 모른다.
+    """
+    icon = (
+        f'<a href="#DownList{_FIRST_ID}"'
+        f" onclick=\"DownloadFile('mt1954', 'mt1954_0602', '{_FIRST_ID}', '');\">"
+        '<span class="bd_file_icon icon04">첨부파일있음</span></a>'
+    )
+    marked = mokwon.parse_list(_list_html(_row(atch=icon)), source)
+    assert marked[0].list_meta["has_attachment"] is True
+    plain = mokwon.parse_list(_list_html(_row()), source)
+    assert plain[0].list_meta["has_attachment"] is False
+
+
+def test_attachment_bearing_posting_is_measured() -> None:
+    """첨부가 달린 실제 공고로 셀렉터를 고정한다(2026-08-05 실측 · `detail_file.html`).
+
+    ⚠️ 표본 공고에 첨부가 없으면 셀렉터가 틀려도 "정상인데 첨부 0개"로 통과한다 —
+    1·2·20페이지 45행이 전부 빈칸이라 8페이지까지 뒤져 첨부 있는 공고를 받았다.
+
+    ⚠️ **공고 카드(`div.bbs--view`)를 첨부 범위로 쓰면 안 된다** — 이 공고의 본문에는 교회
+    홈페이지와 `mailto:` 링크가 있어 카드 범위로는 첨부가 5개가 아니라 7개가 됐다(실측).
+    첨부는 본문의 형제인 `div.bbs--view--file`에서만 온다.
+    """
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음 — `--url ...?mode=V&no=8952a64d…cf57071a`")
+    ident = "8952a64d9f51a16c20a07301cf57071a"
+    ref = PostingRef(
+        external_id=ident,
+        url=f"https://mokwon.ac.kr/mt1954/html/sub06/0602.html?mode=V&no={ident}",
+        title="대전 보리떡교회에서 파트 교역자(청소년/청년부)를 모십니다.",
+        posted_on=date(2024, 11, 5),
+        list_meta={"has_attachment": True},
+    )
+    raw = mokwon.parse_detail(path.read_text(encoding="utf-8"), ref)
+    assert [found.name for found in raw.attachments] == [
+        "사역계획및비전.hwp",
+        "신앙간증문.hwp",
+        "이력서.hwp",
+        "자기소개서.hwp",
+        "목회자추천서.hwp",
+    ]
+    # 다운로드는 같은 파일의 `mode=D` + `file_id`다 — 본문 링크(홈페이지·mailto)가 섞이면 깨진다.
+    assert all(f"?mode=D&no={ident}&file_id=" in found.url for found in raw.attachments)
+    assert not any(found.is_image for found in raw.attachments)

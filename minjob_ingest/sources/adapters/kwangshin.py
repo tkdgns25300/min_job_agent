@@ -11,6 +11,7 @@
         td2  <span>2026.08.04</span>
         td3  <span>조회수 : 25</span>
 상세  /front/boardView.do?…&brd_no={id}
+      table.view_tb tr = 머리(tr.tbg) + 본문(td.details) + **첨부가 있으면** td.file
 ```
 
 ⚠️ **칸에 클래스가 없어 위치로 읽는다.** 그래서 칸 수를 먼저 확인한다 — 칸이 하나 늘면
@@ -21,15 +22,36 @@
 
 ⚠️ 상세 링크는 href가 아니라 `javascript:fView('42706')`이고 그 인자가 `brd_no`다 —
 href를 그대로 URL로 믿는 코드는 조용히 망가진다.
+
+## 첨부 실측(2026-08-05 · 7건 표본: 42680·42688·42694·42700·42702·42705 + detail.html)
+
+첨부 영역은 **`td.file`** 이고 첨부가 있는 공고에만 그 행이 생긴다(42680 = `.hwp` 1건).
+표본 7건 중 그 한 건뿐이라 목록에도 첨부 표시가 없어(아이콘 0개) 교차 신호가 없다 —
+그래서 **`td.file` 행이 있는데 링크를 못 뽑으면 실패**시켜 셀렉터 이상을 드러낸다.
+
+⚠️ 첨부 다운로드도 href가 아니라 `javascript:download(18745)`다. 실제 경로는
+`/common/download.do?file_no=18745`(`/js/n1Util.js`의 `download()` 실측) — 변환하지 않으면
+`javascript:…` 문자열이 URL로 저장돼 구조화가 첨부를 열 수 없다. 파일명은 링크 텍스트뿐이다.
+
+⚠️ **본문 안 링크는 첨부가 아니다.** 예전 코드가 `td.details`에서 첨부를 긁어 교회 홈페이지
+(`http://osongch.kr/`·`https://www.ygdch.com/`)가 첨부로 저장됐다(표본 4/7건) — 첨부는
+`td.file`에서만 온다. 본문에 붙여넣은 이미지는 `/userfiles/image/…`로 렌더되므로
+`image_urls`가 이미 담는다(42700 실측 — 본문이 "첨부파일로 참조바랍니다"라고만 쓰인 공고).
+
+⚠️ 형제 보드 CALVIN처럼 본문을 `data:image/png;base64` 하나로 내려주는 사례는 **없었다**
+(표본 7건 모두 `data:image` 0회 · 본문 텍스트 229~978자). 같은 `fView` 계열이지만 상세
+스킨이 다르다(CALVIN은 `div.box_board_detailcont`).
 """
 
 from __future__ import annotations
 
 import re
 from typing import Final
+from urllib.parse import urljoin
 
 from bs4 import Tag
 
+from minjob_ingest.models import Attachment
 from minjob_ingest.sources.adapters.base import (
     ListRequest,
     ParseError,
@@ -37,7 +59,6 @@ from minjob_ingest.sources.adapters.base import (
     RawPosting,
     as_int,
     as_listing,
-    attachments_in,
     cell_text,
     id_from_js,
     image_urls_in,
@@ -73,6 +94,13 @@ _PAGE_PARAM: Final = "page_now"
 #: 본문. 상세도 표 하나(`table.view_tb`)이고 제목·작성자 행 아래의 `colspan` 칸이 본문이다.
 #: 표 전체를 잡으면 제목·작성자·조회수가 `raw_text`에 섞여 구조화가 본문으로 오독한다.
 _BODY: Final = "td.details"
+#: 첨부 영역. **첨부가 있는 공고에만 이 행이 생긴다**(모듈 상단 첨부 실측 참조).
+_FILE_CELL: Final = "td.file"
+_FILE_LINK: Final = "a[href]"
+#: `javascript:download(18745)` → `file_no`.
+_FILE_NO: Final = re.compile(r"download\(\s*(\d+)\s*\)")
+#: 실제 다운로드 경로(`/js/n1Util.js`의 `download()` 실측).
+_DOWNLOAD_PATH: Final = "/common/download.do?file_no="
 
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
@@ -105,14 +133,40 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     raw_text = normalized_text(body)
     images = image_urls_in(body, base_url=ref.url)
-    # ⚠️ 첨부 범위를 **본문 안으로** 제한한다 — 별도 첨부 영역이 없는 게시판이라(실측) 밖으로
-    # 넓히면 페이지의 사이트 공용 링크가 첨부로 저장된다(DAESHIN 실측).
-    files = attachments_in(body, base_url=ref.url)
+    # ⚠️ 첨부는 `td.file`에서만 온다 — 본문에서 긁으면 교회 홈페이지가 첨부가 된다(모듈 상단).
+    files = _attachments(soup.select_one(_FILE_CELL), base_url=ref.url)
     if not raw_text and not images and not files:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
         )
     return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+
+
+def _attachments(cell: Tag | None, *, base_url: str) -> tuple[Attachment, ...]:
+    """`td.file` 안의 다운로드 링크 → (파일명, 절대 URL).
+
+    URL이 href에 없다 — `javascript:download(<file_no>)`를 실제 경로로 바꾼다(모듈 상단).
+    행이 있는데 링크를 하나도 못 뽑으면 **실패시킨다**: 목록에 첨부 표시가 없어 교차 신호가
+    없으므로, 조용히 빈 목록을 돌려주면 첨부만 있는 공고를 통째로 잃고도 아무도 모른다.
+    """
+    if cell is None:
+        return ()
+    found: list[Attachment] = []
+    for link in cell.select(_FILE_LINK):
+        href = str(link.get("href") or "")
+        matched = _FILE_NO.search(href)
+        if matched is None:
+            raise ParseError(f"{SOURCE_KEY}: 첨부 링크에서 file_no를 못 뽑음 ({href[:60]!r})")
+        name = link.get_text(" ", strip=True) or f"file_{matched.group(1)}"
+        found.append(
+            Attachment(name=name, url=urljoin(base_url, _DOWNLOAD_PATH + matched.group(1)))
+        )
+    if not found:
+        raise ParseError(
+            f"{SOURCE_KEY}: `{_FILE_CELL}` 행은 있는데 첨부 링크가 없음 —"
+            f" 셀렉터 `{_FILE_LINK}` 확인(사이트 개편 의심)"
+        )
+    return tuple(found)
 
 
 def _cells(row: Tag) -> list[Tag]:

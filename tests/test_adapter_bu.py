@@ -136,3 +136,37 @@ def test_links_inside_the_body_are_not_attachments(refs: tuple[PostingRef, ...])
     raw = bu.parse_detail((_FIXTURES / "detail.html").read_text(encoding="utf-8"), refs[0])
     assert raw.attachments == ()
     assert refs[0].list_meta["has_attachment"] is False
+
+
+def test_attachment_bearing_posting_is_measured() -> None:
+    """첨부가 달린 실제 공고로 셀렉터를 고정한다(2026-08-05 실측 · `detail_file.html`).
+
+    ⚠️ 표본 공고에 첨부가 없으면 셀렉터가 틀려도 "정상인데 첨부 0개"로 통과한다 —
+    그래서 첨부 있는 공고를 따로 받아 여기서 못을 박는다.
+
+    ⚠️ **이 게시판에서 첨부를 가진 것은 고정공지뿐이다**(공고 40건 표본 0건 · 어댑터 docstring).
+    공지는 `parse_list`가 걸러내므로 ref를 손으로 만든다 — 그래서 `has_attachment` 대조가
+    성립하는 방향(표시 있음 + 첨부 있음)도 여기서 같이 확인된다.
+
+    ⚠️ 셀렉터의 `div.artclItem.viewForm` 한정이 **빠지면 안 된다** — 이전글·다음글도 같은
+    `dd.artclInsert`이고 `javascript:jf_naviArtclView(...)`를 href로 갖는다(실측). 한정을 지우면
+    첨부가 3개로 늘고 그 중 2개가 다운로드할 수 없는 JS 호출이 된다.
+    """
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음 — `--url .../graduateschool/1110/56059/artclView.do`")
+    ref = PostingRef(
+        external_id="56059",
+        url="https://community.bu.ac.kr/bbs/graduateschool/1110/56059/artclView.do",
+        title="백석ABA센터 연구원 모집 공고",
+        posted_on=date(2026, 4, 13),
+        list_meta={"has_attachment": True},
+    )
+    raw = bu.parse_detail(path.read_text(encoding="utf-8"), ref)
+    assert len(raw.attachments) == 1, "이전글·다음글이 첨부로 섞였다"
+    only = raw.attachments[0]
+    assert only.name == "백석ABA센터 연구원 지원양식.hwp"
+    # ⚠️ 다운로드 URL의 숫자는 **글번호가 아니라 파일 id**다(글 56059 / 파일 54200) —
+    # 글번호로 착각해 URL을 재조립하면 엉뚱한 파일을 받는다.
+    assert only.url == "https://community.bu.ac.kr/bbs/graduateschool/1110/54200/download.do"
+    assert only.is_image is False  # HWP를 Gemini에 이미지로 보내지 않는다

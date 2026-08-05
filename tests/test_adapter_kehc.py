@@ -140,3 +140,30 @@ def test_detail_body_is_data_content_and_not_the_embedded_list(
     assert "94년의 역사를 이어온" in raw.raw_text
     assert "청빙 게시글에 대한 참고내용" not in raw.raw_text  # 아래 목록의 공지
     assert raw.attachments == ()
+
+
+def test_attachment_bearing_posting_is_measured() -> None:
+    """첨부가 달린 실제 공고로 셀렉터를 고정한다(2026-08-05 실측 · `detail_file.html` = 27468).
+
+    ⚠️ **목록에 첨부 표시 칸이 없다** — `require_attachment_evidence` 대조를 걸 수 없어
+    셀렉터가 빗나가면 "정상인데 첨부 0개"로 조용히 통과한다. 이 테스트가 유일한 방어선이다.
+
+    ⚠️ 사이드바·푸터에 사이트 공용 파일 링크(`/home/pdfdownload` "헌법유권해석집")가 **모든
+    상세에** 있다 — 첨부 범위를 `#attachFileList` 밖으로 넓히면 전 공고에 가짜 첨부가 붙는다.
+    """
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음 — `--url https://kehc.org/home/recruit/read_post/27468`")
+    ref = PostingRef(
+        external_id="27468",
+        url="https://kehc.org/home/recruit/read_post/27468",
+        title="총회본부 직원 공개채용",
+        posted_on=date(2026, 6, 12),
+    )
+    raw = kehc.parse_detail(path.read_text(encoding="utf-8"), ref)
+    assert len(raw.attachments) == 1, "사이트 공용 파일 링크가 첨부로 섞였다"
+    only = raw.attachments[0]
+    # 파일명은 앵커 텍스트 그대로다(업로드 당시 공백이 `+`로 남아 있다 — 손대지 않는다).
+    assert only.name == "20260613-총회본부+직원+공개채용.hwp"
+    assert only.url == "https://kehc.org/home/recruit/board/download_file/8211"
+    assert only.is_image is False

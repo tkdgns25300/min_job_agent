@@ -138,3 +138,91 @@ def test_skin_footer_is_not_mistaken_for_content(refs: tuple[PostingRef, ...]) -
     raw = sts.parse_detail((_FIXTURES / "detail.html").read_text(encoding="utf-8"), refs[0])
     assert all("icon_sns" not in url for url in raw.image_urls)
     assert "SNS내보내기" not in raw.raw_text
+
+
+# ── 첨부 ─────────────────────────────────────────────────────────
+
+
+def test_the_list_marks_which_postings_have_files(refs: tuple[PostingRef, ...]) -> None:
+    """✅ 목록에 첨부 표시(`disk.png`·`photo.png`)가 있다 — 상세 셀렉터를 대조하는 독립 신호다.
+
+    실측 1페이지 15건 중 4건. 신호가 사라지면 첨부 유실을 아무도 못 잡는다.
+    """
+    flagged = [ref.external_id for ref in refs if ref.list_meta.get("has_attachment")]
+    assert flagged == ["7250", "7238", "7228", "7213"]
+
+
+def test_image_only_posting_keeps_its_attachments(refs: tuple[PostingRef, ...]) -> None:
+    """첨부 있는 공고(7250)로 셀렉터·URL 변환을 고정한다(2026-08-05 실측).
+
+    ⚠️ **본문 텍스트가 0자다** — 내용이 이미지 1장뿐인 공고라(운영자 관찰: 같은 게시판에
+    텍스트 공고와 이미지 공고가 섞인다) 첨부를 놓치면 공고를 통째로 잃는다.
+    """
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음 — `snapshot --url …&boardID=www38&num=7250`")
+    target = next(ref for ref in refs if ref.external_id == "7250")
+    raw = sts.parse_detail(path.read_text(encoding="utf-8"), target)
+    assert raw.raw_text == ""
+    assert [(a.name, a.url, a.is_image) for a in raw.attachments] == [
+        (
+            "순복음수지교회 교역자 지원서 양식.hwp",
+            "https://sts.ac.kr/core/anyboard/download.php?boardID=www38&fileNum=3161",
+            False,
+        ),
+        (
+            "순복음수지교회 모집 공고.jpg",
+            "https://sts.ac.kr/core/anyboard/download.php?boardID=www38&fileNum=3163",
+            True,
+        ),
+    ]
+    # 본문에 인라인으로도 렌더된다 — 그쪽은 원본 크기라 증거로 남긴다.
+    assert raw.image_urls == ("https://sts.ac.kr/user/saveDir/board/www38/7250_1767326987_0.jpg",)
+
+
+def test_the_file_area_ui_never_becomes_content(refs: tuple[PostingRef, ...]) -> None:
+    """⚠️ 첨부 영역이 **본문 안**이라 걷어내지 않으면 UI가 본문·이미지·첨부로 새어든다(실측).
+
+    예전 코드는 `[ 첨부파일 일괄 다운로드 ]`·`[첨부파일 N개 ]` 버튼을 첨부로 저장하고
+    스킨 아이콘 4개를 본문 이미지로 저장했다.
+    """
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음")
+    target = next(ref for ref in refs if ref.external_id == "7250")
+    raw = sts.parse_detail(path.read_text(encoding="utf-8"), target)
+    assert all("첨부파일" not in a.name for a in raw.attachments)
+    assert all(url.startswith("javascript:") is False for a in raw.attachments for url in (a.url,))
+    assert all("addfile" not in url and "bul_arrow" not in url for url in raw.image_urls)
+
+
+def test_a_flagged_posting_without_attachments_is_an_error() -> None:
+    """목록이 "첨부 있음"이라 했는데 못 찾으면 셀렉터가 빗나간 것이다 — 조용히 통과시키지 않는다.
+
+    본문 인라인 이미지를 증거로 세지 않는다 — 첨부 이미지가 본문에도 렌더되므로 그것까지
+    인정하면 파일 목록이 깨져도 통과해 `.hwp`를 조용히 잃는다.
+    """
+    flagged = PostingRef(
+        external_id="7238",
+        url="https://sts.ac.kr/main/sub.html?Mode=view&boardID=www38&num=7238",
+        title="첨부 있는 공고",
+        list_meta={"has_attachment": True},
+    )
+    with pytest.raises(ParseError, match="첨부 표시가 있는데"):
+        sts.parse_detail((_FIXTURES / "detail.html").read_text(encoding="utf-8"), flagged)
+
+
+def test_a_file_link_without_the_js_call_is_rejected(refs: tuple[PostingRef, ...]) -> None:
+    """⚠️ 다운로드 URL이 href에 없다 — `fileDown('n')`을 못 읽으면 실패해야 한다.
+
+    조용히 `javascript:…`를 저장하면 구조화가 첨부를 열지 못한다.
+    """
+    changed = (
+        '<input name="boardID" value="www38">'
+        '<div class="mdView_cont"><ul><div class="mdView_file">'
+        "<a href=\"javascript:anyboard.fileListCheck('7250');\">[ 첨부파일 일괄 다운로드 ]</a>"
+        '<div id="AB_viewFileLayer"><a href="/core/anyboard/other.php">양식.hwp</a></div>'
+        "</div></ul></div>"
+    )
+    with pytest.raises(ParseError, match="fileNum을 못 뽑음"):
+        sts.parse_detail(changed, refs[0])

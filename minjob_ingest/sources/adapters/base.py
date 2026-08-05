@@ -201,19 +201,72 @@ def attachments_in(container: Tag | None, *, base_url: str) -> tuple[Attachment,
     (실측). 미리보기만 보면 비이미지 첨부를 통째로 잃는다.
 
     링크 텍스트를 파일명으로 쓴다 — 다운로드 URL에는 파일명이 없다(`/download/…/57439f…`).
+    ⚠️ 이름을 **정리해서** 쓴다(`_clean_attachment_name` 참조) — 게시판이 파일명 뒤에 크기를
+    붙이면 확장자가 끝에 오지 않아 `is_image`가 조용히 거짓이 된다.
     """
     if container is None:
         return ()
     found = []
     for link in container.select("a[href]"):
         href = str(link.get("href") or "").strip()
-        if not href:
+        if not href or _is_not_a_file(href):
             continue
         # 링크 텍스트가 비면 **버리지 않고** URL 끝에서 파일명을 복원한다 — 조용히 버리면
         # 파일명이 앵커 밖으로 나가는 개편 한 번에 첨부가 전량 유실된다.
-        name = link.get_text(" ", strip=True) or _filename_from(href)
+        # 링크 텍스트 → `title`(파일명 형태일 때만) → URL 순서. 조용히 버리지 않는다 —
+        # 파일명이 앵커 밖으로 나가는 개편 한 번에 첨부가 전량 유실된다.
+        name = (
+            _clean_attachment_name(link.get_text(" ", strip=True))
+            or _filename_like(str(link.get("title") or ""))
+            or _filename_from(href)
+        )
         found.append(Attachment(name=name, url=urljoin(base_url, href)))
     return tuple(found)
+
+
+#: 첨부일 수 없는 링크. ⚠️ **본문에 첨부 영역이 섞여 있는 게시판**에서 이게 첨부로 저장된다 —
+#: HANIL은 본문의 지원 문의 `mailto:`가 첨부 4건으로 잡혀 있었고(2026-08-05 실측), 그 상태로
+#: 구조화가 "첨부 파일"을 열려 하면 아무것도 못 받는다. 어떤 게시판에서도 파일이 아니다.
+_NOT_A_FILE_SCHEMES: Final = ("mailto:", "tel:", "sms:", "javascript:")
+
+
+def _is_not_a_file(href: str) -> bool:
+    """다운로드할 수 없는 링크인가.
+
+    `javascript:`도 막는다 — 그대로 저장하면 열 수 없는 URL이 증거로 남는다. JS 다운로드를
+    쓰는 게시판은 어댑터가 **실제 경로로 변환한 뒤** 넘긴다(KWANGSHIN·STS·PCK·HAPSHIN 실측).
+    """
+    return href.startswith("#") or href.lower().startswith(_NOT_A_FILE_SCHEMES)
+
+
+#: 파일명 뒤에 붙는 크기 표기. `이력서.hwp (33.50 KB)` 같은 형태다(HTUS·HAPSHIN·KBTUS 실측).
+#: 단위 `B`를 **요구한다** — `(2)`처럼 파일명의 일부일 수 있는 괄호를 떼지 않으려는 것이다.
+_SIZE_SUFFIX: Final = re.compile(r"\s*\(\s*[\d.,]+\s*[KMGT]?B\s*\)\s*$", re.IGNORECASE)
+
+
+def _filename_like(text: str) -> str:
+    """파일명처럼 보이면 그 값, 아니면 빈 문자열.
+
+    ⚠️ `title` 속성을 무조건 쓰면 안 된다 — 파일명을 담는 게시판도 있지만(MOKWON) `내려받기`
+    같은 **일반 라벨**을 담는 게시판도 있다(KBTUS 실측). 라벨을 파일명으로 저장하면 확장자가
+    없어져 `is_image`가 거짓이 되고, URL에서 복원할 기회까지 잃는다.
+    """
+    cleaned = _clean_attachment_name(text)
+    return cleaned if _FILENAME_PATTERN.search(cleaned) else ""
+
+
+def _clean_attachment_name(text: str) -> str:
+    """링크 텍스트에서 **파일명만** 남긴다.
+
+    ⚠️ 이걸 안 하면 `is_image`가 조용히 거짓이 되고, 구조화가 이미지 첨부를 Gemini에 보내지
+    않는다 — 내용이 이미지뿐인 공고는 그대로 유실된다. 확장자가 이름 **끝**에 와야 판정된다.
+
+    두 가지를 걷어낸다(3개 게시판에서 각각 자체 구현하던 것을 모았다):
+    앵커 안이 `<img>` + 파일명 + nbsp·줄바꿈·탭 + 크기 **한 덩어리**인 경우의 내부 공백(KBTUS),
+    그리고 끝에 붙은 크기 표기(HTUS·HAPSHIN).
+    """
+    collapsed = " ".join(text.split())
+    return _SIZE_SUFFIX.sub("", collapsed).strip()
 
 
 #: 파일명으로 인정할 확장자 — `is_image` 판정과 "Gemini에 보낼지"가 여기 달려 있다.
