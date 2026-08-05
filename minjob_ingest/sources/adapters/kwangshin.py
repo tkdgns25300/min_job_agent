@@ -135,10 +135,6 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     images = image_urls_in(body, base_url=ref.url)
     # ⚠️ 첨부는 `td.file`에서만 온다 — 본문에서 긁으면 교회 홈페이지가 첨부가 된다(모듈 상단).
     files = _attachments(soup.select_one(_FILE_CELL), base_url=ref.url)
-    if not raw_text and not images and not files:
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
-        )
     return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
 
 

@@ -265,6 +265,16 @@ class SourceData:
         return self.structured_at is not None
 
     @property
+    def is_empty(self) -> bool:
+        """구조화에 넣을 증거가 하나도 없는가(본문·이미지·첨부 전무).
+
+        게시판에는 **내용 없이 올라온 글이 실제로 있다**(YTUS 25309 = `<p>&nbsp;</p>` · 실측).
+        그건 수집 실패가 아니라 사실이므로 저장하되, 구조화는 이런 행에 Gemini를 호출하지
+        않는다(빈 입력에 돈을 쓰는 것이고 결과는 게이트1 탈락이다).
+        """
+        return not self.raw_text.strip() and not self.image_urls and not self.attachments
+
+    @property
     def needs_restructure(self) -> bool:
         """다음 run이 다시 구조화해야 하는가. 시도 상한을 넘긴 건 제외한다."""
         return not self.has_verdict and self.structure_attempts < MAX_STRUCTURE_ATTEMPTS

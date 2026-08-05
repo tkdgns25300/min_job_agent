@@ -14,6 +14,7 @@ import pytest
 
 from minjob_ingest.sources.adapters import csu
 from minjob_ingest.sources.adapters.base import ParseError, PostingRef
+from minjob_ingest.sources.adapters.csu import _BODY_FIELD
 from minjob_ingest.sources.adapters.registry import needs_detail_request
 from minjob_ingest.sources.registry import SourceConfig, find_source, load_sources
 
@@ -146,3 +147,100 @@ def test_attachments_keep_their_filenames(refs: tuple[PostingRef, ...]) -> None:
 def test_passing_detail_html_is_rejected(refs: tuple[PostingRef, ...]) -> None:
     with pytest.raises(ParseError, match="상세 HTML이 넘어왔다"):
         csu.parse_detail("<html>...</html>", refs[0])
+
+
+# ── 포스터만 있는 공고 · includeBody 감지 ────────────────────────
+
+
+def _payload(body: str | None, *, with_body_key: bool = True, attachment: str | None = None) -> str:
+    """최소 목록 응답. **실제 응답을 쓰지 않는다** — 작성자 본인인증 정보가 들어 있다."""
+    row: dict[str, object] = {
+        "id": 1117808,
+        "title": "성실교회 중등부에서 동역자를 모십니다.",
+        "registered_date": "2026-08-03 20:16:51",
+        "view_count": 12,
+        "attachment_count": 1 if attachment else 0,
+        "properties": {"church_name": "성실교회", "order_name": "합동"},
+    }
+    if attachment:
+        row["attachment_list"] = [
+            {"original_filename": attachment, "url": f"board/202608//{attachment}"}
+        ]
+    if with_body_key:
+        row[_BODY_FIELD] = body
+    return json.dumps({"code": 10000, "body": {"total_count": 1, "list": [row]}})
+
+
+def test_a_poster_only_posting_is_collected(source: SourceConfig) -> None:
+    """⚠️ **이것 때문에 공고를 버렸다**(2026-08-05 · 실측 1117808 성실교회).
+
+    본문이 포스터 이미지 한 장뿐인 공고가 흔하다. 증거 판정에서 이미지를 빼먹어 `본문과 첨부가
+    모두 없음`으로 탈락시켰다 — 나머지 29곳은 처음부터 **본문·이미지·첨부 셋을** 본다.
+    내용은 포스터에 있고 구조화가 Gemini 멀티모달로 읽는다(SPEC §5).
+    """
+    poster = '<p><img src="/api/file/get?path=html_editor/202608//8748ae55.png"></p>'
+    refs = csu.parse_list(_payload(poster), source)
+    raw = csu.parse_detail("", refs[0])
+    assert raw.raw_text == ""  # 포스터 공고는 빈 본문이 정상이다
+    assert raw.image_urls == (
+        "https://csu.ac.kr/api/file/get?path=html_editor/202608//8748ae55.png",
+    )
+
+
+def test_a_page_with_no_body_at_all_is_a_source_failure(source: SourceConfig) -> None:
+    """⚠️ `includeBody`가 먹지 않으면 서버는 빈 문자열이 아니라 **키를 뺀다**(실측 `includeBody=0`).
+
+    한 행도 본문을 안 주면 그 게시판 본문이 전량 유실된다 — 조용히 성공으로 흘리면 안 된다.
+    """
+    with pytest.raises(ParseError, match="includeBody"):
+        csu.parse_list(_payload(None, with_body_key=False), source)
+
+
+def test_one_row_without_a_body_key_is_normal(source: SourceConfig) -> None:
+    """⚠️⚠️ **행 단위로 판정하면 정상 공고 하나가 게시판 전체를 죽인다.**
+
+    이 API는 값이 null인 키를 응답에서 뺀다(실측 40건 중 1건 — 이스탄불한인교회). 그 공고는
+    내용을 첨부와 `properties`에 담고 있어 정상이다. 처음에 행 단위로 넣었다가 실측에서
+    바로 드러났다(2026-08-05).
+    """
+    rows = json.loads(_payload("<p>본문</p>"))
+    rows["body"]["list"].append(
+        {
+            "id": 1117810,
+            "title": "튀르키예 이스탄불한인교회에서 담임목사님을 청빙합니다.",
+            "registered_date": "2026-08-03 21:50:00",
+            "attachment_count": 1,
+            "attachment_list": [
+                {"original_filename": "poster.jpeg", "url": "board/202608//f1e464d7.jpeg"}
+            ],
+            "properties": {"church_name": "이스탄불 한인교회", "order_name": "초교파"},
+        }
+    )
+    refs = csu.parse_list(json.dumps(rows), source)
+    assert len(refs) == 2
+    raw = csu.parse_detail("", refs[1])
+    assert [a.name for a in raw.attachments] == ["poster.jpeg"]
+
+
+def test_an_empty_posting_is_a_fact_not_a_failure(source: SourceConfig) -> None:
+    """내용이 전무한 글도 저장한다 — 실패로 두면 매 실행 다시 받고 매번 실패로 보고된다.
+
+    셀렉터·파라미터가 깨진 경우는 `_require_body_field`(페이지 전량)와 `collect`의 소스 단위
+    전량 빈 내용 판정이 잡는다.
+    """
+    refs = csu.parse_list(_payload("<p>&nbsp;</p>"), source)
+    raw = csu.parse_detail("", refs[0])
+    assert raw.raw_text == ""
+    assert raw.attachments == ()
+
+
+def test_an_empty_body_is_not_mistaken_for_a_broken_parameter(source: SourceConfig) -> None:
+    """⚠️ 빈 본문과 "`includeBody`가 깨졌다"는 **다른 사건**이다.
+
+    빈 문자열로 판정하면 첨부만 있는 정상 공고 하나가 **게시판 전체를 실패시킨다**(목록 단계
+    실패는 소스 격리로 올라간다). 서버는 파라미터가 안 먹을 때 키를 빼므로 키 유무로 가른다.
+    """
+    refs = csu.parse_list(_payload("", attachment="공고문.pdf"), source)
+    raw = csu.parse_detail("", refs[0])
+    assert [a.name for a in raw.attachments] == ["공고문.pdf"]
+    assert raw.raw_text == ""

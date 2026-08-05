@@ -31,6 +31,7 @@ board_id  하드코딩하지 않아도 된다: POST /api/website/getMenu {id:111
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import date
 from typing import Final
 from urllib.parse import urljoin
@@ -60,6 +61,8 @@ _LIST_API: Final = "/api/user/board/getBoardContentSummaryList"
 _BOARD_ID: Final = "178"
 _PER_PAGE: Final = 10
 _SUCCESS_CODE: Final = 10000
+#: 응답에서 본문이 담겨 오는 칸. `includeBody=1`이 먹으면 **있고, 아니면 키가 없다**(실측).
+_BODY_FIELD: Final = "body"
 #: 목록 JSON이 본문을 넘기는 통로. `_` 접두라 `collect`가 `raw_meta`에 저장하지 않는다.
 _BODY_KEY: Final = "_body_html"
 #: 첨부 목록이 `parse_detail`로 건너가는 통로(같은 이유로 `_` 접두).
@@ -111,6 +114,7 @@ def list_request(source: SourceConfig, page: int) -> ListRequest:
 def parse_list(text: str, source: SourceConfig) -> tuple[PostingRef, ...]:
     """목록 JSON → 공고 참조들. 고정공지(`is_always_on_top`)는 제외한다."""
     rows = _require_rows(text)
+    _require_body_field(rows)
     refs = [_ref_from_row(row, source) for row in rows if not _is_pinned(row)]
     if rows and not refs:
         raise ParseError(
@@ -130,17 +134,15 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     if not isinstance(body_html, str):
         raise ParseError(f"{SOURCE_KEY} {ref.external_id}: 목록에서 본문이 넘어오지 않음")
     fragment = parse_html(body_html)
+    images = image_urls_in(fragment, base_url=ref.url)
     attachments = _attachments_of(ref)
     raw_text = normalized_text(fragment)
-    if not raw_text and not attachments:
-        # 본문이 비고 첨부도 없으면 증거가 없다 — `includeBody`가 꺼졌을 때 이렇게 된다.
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 본문과 첨부가 모두 없음 — `includeBody` 확인"
-        )
+    # ⚠️ **이미지도 증거다.** 본문이 포스터 한 장뿐인 공고가 흔하다(실측 1117808 — 성실교회).
+    # 이걸 빼먹어 그런 공고를 "증거 없음"으로 버렸다(2026-08-05). 나머지 29곳은 셋을 다 본다.
     return RawPosting(
         ref=ref,
         raw_text=raw_text,
-        image_urls=image_urls_in(fragment, base_url=ref.url),
+        image_urls=images,
         attachments=attachments,
     )
 
@@ -159,6 +161,23 @@ def _attachments_of(ref: PostingRef) -> tuple[Attachment, ...]:
         if isinstance(pair, list) and len(pair) == 2
     )
     return attachments_in(parse_html(links), base_url=ref.url)
+
+
+def _require_body_field(rows: Sequence[dict[str, object]]) -> None:
+    """`includeBody`가 먹었는지 **페이지 단위로** 확인한다.
+
+    ⚠️ **행 하나에 `body` 키가 없는 것은 정상이다** — 이 API는 값이 null인 키를 응답에서
+    빼고(실측 40건 중 1건), 그 공고는 내용을 첨부·`properties`에 담고 있다. 그래서 행 단위로
+    판정하면 정상 공고 하나가 게시판 전체를 실패시킨다.
+
+    반대로 **한 행도** 본문을 주지 않으면 파라미터가 깨진 것이다(실측: `includeBody=0`이면 전
+    행에서 키가 사라진다). 그건 게시판 전체의 본문 유실이라 조용히 넘기면 안 된다.
+    """
+    if rows and not any(_BODY_FIELD in row for row in rows):
+        raise ParseError(
+            f"{SOURCE_KEY}: 목록 {len(rows)}행 전부에 `{_BODY_FIELD}` 키가 없음 —"
+            f" `includeBody=1`이 먹지 않았다(파라미터 이름·Content-Type charset 확인)"
+        )
 
 
 def _is_pinned(row: dict[str, object]) -> bool:
@@ -195,7 +214,7 @@ def _ref_from_row(row: dict[str, object], source: SourceConfig) -> PostingRef:
         "list_date": _text(row, "registered_date") or None,
         "views": as_int(_text(row, "view_count")),
         "has_attachment": bool(as_int(_text(row, "attachment_count"))),
-        _BODY_KEY: _text(row, "body"),
+        _BODY_KEY: _text(row, _BODY_FIELD),
         _ATTACHMENTS_KEY: _attachment_pairs(row),
     }
     meta.update(_public_properties(row))

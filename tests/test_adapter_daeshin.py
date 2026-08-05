@@ -125,11 +125,45 @@ def test_detail_body_is_the_content_cell(refs: tuple[PostingRef, ...]) -> None:
     assert len(raw.image_urls) == 1
 
 
-def test_site_wide_footer_file_is_not_an_attachment(refs: tuple[PostingRef, ...]) -> None:
-    """⚠️ 페이지 푸터에 사이트 공용 `.hwp`가 있고 상세 표에는 PREV/NEXT 링크가 있다.
+def test_attachments_come_from_the_upload_path(refs: tuple[PostingRef, ...]) -> None:
+    """첨부는 **업로드 경로**(`/upfile/board/`)로 판정한다 — 셀렉터로는 구분되지 않는다.
 
-    첨부 범위를 본문 밖으로 넓히면 그것들이 첨부로 저장돼, 구조화가 엉뚱한 파일을 읽는다.
+    ⚠️ 첨부 칸도 본문 칸도 이전글/다음글 칸도 모두 `td.last`를 공유한다(실측). 그래서 경로로
+    가른다. 푸터의 사이트 공용 파일은 `/upfile/data/`라 경로가 달라 자연히 빠진다.
     """
     raw = daeshin.parse_detail((_FIXTURES / "detail.html").read_text(encoding="utf-8"), refs[0])
-    assert raw.attachments == ()
+    assert [a.name for a in raw.attachments] == ["2027+경산중앙교회+이력서+및+자기소개서.hwp"]
+    assert all("/upfile/board/" in a.url for a in raw.attachments)
+    assert all("장학금기탁서" not in a.url for a in raw.attachments)
     assert all("장학금기탁서" not in url for url in raw.image_urls)
+
+
+def test_body_links_are_not_attachments() -> None:
+    """⚠️ 본문에는 교회 홈페이지 링크가 흔하다 — 첨부로 저장하면 구조화가 파일로 열려 한다.
+
+    실제로 그 상태에서 교회가 `]`를 잘못 넣은 주소(`http://www.daechun.or.kr]/`)가
+    `urljoin`을 터뜨려 **수집 전체가 중단됐다**(2026-08-05 · 첫 게시판 37번째 글).
+    """
+    path = _FIXTURES / "detail_badurl.html"
+    if not path.exists():
+        pytest.skip("detail_badurl.html 없음")
+    html = path.read_text(encoding="utf-8")
+    assert "daechun.or.kr]" in html, "이 fixture의 요점인 잘못된 주소가 사라졌다"
+    ref = PostingRef(
+        external_id="0001537199999999",
+        url="https://daeshin.ac.kr/html/05_community/03.php?AT=V&b_id=0001537199999999",
+        title="경산 대천교회에서 함께할 동역자를 정중히 모십니다",
+    )
+    raw = daeshin.parse_detail(html, ref)
+    assert raw.attachments == ()  # 본문의 교회 홈페이지는 첨부가 아니다
+    assert raw.raw_text  # 공고는 그대로 수집된다
+
+
+def test_a_posting_with_two_attachments_is_read(refs: tuple[PostingRef, ...]) -> None:
+    """첨부 2건인 실제 공고로 고정한다(2026-08-05 실측 · 무열대교회)."""
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음")
+    raw = daeshin.parse_detail(path.read_text(encoding="utf-8"), refs[0])
+    assert len(raw.attachments) == 2
+    assert all(a.name.endswith(".hwp") for a in raw.attachments)

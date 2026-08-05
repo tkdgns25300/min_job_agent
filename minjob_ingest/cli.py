@@ -13,6 +13,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
+from typing import Final
 from uuid import UUID
 
 from minjob_ingest.clock import utc_now
@@ -20,7 +21,7 @@ from minjob_ingest.console import Console, ProgressLine
 from minjob_ingest.domain import CrawlMode
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.lib.gemini import GeminiClient, GeminiError
-from minjob_ingest.models import SourceHealth
+from minjob_ingest.models import CrawlRun, SourceHealth
 from minjob_ingest.paths import PROJECT_ROOT
 from minjob_ingest.pipeline.collect import (
     DEFAULT_MONTHS,
@@ -120,7 +121,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _run_collect(
             config_path=Path(str(config_value)) if config_value is not None else None,
             only=str(args.source) if args.source is not None else None,
-            months=int(args.months) or None,
+            months=None if args.days is not None else (int(args.months) or None),
+            days=int(args.days) if args.days is not None else None,
             dry_run=bool(args.dry_run),
             verbose=bool(args.verbose),
         )
@@ -134,6 +136,7 @@ def _run_collect(
     config_path: Path | None,
     only: str | None,
     months: int | None,
+    days: int | None,
     dry_run: bool,
     verbose: bool,
 ) -> int:
@@ -144,7 +147,7 @@ def _run_collect(
     """
     console = Console()
     with _console_logging(console, verbose=verbose):
-        return _collect_all(console, config_path, only, months=months, dry_run=dry_run)
+        return _collect_all(console, config_path, only, months=months, days=days, dry_run=dry_run)
 
 
 def _collect_all(
@@ -153,6 +156,7 @@ def _collect_all(
     only: str | None,
     *,
     months: int | None,
+    days: int | None,
     dry_run: bool,
 ) -> int:
     sources = _collect_targets(load_sources(config_path), only)
@@ -163,31 +167,55 @@ def _collect_all(
     failures: dict[str, str] = {}
     saved_total = 0
     states: list[SourceHealth] = []
-    for source in sources:
-        report = _collect_one(
-            console,
-            source,
-            store,
-            run_id=None if run is None else run.id,
-            options=CollectOptions(months=months, dry_run=dry_run),
-            failures=failures,
-            states=states,
-        )
-        if report is not None:
-            saved_total += report.saved
-            _print_report(console, report, dry_run=dry_run)
-
-    if run is not None:
-        store.finish_run(
-            run.finish(
-                sources_ok=len(sources) - len(failures),
-                sources_failed=len(failures),
-                new_count=saved_total,
-                error_detail=failures,
+    # ⚠️ `finally`가 필요하다: 예상 못 한 예외·Ctrl-C가 실행 기록을 **열린 채**(`finished_at`
+    # null) 남기면 그 run은 영구히 미완으로 보이고 `status`가 거짓말을 한다(2026-08-05 실측).
+    try:
+        for source in sources:
+            report = _collect_one(
+                console,
+                source,
+                store,
+                run_id=None if run is None else run.id,
+                options=CollectOptions(months=months, days=days, dry_run=dry_run),
+                failures=failures,
+                states=states,
             )
-        )
+            if report is not None:
+                saved_total += report.saved
+                _print_report(console, report, dry_run=dry_run)
+    except BaseException as err:
+        if run is not None:
+            failures[_ABORTED] = f"{type(err).__name__}: {err}"
+            _finish(store, run, sources, failures, saved_total)
+        raise
+    else:
+        if run is not None:
+            _finish(store, run, sources, failures, saved_total)
     _print_summary(console, len(sources), failures, saved_total, states, dry_run=dry_run)
     return 1 if failures else 0
+
+
+#: 중단 사유를 담는 `error_detail` 키. `source_key`와 겹치지 않게 소문자·밑줄로 둔다.
+_ABORTED: Final = "_aborted"
+
+
+def _finish(
+    store: JsonStore,
+    run: CrawlRun,
+    sources: Sequence[SourceConfig],
+    failures: Mapping[str, str],
+    saved_total: int,
+) -> None:
+    """실행 기록을 닫는다. 소스 실패 수는 `error_detail`이 아니라 **소스 키 수**로 센다."""
+    failed_keys = {key for key in failures if key != _ABORTED}
+    store.finish_run(
+        run.finish(
+            sources_ok=len(sources) - len(failed_keys),
+            sources_failed=len(failed_keys),
+            new_count=saved_total,
+            error_detail=failures,
+        )
+    )
 
 
 def _run_snapshot(
@@ -423,7 +451,19 @@ def _print_report(console: Console, report: CollectReport, *, dry_run: bool) -> 
         for attachment in sample.attachments:
             console.bullet(console.paint(f"첨부 {attachment.name}", "dim"))
     _warn_if_details_failed(console, report)
+    _note_empty_postings(console, report)
     _warn_if_short(console, report)
+
+
+def _note_empty_postings(console: Console, report: CollectReport) -> None:
+    """내용 없이 올라온 글의 개수를 알린다. **실패가 아니라 사실이다.**
+
+    게시판에 그런 글이 실제로 있어 실패로 두면 매 실행 다시 받는다. 다만 개수가 크면 본문
+    셀렉터가 일부 스킨에서 빗나간 신호이므로 눈에 보여야 한다(전량이면 소스 실패로 올라간다).
+    """
+    if not report.empty:
+        return
+    console.field("빈 공고", f"{report.empty}건", note="본문·이미지·첨부 없음 — 저장은 됨")
 
 
 def _warn_if_details_failed(console: Console, report: CollectReport) -> None:
@@ -510,7 +550,9 @@ def _alert_sentence(alert: Alert, *, today: date) -> str:
         )
     elapsed = days_since_last_posting(health, today=today)
     if elapsed is None:
-        return f"훑은 기간({health.last_cutoff}부터) 안에 글이 없습니다 — 게시판이 조용합니다"
+        # 여기 오는 것은 컷오프가 있었던 경우뿐이다(날짜를 안 주는 게시판은 경보 대상이 아니다 —
+        # `_has_no_recent_postings`). 그래서 `last_cutoff`는 항상 값이 있다.
+        return f"{health.last_cutoff} 이후 올라온 글이 없습니다 — 게시판이 조용합니다"
     return f"최신 글이 {health.last_posted_on} ({elapsed}일 전) — 게시판이 조용합니다"
 
 
@@ -541,11 +583,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     collect = subcommands.add_parser(_COLLECT, help="게시판에서 공고 수집 (게시판에 요청함)")
     collect.add_argument("--source", default=None, help="한 곳만 (기본: 어댑터가 있는 전부)")
-    collect.add_argument(
+    # 범위는 **하나로** 정한다 — 둘 다 받으면 리포트만 보고 어느 범위로 돌았는지 모른다.
+    window = collect.add_mutually_exclusive_group()
+    window.add_argument(
         "--months",
         type=int,
         default=DEFAULT_MONTHS,
         help=f"게시일 기준 수집 범위 (기본 {DEFAULT_MONTHS}개월 · 0이면 날짜로 자르지 않음)",
+    )
+    window.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="범위를 일 단위로 (예: --days 14 = 최근 2주 · --months 와 함께 쓸 수 없음)",
     )
     collect.add_argument(
         "--dry-run",

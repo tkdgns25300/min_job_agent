@@ -143,10 +143,6 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     files = _attachments(view, base_url=ref.url) + attachments_in(image_box, base_url=ref.url)
     # 대조에 세는 것은 **첨부 영역에서 온 것만**이다 — 본문 이미지는 첨부의 증거가 아니다.
     _check_attachments_found(view, ref, found=(*files, *box_images))
-    if not raw_text and not images and not files:
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
-        )
     return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
 
 

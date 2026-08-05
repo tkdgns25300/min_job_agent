@@ -99,10 +99,6 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     # ⚠️ 첨부 범위를 **본문 안으로** 제한한다 — 상세 하단(`box_board_detailbtm`)에 이전글/다음글
     # 링크가 있어 넓히면 그것이 첨부로 저장된다(실측).
     files = attachments_in(body, base_url=ref.url)
-    if not raw_text and not images and not files:
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
-        )
     return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
 
 

@@ -185,11 +185,12 @@ def image_urls_in(*elements: Tag | None, base_url: str) -> tuple[str, ...]:
     지워도 다른 쪽이 가려서 테스트가 결함을 못 잡는다(실제로 그랬다).
     """
     return tuple(
-        urljoin(base_url, str(src).strip())
+        joined
         for element in elements
         if element is not None
         for img in element.select("img")
         if (src := img.get("src")) and str(src).strip()
+        if (joined := absolute_url(base_url, str(src).strip())) is not None
     )
 
 
@@ -211,16 +212,17 @@ def attachments_in(container: Tag | None, *, base_url: str) -> tuple[Attachment,
         href = str(link.get("href") or "").strip()
         if not href or _is_not_a_file(href):
             continue
-        # 링크 텍스트가 비면 **버리지 않고** URL 끝에서 파일명을 복원한다 — 조용히 버리면
-        # 파일명이 앵커 밖으로 나가는 개편 한 번에 첨부가 전량 유실된다.
-        # 링크 텍스트 → `title`(파일명 형태일 때만) → URL 순서. 조용히 버리지 않는다 —
-        # 파일명이 앵커 밖으로 나가는 개편 한 번에 첨부가 전량 유실된다.
+        absolute = absolute_url(base_url, href)
+        if absolute is None:
+            continue  # 합칠 수 없는 주소는 받을 수도 없다(`absolute_url` 참조)
+        # 이름은 링크 텍스트 → `title`(파일명 형태일 때만) → URL 순서로 찾는다. 조용히 버리지
+        # 않는다 — 파일명이 앵커 밖으로 나가는 개편 한 번에 첨부가 전량 유실된다.
         name = (
             _clean_attachment_name(link.get_text(" ", strip=True))
             or _filename_like(str(link.get("title") or ""))
             or _filename_from(href)
         )
-        found.append(Attachment(name=name, url=urljoin(base_url, href)))
+        found.append(Attachment(name=name, url=absolute))
     return tuple(found)
 
 
@@ -228,6 +230,23 @@ def attachments_in(container: Tag | None, *, base_url: str) -> tuple[Attachment,
 #: HANIL은 본문의 지원 문의 `mailto:`가 첨부 4건으로 잡혀 있었고(2026-08-05 실측), 그 상태로
 #: 구조화가 "첨부 파일"을 열려 하면 아무것도 못 받는다. 어떤 게시판에서도 파일이 아니다.
 _NOT_A_FILE_SCHEMES: Final = ("mailto:", "tel:", "sms:", "javascript:")
+
+
+def absolute_url(base_url: str, href: str) -> str | None:
+    """상대 주소를 절대 주소로. **합칠 수 없으면 `None`.**
+
+    ⚠️ 게시판 HTML은 신뢰할 수 없는 외부 입력이다(CLAUDE.md 경계에서 검증). 교회가 홈페이지
+    주소에 `]`를 잘못 넣은 공고가 있었고(`http://www.daechun.or.kr]/` · DAESHIN 실측
+    2026-08-05), `urlsplit`이 그 `]`를 IPv6 주소로 오해해 **`ValueError`로 수집 전체를
+    중단시켰다** — 30곳 중 첫 게시판 37번째 글에서 실제로 죽었다.
+
+    합칠 수 없는 주소는 **애초에 받을 수 없다.** 그 글이 정말 첨부를 갖고 있었다면
+    `require_attachment_evidence`가 목록 신호와 대조해 실패시킨다.
+    """
+    try:
+        return urljoin(base_url, href)
+    except ValueError:
+        return None
 
 
 def _is_not_a_file(href: str) -> bool:

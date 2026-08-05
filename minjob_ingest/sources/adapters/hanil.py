@@ -39,7 +39,6 @@ from minjob_ingest.sources.adapters.base import (
     RawPosting,
     as_int,
     as_listing,
-    attachments_in,
     image_urls_in,
     normalized_text,
     parse_html,
@@ -98,13 +97,15 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
             f"{SOURCE_KEY} {ref.external_id}: 목록에서 넘어온 본문이 없음 — `contents` 필드 확인"
         )
     fragment = parse_html(body_html)
-    # 본문 안의 파일 링크만 첨부로 삼는다 — 이 게시판의 첨부 영역은 목록 JSON의 `fileSeq`이고
-    # 그 다운로드 경로를 아직 모른다(모듈 docstring). `mailto:` 같은 것은 base가 걸러낸다.
+    # ⚠️ **본문에서 첨부를 찾지 않는다.** 이 게시판의 첨부는 목록 JSON의 `fileSeq`이고 그
+    # 다운로드 경로를 아직 모른다(모듈 docstring). 본문을 긁으면 교회 홈페이지 링크가 첨부로
+    # 저장된다 — 실측 4건 전부가 그랬다(`www.irijeil.or.kr` · 타 게시판 공고 URL). 그러면
+    # 구조화가 그것을 파일로 열려 하고, 지원자에게 첨부라고 보여진다.
+    # 첨부 **유무**는 `raw_meta.has_attachment`(`isFile`)에 사실로 남아 있다.
     return RawPosting(
         ref=ref,
         raw_text=normalized_text(fragment),
         image_urls=image_urls_in(fragment, base_url=ref.url),
-        attachments=attachments_in(fragment, base_url=ref.url),
     )
 
 

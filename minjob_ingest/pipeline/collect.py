@@ -13,7 +13,7 @@ import calendar
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Final
 from uuid import UUID
 
@@ -170,11 +170,21 @@ class CollectOptions:
     #: 그래서 CLI에 페이지 옵션이 없다). `None`이면 날짜로 자르지 않으므로 그때만
     #: `max_pages`가 범위 역할을 한다(목록에 날짜가 없는 게시판용).
     months: int | None = DEFAULT_MONTHS
+    #: 달 대신 일 단위 범위. 짧은 범위(2주)는 달로 표현할 수 없어서 있다 — 같은 "얼마나
+    #: 과거까지"의 다른 표기이므로 **`months`와 함께 쓰지 않는다**.
+    days: int | None = None
     #: 안전 상한. **CLI로 노출하지 않는다** — 폭주 방지용이라 운영자가 만질 값이 아니다.
     max_pages: int = PAGE_SAFETY_CEILING
     #: 저장하지 않고 무엇을 가져올지만 본다. 목록은 요청하고 **상세는 표본 1건만** 요청한다 —
     #: 상세 파싱이 되는지 확인해야 하고(목록만 보면 반쪽 검증), 게시판 부담은 1건이다.
     dry_run: bool = False
+
+    def __post_init__(self) -> None:
+        # 둘 다 받으면 어느 범위로 돌았는지 리포트만 보고 알 수 없다 — 조용한 오해를 막는다.
+        if self.months is not None and self.days is not None:
+            raise ValueError("months와 days는 함께 쓸 수 없다 — 범위는 하나로 정한다")
+        if self.days is not None and self.days < 1:
+            raise ValueError(f"days는 1 이상이어야 함 ({self.days})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +208,9 @@ class CollectReport:
     #: 상세를 읽지 못한 글 수. ⚠️ **한 건이 그 게시판 전체를 멈추게 하지 않는다** — 800행
     #: 게시판에서 350번째가 이상하면 나머지 450건에 영구히 도달하지 못한다(원장이 이미 저장한
     #: 것만 건너뛰고 같은 자리에서 또 실패한다). 세어서 보고하고 계속 간다.
+    #: 저장했지만 내용이 하나도 없던 글 수. **실패가 아니다** — 게시판에 내용 없이 올라온 글이
+    #: 있다. 다만 개수가 크면 본문 셀렉터가 일부 스킨에서 빗나간 신호라 눈에 보이게 찍는다.
+    empty: int = 0
     failed: int = 0
     #: 실패 사유 표본. 개수만으로는 무엇이 깨졌는지 알 수 없다.
     failure_samples: tuple[str, ...] = ()
@@ -289,11 +302,12 @@ def collect_source(
                         continue
                 else:
                     assert run_id is not None  # 위에서 검증
-                    tally.saved += int(
-                        store.save_source_data(_record(source, adapter, client, ref, run_id))
-                    )
-                    tally.details += 1
-            except (ParseError, FetchError) as err:
+                    record = _record(source, adapter, client, ref, run_id)
+                    tally.note_saved(record, inserted=store.save_source_data(record))
+            # `ValueError`도 잡는다 — 표준 라이브러리가 **망가진 외부 입력**에 내는 예외다
+            # (`urljoin`이 교회의 잘못된 주소에 `Invalid IPv6 URL`을 던져 수집 전체를 죽였다).
+            # 프로그래밍 실수는 보통 TypeError·AttributeError·KeyError라 여전히 크래시한다.
+            except (ParseError, FetchError, ValueError) as err:
                 tally.note_failure(ref, err)
                 continue
             _notify(on_progress, tally, latest=ref)
@@ -302,6 +316,7 @@ def collect_source(
             break
 
     tally.require_some_saved(source.key, dry_run=options.dry_run)
+    tally.require_some_content(source.key, dry_run=options.dry_run)
     return tally.report(
         source.key,
         dry_run=options.dry_run,
@@ -331,13 +346,16 @@ def _cutoff_for(source: SourceConfig, options: CollectOptions, *, today: date) -
     만들면 아무 행도 잘리지 않아 안전 상한까지 페이지를 넘기고, 그게 조용한 폭주다.
     그런 소스의 범위는 페이지 상한이 정한다. 눈에 보이게 로그를 남긴다.
     """
-    if options.months is None:
+    if options.months is None and options.days is None:
         return None
     if not source.list_has_dates:
         _LOG.info(
             "%s 목록에 게시일이 없어 기간을 적용하지 않는다 — 페이지 상한이 범위다", source.key
         )
         return None
+    if options.days is not None:
+        return today - timedelta(days=options.days)
+    assert options.months is not None  # 위에서 둘 다 None인 경우를 걸렀다
     return cutoff_date(options.months, today=today)
 
 
@@ -404,6 +422,8 @@ class _Tally:
     shifted: int = 0
     #: 상세를 실제로 요청한 횟수. `saved`와 다르다 — 이미 있는 행은 저장되지 않는다.
     details: int = 0
+    #: 저장했지만 본문·이미지·첨부가 하나도 없던 글. 게시판에 실제로 있다(내용 없이 올린 글).
+    empty: int = 0
     failed: int = 0
     failures: list[str] = field(default_factory=list)
     scanned: set[str] = field(default_factory=set)
@@ -438,6 +458,35 @@ class _Tally:
         self.failed += 1
         if len(self.failures) < _FAILURE_SAMPLE_SIZE:
             self.failures.append(f"{ref.external_id}: {type(err).__name__}: {err}")
+
+    def note_saved(self, record: SourceData, *, inserted: bool) -> None:
+        """저장 결과를 센다. **내용이 없는 글도 저장한다** — 그것도 사실이다.
+
+        ⚠️ 예전엔 어댑터가 "본문·이미지·첨부가 모두 없음"을 실패로 던졌다. 그런데 게시판에는
+        내용 없이 올라온 글이 실제로 있고(YTUS 25309 = `<p>&nbsp;</p>` · 실측), 실패로 두면
+        원장에 안 들어가 **매 실행 다시 받고 매번 "실패 1건"으로 보고된다**. 그 노이즈가
+        진짜 실패를 가린다. 셀렉터가 빗나간 경우는 `require_one`(컨테이너 없음)과 아래
+        `require_some_content`(전량 빈 내용)가 잡는다.
+        """
+        self.saved += int(inserted)
+        self.details += 1
+        if inserted and record.is_empty:
+            self.empty += 1
+
+    def require_some_content(self, source_key: str, *, dry_run: bool) -> None:
+        """저장한 글이 **전부 비었으면** 소스를 실패시킨다.
+
+        빈 글 하나는 게시판의 사실이지만, 전량이 비었으면 본문 셀렉터가 (컨테이너는 맞고
+        내용은 다른 곳으로 옮겨간 식으로) 빗나간 것이다. 일부만 비는 경우는 실패로 만들지
+        않고 **개수를 리포트에 찍는다** — 스킨이 두 가지인 게시판이 있어 그때는 사람이 봐야 한다.
+        """
+        if dry_run or not self.saved:
+            return
+        if self.empty == self.saved:
+            raise ParseError(
+                f"{source_key}: 저장한 {self.saved}건이 **전부** 본문·이미지·첨부가 없음 —"
+                f" 상세 본문 셀렉터가 내용을 못 집고 있다"
+            )
 
     def require_some_saved(self, source_key: str, *, dry_run: bool) -> None:
         """실패만 있고 하나도 못 가져왔으면 **소스를 실패시킨다.**
@@ -496,6 +545,7 @@ class _Tally:
             oldest=min(self.dates, default=None),
             newest=max(self.dates, default=None),
             samples=tuple(self.samples),
+            empty=self.empty,
             failed=self.failed,
             failure_samples=tuple(self.failures),
             detail_sample=self.detail_sample if dry_run else None,

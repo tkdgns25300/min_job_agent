@@ -170,7 +170,8 @@ def _run_collect_with(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     *,
-    outcome: CollectReport | Exception,
+    # ⚠️ `Exception`이 아니라 `BaseException`이다 — `KeyboardInterrupt`가 대상이다.
+    outcome: CollectReport | BaseException,
     dry_run: bool,
 ) -> JsonStore:
     monkeypatch.setenv("MINJOB_DATA_DIR", str(tmp_path / "data"))
@@ -178,7 +179,7 @@ def _run_collect_with(
     monkeypatch.setattr(cli, "find_adapter", lambda _key: object())
 
     def fake_collect(*_args: object, **_kwargs: object) -> CollectReport:
-        if isinstance(outcome, Exception):
+        if isinstance(outcome, BaseException):
             raise outcome
         return outcome
 
@@ -311,3 +312,64 @@ def test_failed_details_are_reported(
     printed = capsys.readouterr().out
     assert "상세를 못 읽은 글 1건" in printed
     assert "25580" in printed
+
+
+def _runs(tmp_path: Path) -> list[dict[str, object]]:
+    """`crawl_run`을 파일에서 직접 읽는다 — Store에 실행 조회가 없다(있어야 할 이유도 아직 없다)."""
+    path = tmp_path / "data" / "crawl_run.json"
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return [row for row in payload["records"] if isinstance(row, dict)]
+
+
+def test_an_unexpected_crash_still_closes_the_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 실제로 이렇게 남았다(2026-08-05): 크래시가 `crawl_run`을 `finished_at: null`로 두었다.
+
+    열린 채 남은 run은 영구히 "진행 중"으로 보여 `status`가 거짓말을 하고, 다음 실행과 구분되지
+    않는다. 예외는 **삼키지 않고**(운영자가 스택을 봐야 한다) 기록만 남기고 올려보낸다.
+    """
+    with pytest.raises(RuntimeError, match="boom"):
+        _run_collect_with(monkeypatch, tmp_path, outcome=RuntimeError("boom"), dry_run=False)
+    runs = _runs(tmp_path)
+    assert len(runs) == 1
+    assert runs[0]["finished_at"] is not None
+    detail = runs[0]["error_detail"]
+    assert isinstance(detail, dict)
+    assert "RuntimeError: boom" in str(detail["_aborted"])
+    capsys.readouterr()
+
+
+def test_a_keyboard_interrupt_still_closes_the_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """운영자가 Ctrl-C로 멈추는 일은 백필에서 흔하다 — `Exception`만 잡으면 여기서 새어 나간다."""
+    with pytest.raises(KeyboardInterrupt):
+        _run_collect_with(monkeypatch, tmp_path, outcome=KeyboardInterrupt(), dry_run=False)
+    runs = _runs(tmp_path)
+    assert len(runs) == 1
+    assert runs[0]["finished_at"] is not None
+    capsys.readouterr()
+
+
+def test_the_abort_marker_is_not_counted_as_a_failed_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """중단 사유는 `error_detail`에 들어가지만 **소스가 아니다** — 실패 소스 수에 세면 안 된다."""
+    with pytest.raises(RuntimeError):
+        _run_collect_with(monkeypatch, tmp_path, outcome=RuntimeError("boom"), dry_run=False)
+    run = _runs(tmp_path)[0]
+    assert run["sources_failed"] == 0
+    assert run["sources_ok"] == 1
+    capsys.readouterr()
+
+
+def test_dry_run_records_no_run_even_on_a_crash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(RuntimeError):
+        _run_collect_with(monkeypatch, tmp_path, outcome=RuntimeError("boom"), dry_run=True)
+    assert _runs(tmp_path) == []
+    capsys.readouterr()

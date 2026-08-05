@@ -434,9 +434,17 @@ def test_image_only_body_is_not_a_failure(refs: tuple[PostingRef, ...]) -> None:
     assert raw.image_urls == ("https://www.ytus.ac.kr/upload/notice.jpg",)
 
 
-def test_body_with_neither_text_nor_image_is_an_error(refs: tuple[PostingRef, ...]) -> None:
-    with pytest.raises(ParseError, match="모두 없음"):
-        ytus.parse_detail('<div class="boardViewContent">  </div>', refs[0])
+def test_an_empty_posting_is_a_fact_not_a_failure(refs: tuple[PostingRef, ...]) -> None:
+    """⚠️ 게시판에는 **내용 없이 올라온 글이 실제로 있다**(실측 25309 = `<p>&nbsp;</p>`).
+
+    예전엔 이걸 실패로 던졌다. 그러면 원장에 안 들어가 **매 실행 다시 받고 매번 "실패 1건"으로
+    보고된다** — 그 노이즈가 진짜 실패를 가린다. 셀렉터가 빗나간 경우는 컨테이너 부재
+    (`test_missing_body_container_is_an_error`)와 소스 단위 전량 빈 내용 판정이 잡는다.
+    """
+    raw = ytus.parse_detail('<div class="boardViewContent"><p>&nbsp;</p></div>', refs[0])
+    assert raw.raw_text == ""
+    assert raw.image_urls == ()
+    assert raw.attachments == ()
 
 
 def test_missing_body_container_is_an_error(refs: tuple[PostingRef, ...]) -> None:

@@ -108,10 +108,6 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     raw_text = "\n\n".join(part for part in (_full_title(soup), normalized_text(body)) if part)
     images = image_urls_in(body, base_url=ref.url)
     files = attachments_in(_cell_after_header(soup, _ATTACHMENT_HEADER), base_url=ref.url)
-    if not raw_text and not images and not files:
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
-        )
     return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
 
 

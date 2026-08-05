@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Final
 from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
@@ -38,29 +37,86 @@ def allows(parser: RobotFileParser | None, user_agent: str, url: str) -> bool:
     return parser.can_fetch(user_agent, url)
 
 
-#: 표준 파서가 버리는 소수점 값을 줍기 위한 패턴.
-_CRAWL_DELAY_LINE: Final = re.compile(r"^\s*crawl-delay\s*:\s*([0-9]*\.?[0-9]+)", re.I | re.M)
+#: 값에 붙은 주석(`Crawl-delay: 10  # 이유`)을 떼기 위한 구분자.
+_COMMENT: Final = "#"
+_WILDCARD: Final = "*"
+_UA_KEY: Final = "user-agent"
+_DELAY_KEY: Final = "crawl-delay"
 
 
 def crawl_delay_seconds(
     parser: RobotFileParser | None, user_agent: str, raw_text: str = ""
 ) -> float | None:
-    """사이트가 선언한 요청 간격. 없으면 None.
+    """사이트가 **우리에게** 선언한 요청 간격. 없으면 None.
 
     ⚠️ **표준 `RobotFileParser`는 소수점 값을 조용히 버린다**(`"2.5".isdigit()`이 False라
     `Crawl-delay: 2.5`가 없는 것으로 처리된다). 그러면 2.5초를 요청한 사이트를 우리 기본
     1.5초로 두드리게 되므로, 파서가 못 읽었을 때 **원문에서 직접 줍는다**.
 
-    폴백은 UA 그룹을 구분하지 않고 **선언된 값 중 최댓값**을 쓴다 — 우리는 이 값으로 간격을
-    늘리기만 하므로(줄이지 않는다) 보수적인 쪽으로 틀리는 편이 안전하다.
+    ⚠️⚠️ **UA 그룹을 지킨다.** 예전엔 파일 전체에서 최댓값을 줍고 "간격은 늘리는 쪽이
+    안전하다"고 정당화했는데, 실측에서 그게 틀렸다 — `SJS`는 `Crawl-delay: 10`을 **bingbot·
+    msnbot에만** 걸어 뒀고 `User-agent: *`에는 값이 없다. 남의 규칙을 가져다 써서 그 게시판만
+    6.7배 느려졌다(1.5s → 10s). SEO 봇에 30~60초를 거는 사이트도 흔하므로, 그룹을 무시하면
+    한 줄 때문에 수집이 사실상 멈춘다.
+
+    ⚠️ **지연 판정은 원문을 직접 읽는 우리 파서가 정본이고**, 표준 파서는 원문이 없을 때만
+    쓴다. 표준 파서는 소수점을 버리는 것 말고도 **그룹 밖에 떠 있는 지시자를 `*`에 붙인다**
+    (실측: `Crawl-delay: 99`가 어느 그룹에도 없는데 99를 돌려준다). 그러면 망가진 robots.txt
+    한 줄이 그 게시판 수집을 멈춘다. 표준 파서는 `Disallow` 판정(`allows`)에 계속 쓴다.
     """
     if parser is None:
         return None
+    if raw_text.strip():
+        return _declared_for_us(raw_text, user_agent)
     declared = parser.crawl_delay(user_agent)
-    if declared is not None:
-        try:
-            return float(declared)
-        except (TypeError, ValueError):
-            pass
-    found = [float(m) for m in _CRAWL_DELAY_LINE.findall(raw_text)]
-    return max(found) if found else None
+    try:
+        return None if declared is None else float(declared)
+    except (TypeError, ValueError):
+        return None
+
+
+def _declared_for_us(raw_text: str, user_agent: str) -> float | None:
+    """우리에게 적용되는 그룹의 `Crawl-delay`. 구체적 그룹이 있으면 그것이 `*`를 이긴다."""
+    ours = user_agent.lower()
+    specific: list[float] = []
+    wildcard: list[float] = []
+    for agents, delay in _delay_groups(raw_text):
+        if any(agent != _WILDCARD and agent in ours for agent in agents):
+            specific.append(delay)
+        elif _WILDCARD in agents:
+            wildcard.append(delay)
+    if specific:
+        return max(specific)
+    return max(wildcard) if wildcard else None
+
+
+def _delay_groups(raw_text: str) -> list[tuple[tuple[str, ...], float]]:
+    """robots.txt를 `(UA 토큰들, Crawl-delay)` 그룹으로 훑는다.
+
+    연속된 `User-agent:` 줄은 **한 그룹**이고(표준), 다른 지시자나 빈 줄이 그룹을 닫는다.
+    """
+    groups: list[tuple[tuple[str, ...], float]] = []
+    agents: list[str] = []
+    collecting = False
+    for line in raw_text.splitlines():
+        text = line.split(_COMMENT, 1)[0].strip()
+        if not text:
+            agents, collecting = [], False
+            continue
+        key, separator, value = text.partition(":")
+        if not separator:
+            continue
+        key, value = key.strip().lower(), value.strip()
+        if key == _UA_KEY:
+            if not collecting:
+                agents = []
+            agents.append(value.lower())
+            collecting = True
+            continue
+        collecting = False
+        if key == _DELAY_KEY and agents:
+            try:
+                groups.append((tuple(agents), float(value)))
+            except ValueError:
+                continue  # 숫자가 아니면 선언이 없는 것으로 본다
+    return groups

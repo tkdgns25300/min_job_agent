@@ -131,10 +131,6 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
             f"{SOURCE_KEY} {ref.external_id}: 목록이 첨부 있다고 표시했는데 상세에서 0개 —"
             f" 셀렉터 `{_FILE_LIST}` 확인"
         )
-    if not raw_text and not images and not files:
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
-        )
     return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
 
 

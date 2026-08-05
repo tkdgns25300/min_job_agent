@@ -19,8 +19,10 @@ from minjob_ingest.models import Attachment
 from minjob_ingest.sources.adapters.base import (
     ParseError,
     PostingRef,
+    absolute_url,
     attachments_in,
     external_id_from_query,
+    image_urls_in,
     page_query_request,
     parse_html,
     require_attachment_evidence,
@@ -243,3 +245,23 @@ def test_a_script_download_takes_its_name_from_the_query() -> None:
     found = _attachments('<a href="/bbs/view_image.php?bo_table=x&fn=poster.jpg"></a>')
     assert found[0].name == "poster.jpg"
     assert found[0].is_image is True
+
+
+def test_a_malformed_href_does_not_crash_the_run() -> None:
+    """⚠️ **이것 때문에 실제 수집이 죽었다**(2026-08-05).
+
+    교회가 홈페이지 주소에 `]`를 잘못 넣었고(`http://www.daechun.or.kr]/`), `urlsplit`이 그
+    `]`를 IPv6 주소로 오해해 `ValueError: Invalid IPv6 URL`을 던졌다. 30곳 중 첫 게시판
+    37번째 글에서 전체가 중단됐다 — 게시판 HTML은 신뢰할 수 없는 외부 입력이다.
+    """
+    assert absolute_url("https://x.test/a", "http://www.daechun.or.kr]/") is None
+    assert _attachments('<a href="http://www.daechun.or.kr]/">교회 홈페이지</a>') == ()
+
+
+def test_a_malformed_image_src_is_skipped() -> None:
+    """이미지도 같은 경로를 지난다 — 한쪽만 고치면 다른 쪽에서 같은 크래시가 난다."""
+    assert image_urls_in(parse_html('<img src="//[broken">'), base_url="https://x.test/a") == ()
+
+
+def test_a_valid_url_still_joins() -> None:
+    assert absolute_url("https://x.test/board/1", "/upfile/x.hwp") == "https://x.test/upfile/x.hwp"

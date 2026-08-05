@@ -883,3 +883,39 @@ def test_first_run_and_total_accumulate_across_runs() -> None:
         )
     assert state.first_run_at == FIXED_NOW  # 첫 실행 시각은 보존된다
     assert state.total_collected == 231
+
+
+# ── 증거가 있는가 (`is_empty`) ───────────────────────────────────
+
+
+def test_a_posting_with_text_is_not_empty() -> None:
+    assert _source_data().is_empty is False
+
+
+def test_whitespace_only_text_counts_as_empty() -> None:
+    """게시판이 `<p>&nbsp;</p>`를 준다 — 공백만 남으면 증거가 없는 것이다(실측 YTUS 25309)."""
+    assert replace(_source_data(), raw_text="\u00a0\n  ").is_empty is True
+
+
+def test_an_image_only_posting_is_not_empty() -> None:
+    """⚠️ **이걸 빈 것으로 세면 포스터형 게시판이 전량 실패한다**(PCKWORLD는 본문이 원래 0자다).
+
+    `collect`가 "저장분이 전부 비었으면 소스 실패"로 판정하므로, 여기서 틀리면 그 게시판은
+    한 건도 못 가져온다.
+    """
+    poster = replace(_source_data(), raw_text="", image_urls=("https://x.test/poster.jpg",))
+    assert poster.is_empty is False
+
+
+def test_an_attachment_only_posting_is_not_empty() -> None:
+    """내용이 전부 HWP에 있는 공고가 있다(실측 WGST) — 첨부가 유일한 증거다."""
+    withfile = replace(
+        _source_data(),
+        raw_text="",
+        attachments=(Attachment(name="공고문.hwp", url="https://x.test/a.hwp"),),
+    )
+    assert withfile.is_empty is False
+
+
+def test_a_posting_with_nothing_is_empty() -> None:
+    assert replace(_source_data(), raw_text="").is_empty is True

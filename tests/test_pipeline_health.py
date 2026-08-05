@@ -196,3 +196,40 @@ def test_warnings_come_before_information() -> None:
     kinds = [alert.kind for alert in alerts_for(health, today=_TODAY)]
     assert kinds and all(kind.is_warning for kind in kinds[: len(kinds) - 1])
     assert kinds[-1] is AlertKind.NO_RECENT_POSTINGS
+
+
+# ── 날짜를 주지 않는 게시판은 "조용하다" 판정 대상이 아니다 ──────
+
+
+def test_a_dateless_board_is_not_reported_as_quiet() -> None:
+    """⚠️ **매 실행 뜨는 오경보였다**(실측 2026-08-05 · PCKWORLD).
+
+    그 게시판은 목록에 게시일이 없어(config `list_has_dates: false`) 컷오프를 만들지 않고
+    `last_posted_on`도 영원히 비어 있다. 그걸 "기간 안에 글이 없다"로 읽으면 **60건을 잘 받아도
+    경보가 뜬다.** 상시 뜨는 경보는 아무도 보지 않게 되므로, 판정할 수 없을 때는 판정하지 않는다.
+    """
+    health = SourceHealth.advance(
+        previous=None,
+        source_key="PCKWORLD",
+        run_at=_NOW,
+        status=SourceHealthStatus.OK,
+        rows=60,
+        new_count=60,
+        cutoff=None,  # 날짜가 없어 컷오프를 만들지 않았다
+        posted_on=None,
+    )
+    assert AlertKind.NO_RECENT_POSTINGS not in _kinds(health)
+
+
+def test_a_dated_board_with_nothing_in_the_window_is_still_quiet() -> None:
+    """반대편 — 컷오프를 적용했는데 그 안에 글이 없으면 진짜 조용한 것이다(KOSIN_TH 실측)."""
+    health = SourceHealth.advance(
+        previous=None,
+        source_key="KOSIN_TH",
+        run_at=_NOW,
+        status=SourceHealthStatus.OK,
+        rows=15,
+        cutoff=_TODAY - timedelta(days=14),
+        posted_on=None,
+    )
+    assert AlertKind.NO_RECENT_POSTINGS in _kinds(health)

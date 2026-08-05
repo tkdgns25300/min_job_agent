@@ -32,9 +32,9 @@ from minjob_ingest.pipeline.collect import (
     plan_page,
     require_no_conflicts,
 )
-from minjob_ingest.sources.adapters.base import ParseError, PostingRef
-from minjob_ingest.sources.adapters.registry import find_adapter
-from minjob_ingest.sources.registry import find_source, load_sources
+from minjob_ingest.sources.adapters.base import ListRequest, ParseError, PostingRef, RawPosting
+from minjob_ingest.sources.adapters.registry import Adapter, find_adapter
+from minjob_ingest.sources.registry import SourceConfig, find_source, load_sources
 from minjob_ingest.store.base import LedgerEntry
 from minjob_ingest.store.json_store import JsonStore
 
@@ -282,6 +282,7 @@ def _collect(
     *,
     today: date = _TODAY,
     on_progress: ProgressSink | None = None,
+    adapter: Adapter | None = None,
 ) -> CollectReport:
     source = find_source(load_sources(None), "YTUS")
     assert source is not None
@@ -295,7 +296,7 @@ def _collect(
     ) as client:
         return collect_source(
             source,
-            find_adapter("YTUS"),
+            adapter or find_adapter("YTUS"),
             client,
             store,
             run_id=None if run is None else run.id,
@@ -749,3 +750,155 @@ def test_failure_samples_are_capped(board_html: tuple[str, str], tmp_path: Path)
         tally_report = str(err)
     assert tally_report is not None
     assert tally_report.count("ParseError") <= 3
+
+
+class _ValueErrorOnOnePosting:
+    """한 글에서만 `ValueError`를 던지는 어댑터 대역 — 나머지는 실제 YTUS 어댑터가 처리한다."""
+
+    def __init__(self, external_id: str) -> None:
+        self._real = find_adapter("YTUS")
+        self._target = external_id
+
+    def list_request(self, source: SourceConfig, page: int) -> ListRequest:
+        return self._real.list_request(source, page)
+
+    def parse_list(self, html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
+        return self._real.parse_list(html, source)
+
+    def parse_detail(self, html: str, ref: PostingRef) -> RawPosting:
+        if ref.external_id == self._target:
+            # 표준 라이브러리가 망가진 입력에 내는 예외를 그대로 흉내낸다.
+            raise ValueError("Invalid IPv6 URL")
+        return self._real.parse_detail(html, ref)
+
+
+def test_a_valueerror_on_one_posting_does_not_stop_the_source(
+    board_html: tuple[str, str], tmp_path: Path
+) -> None:
+    """⚠️ **실제 수집이 이것 때문에 죽었다**(2026-08-05).
+
+    교회가 홈페이지 주소에 `]`를 잘못 넣어 `urljoin`이 `ValueError: Invalid IPv6 URL`을 던졌고,
+    30곳 중 첫 게시판 37번째 글에서 전체가 중단됐다 — 그때 격리는 `ParseError`·`FetchError`만
+    잡고 있었다.
+
+    `ValueError`는 표준 라이브러리가 **망가진 외부 입력**에 내는 예외다(`urlsplit`·`int`·
+    `date.fromisoformat`). 게시판 HTML이 정확히 그것이므로 글 단위로 격리한다. 반면
+    프로그래밍 실수(`AttributeError`·`TypeError`)는 여전히 크래시해야 한다 — 아래 테스트.
+    """
+    board = _Board(*board_html)
+    refs = find_adapter("YTUS").parse_list(board_html[0], _ytus())
+    adapter = _ValueErrorOnOnePosting(refs[5].external_id)
+    report = _collect(
+        board, JsonStore(tmp_path / "data"), CollectOptions(max_pages=1), adapter=adapter
+    )
+    assert report.failed == 1
+    assert report.saved == 17  # 나머지 17건은 그대로 수집됐다
+    assert any("Invalid IPv6 URL" in sample for sample in report.failure_samples)
+
+
+class _BugOnOnePosting(_ValueErrorOnOnePosting):
+    """우리 코드의 버그 — 게시판 탓이 아니므로 삼키면 안 된다."""
+
+    def parse_detail(self, html: str, ref: PostingRef) -> RawPosting:
+        if ref.external_id == self._target:
+            raise AttributeError("'NoneType' object has no attribute 'select'")
+        return self._real.parse_detail(html, ref)
+
+
+def test_our_own_bug_is_not_swallowed(board_html: tuple[str, str], tmp_path: Path) -> None:
+    """⚠️ 격리를 넓히다 `Exception`을 잡으면 어댑터 버그가 "실패 1건"으로 조용히 묻힌다."""
+    board = _Board(*board_html)
+    refs = find_adapter("YTUS").parse_list(board_html[0], _ytus())
+    with pytest.raises(AttributeError):
+        _collect(
+            board,
+            JsonStore(tmp_path / "data"),
+            CollectOptions(max_pages=1),
+            adapter=_BugOnOnePosting(refs[5].external_id),
+        )
+
+
+def _ytus() -> SourceConfig:
+    source = find_source(load_sources(None), "YTUS")
+    assert source is not None
+    return source
+
+
+# ── 범위: 달 · 일 ────────────────────────────────────────────────
+
+
+def test_a_day_window_is_exact(board_html: tuple[str, str], tmp_path: Path) -> None:
+    """2주는 달로 표현할 수 없다 — `--months`는 정수라 최소 1개월이다."""
+    report = _collect(
+        _Board(*board_html), JsonStore(tmp_path / "data"), CollectOptions(months=None, days=14)
+    )
+    assert report.cutoff == _TODAY - timedelta(days=14)
+
+
+def test_a_month_window_still_uses_calendar_months(
+    board_html: tuple[str, str], tmp_path: Path
+) -> None:
+    report = _collect(
+        _Board(*board_html), JsonStore(tmp_path / "data"), CollectOptions(months=3, max_pages=1)
+    )
+    assert report.cutoff == cutoff_date(3, today=_TODAY)
+
+
+def test_both_windows_at_once_is_rejected() -> None:
+    """⚠️ 둘 다 받으면 리포트만 보고 어느 범위로 돌았는지 알 수 없다."""
+    with pytest.raises(ValueError, match="함께 쓸 수 없다"):
+        CollectOptions(months=3, days=14)
+
+
+def test_a_zero_day_window_is_rejected() -> None:
+    with pytest.raises(ValueError, match="days"):
+        CollectOptions(months=None, days=0)
+
+
+def test_no_window_at_all_means_no_date_cutoff() -> None:
+    """`--months 0`은 "날짜로 자르지 않음"이고, 그때 범위는 페이지 상한이 정한다."""
+    assert CollectOptions(months=None).days is None
+
+
+# ── 빈 공고 (내용 없이 올라온 글) ─────────────────────────────────
+
+
+class _EmptyBodyBoard(_Board):
+    """상세 본문이 비어 있는 게시판 대역 — 컨테이너는 있고 내용만 없다."""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        if "/board/view/" in request.url.path:
+            empty = '<div class="boardViewContent"><p>&nbsp;</p></div>'
+            return httpx.Response(200, text=empty + "<div>" + "가" * 300 + "</div>")
+        return super().handler(request)
+
+
+def test_all_postings_empty_fails_the_source(board_html: tuple[str, str], tmp_path: Path) -> None:
+    """⚠️ 빈 글 **하나**는 사실이지만 **전량**이 비면 본문 셀렉터가 내용을 못 집는 것이다.
+
+    컨테이너는 찾았으니 `require_one`이 통과한다 — 그 뒤를 막는 것이 이 판정이다.
+    """
+    with pytest.raises(ParseError, match="전부"):
+        _collect(
+            _EmptyBodyBoard(*board_html), JsonStore(tmp_path / "data"), CollectOptions(max_pages=1)
+        )
+
+
+def test_a_few_empty_postings_are_reported_not_failed(
+    board_html: tuple[str, str], tmp_path: Path
+) -> None:
+    """일부만 비는 것은 실패로 만들지 않는다(스킨이 둘인 게시판이 있다) — 개수를 찍는다."""
+
+    class _OneEmpty(_Board):
+        def handler(self, request: httpx.Request) -> httpx.Response:
+            if "/board/view/" in request.url.path and "25580" in str(request.url):
+                empty = '<div class="boardViewContent"><p>&nbsp;</p></div>'
+                return httpx.Response(200, text=empty + "<div>" + "가" * 300 + "</div>")
+            return super().handler(request)
+
+    report = _collect(
+        _OneEmpty(*board_html), JsonStore(tmp_path / "data"), CollectOptions(max_pages=1)
+    )
+    assert report.saved == 18
+    assert report.failed == 0  # 실패가 아니다
+    assert report.empty == 1  # 그러나 눈에 보인다

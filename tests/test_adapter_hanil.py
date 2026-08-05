@@ -144,3 +144,37 @@ def test_the_body_is_not_duplicated_into_raw_meta(refs: tuple[PostingRef, ...]) 
     """`_` 접두 키는 `collect`가 `raw_meta`에서 뺀다 — 안 그러면 `raw_text`와 그대로 중복된다."""
     internal = [key for key in refs[0].list_meta if key.startswith("_")]
     assert internal == ["_body_html"]
+
+
+def test_body_links_are_not_attachments(source: SourceConfig) -> None:
+    """⚠️ **실측 4건 전부가 잘못 들어갔다**(2026-08-05): 교회 홈페이지·타 게시판 공고 URL.
+
+    이 게시판의 첨부는 목록 JSON의 `fileSeq`이고 다운로드 경로를 아직 모른다(모듈 docstring).
+    본문을 긁으면 파일이 아닌 것이 첨부로 저장돼, 구조화가 그것을 파일로 열려 하고 지원자에게
+    첨부라고 보여진다. 첨부 **유무**는 `has_attachment`에 사실로 남는다.
+    """
+    payload = json.dumps(
+        {
+            "cnt": 1,
+            "isSuccess": True,
+            "list": [
+                {
+                    "boardSeq": 104537,
+                    "title": "이리제일교회에서 사역자를 모십니다",
+                    "createDt": "20260731",
+                    "isFile": "Y",
+                    "fileSeq": 27695,
+                    "contents": (
+                        '<p>홈페이지 <a href="http://www.irijeil.or.kr">www.irijeil.or.kr</a></p>'
+                        '<p>참고 <a href="https://www.puts.ac.kr/www/board/view.general.asp'
+                        '?seq=149891">타 게시판 공고</a></p>'
+                    ),
+                }
+            ],
+        }
+    )
+    refs = hanil.parse_list(payload, source)
+    raw = hanil.parse_detail("", refs[0])
+    assert raw.attachments == ()
+    assert refs[0].list_meta["has_attachment"] is True  # 사실은 기록된다
+    assert "irijeil" in raw.raw_text  # 주소는 본문에 그대로 남는다

@@ -8,6 +8,7 @@
 ```bash
 minjob-ingest collect --source YTUS --dry-run               🌐    파싱 확인 (저장 안 함)
 minjob-ingest collect --source YTUS --months 3            🌐    실제 수집 (무료)
+minjob-ingest collect --days 14                           🌐    최근 2주만 (반복 실행용)
 minjob-ingest structure                                  🔴 💰   AI 구조화
 minjob-ingest daily                                      🔴 🌐💰  매일 (증분 + 구조화)
 minjob-ingest status                                     🔴      실행·게시판 상태
@@ -15,9 +16,13 @@ minjob-ingest list-sources [KEY]                                 등록 31곳 (�
 minjob-ingest snapshot --source KEY                         🌐    fixture용 HTML 확보 (어댑터 없어도 됨)
 ```
 
-`collect` 옵션 — `--source`(기본: 어댑터 있는 전부) · `--months N`(`0`=날짜 무제한) · `--dry-run` · `--verbose`
+`collect` 옵션 — `--source`(기본: 어댑터 있는 전부) · `--months N`(`0`=날짜 무제한) · **`--days N`**(짧은 범위 · `--months`와 함께 못 씀) · `--dry-run` · `--verbose`
 
-⚠️ **범위는 `--months`가 정한다 — 페이지 옵션은 없다.** (목록에 날짜가 없는 게시판만 예외 — 그 범위는 `config/sources.json`의 `list_page_limit`에 적혀 있다.) 컷오프보다 오래된 페이지에 닿으면 스스로 멈춘다. 내부 안전 상한(100p)에 걸리면 경고가 나오는데, 그건 **게시일 파싱이 깨졌다는 뜻**이다.
+💡 **고치고 다시 돌리는 중이면 `--days 14`를 쓴다.** 3개월치는 약 3,200건이라 요청 간격
+(1.5s)만으로 80분이 넘는다. 2주면 약 500건·13분이고, **원장이 이미 받은 건을 건너뛰므로**
+범위를 나중에 `--months 3`으로 넓혀도 받은 것을 다시 받지 않는다.
+
+⚠️ **범위는 `--months`/`--days`가 정한다 — 페이지 옵션은 없다.** (목록에 날짜가 없는 게시판만 예외 — 그 범위는 `config/sources.json`의 `list_page_limit`에 적혀 있다.) 컷오프보다 오래된 페이지에 닿으면 스스로 멈춘다. 내부 안전 상한(100p)에 걸리면 경고가 나오는데, 그건 **게시일 파싱이 깨졌다는 뜻**이다.
 ⚠️ `--dry-run`은 목록 전체 + **상세 표본 1건**을 요청한다(목록만으론 상세 파싱이 검증되지 않음). 저장·실행기록 없음.
 진행 상황은 게시판마다 한 줄에서 실시간 갱신된다(`⋯ 3p · 60행 · 새 글 54 · 저장 16/54`) → 끝나면 그 자리에 리포트. **로그 파일로 넘기면**(`> run.log`) 진행 줄 없이 리포트만 남는다.
 

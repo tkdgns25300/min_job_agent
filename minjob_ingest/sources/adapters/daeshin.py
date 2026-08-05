@@ -22,6 +22,7 @@ from urllib.parse import urljoin
 
 from bs4 import Tag
 
+from minjob_ingest.models import Attachment
 from minjob_ingest.sources.adapters.base import (
     ListRequest,
     ParseError,
@@ -53,6 +54,12 @@ _NOTICE_CELL: Final = "td.notice"
 _PAGE_PARAM: Final = "b_page"
 #: 본문은 표 안의 한 칸이다(`class="Cont last"` · 실측). 그 안에 모집요강이 표로 들어 있다.
 _BODY: Final = "td.Cont"
+#: ⚠️ 첨부는 **본문과 다른 행**(`td.last`)에 있고, 그 칸도 `last` 클래스를 공유해 셀렉터로는
+#: 본문·이전글/다음글과 구분되지 않는다. 그래서 **업로드 경로**로 판정한다(2026-08-05 실측).
+#: 푸터의 사이트 공용 파일은 `/upfile/data/`라 경로가 달라 자연히 빠진다.
+_ATTACHMENT_LINK: Final = 'a[href*="/upfile/board/"]'
+#: 첨부 링크를 찾을 범위. 상세 본문 표 전체를 본다(푸터는 이 표 밖이다).
+_DETAIL_TABLE: Final = "table.table6"
 
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
@@ -74,21 +81,32 @@ def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
 def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     """상세 HTML → 본문 + 이미지 + 첨부.
 
-    ⚠️ 첨부가 달린 공고를 아직 실측하지 못했다 — 이 게시판 목록에는 첨부 표시 칸이 없어
-    교차 확인 신호도 없다(YTUS의 `has_attachment` 같은 것). 첨부는 본문 안에서만 찾는다.
+    ⚠️ 첨부를 **본문에서 찾지 않는다.** 본문에는 교회 홈페이지 링크가 흔하고, 그것을 첨부로
+    저장하면 구조화가 엉뚱한 주소를 파일로 연다. 실제로 그 상태에서 `http://www.daechun.or.kr]/`
+    (교회가 `]`를 잘못 넣은 주소)가 `urljoin`을 터뜨려 수집 전체가 중단됐다(2026-08-05).
+    → 업로드 경로(`_ATTACHMENT_LINK`)로 판정한다.
+
+    ⚠️ 목록에 첨부 표시 칸이 없어 교차 확인 신호가 없다 — 셀렉터가 빗나가면 조용히 0개가 되므로
+    `detail_file.html` fixture 테스트가 유일한 방어다.
     """
     soup = parse_html(html)
     body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     raw_text = normalized_text(body)
     images = image_urls_in(body, base_url=ref.url)
-    # ⚠️ 첨부 범위를 **본문 안으로 제한**한다. 부모까지 넓히면 상세 표의 PREV/NEXT 링크와
-    # 페이지 푸터의 사이트 공용 파일(`/upfile/data/장학금기탁서.hwp`)을 첨부로 잡는다(실측).
-    files = attachments_in(body, base_url=ref.url)
-    if not raw_text and not images and not files:
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
-        )
+    files = _attachments(soup, base_url=ref.url)
     return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+
+
+def _attachments(soup: Tag, *, base_url: str) -> tuple[Attachment, ...]:
+    """업로드 경로를 가진 링크만 첨부로 본다(모듈 상단 `_ATTACHMENT_LINK` 참조)."""
+    table = soup.select_one(_DETAIL_TABLE)
+    if table is None:
+        return ()
+    links = table.select(_ATTACHMENT_LINK)
+    if not links:
+        return ()
+    holder = parse_html("".join(str(link) for link in links))
+    return attachments_in(holder, base_url=base_url)
 
 
 def _is_notice(row: Tag) -> bool:

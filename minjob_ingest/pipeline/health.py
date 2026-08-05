@@ -133,4 +133,11 @@ def _has_no_recent_postings(health: SourceHealth, *, today: date) -> bool:
     if health.last_rows == 0:
         return False
     elapsed = days_since_last_posting(health, today=today)
-    return elapsed is None or elapsed >= QUIET_DAYS_NOTICE
+    if elapsed is None:
+        # 게시일을 모른다. ⚠️ 이유가 둘이고 뜻이 반대다:
+        # ① 컷오프를 적용했는데 그 안에 글이 없었다 → 조용한 게시판(경보 맞다)
+        # ② 게시판이 **애초에 게시일을 주지 않는다**(config `list_has_dates: false`) → 판정
+        #    불가. `PCKWORLD`가 그렇고, 구분하지 않으면 60건을 잘 받아도 **매 실행 오경보**가
+        #    뜬다(실측 2026-08-05). 상시 뜨는 경보는 아무도 안 보게 된다.
+        return health.last_cutoff is not None
+    return elapsed >= QUIET_DAYS_NOTICE
