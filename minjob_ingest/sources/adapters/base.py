@@ -216,9 +216,30 @@ def attachments_in(container: Tag | None, *, base_url: str) -> tuple[Attachment,
     return tuple(found)
 
 
+#: 파일명으로 인정할 확장자 — `is_image` 판정과 "Gemini에 보낼지"가 여기 달려 있다.
+_FILENAME_PATTERN: Final = re.compile(r"\.[A-Za-z0-9]{2,5}$")
+#: ⚠️ **스크립트는 파일명이 아니다.** 다운로드가 `view_image.php`·`download.asp`처럼 스크립트면
+#: 경로 끝이 확장자를 갖고 있어도 실제 파일명은 쿼리에 있다(KTS 실측).
+_SCRIPT_SUFFIXES: Final = (".php", ".asp", ".aspx", ".jsp", ".do", ".cgi", ".html", ".htm")
+
+
 def _filename_from(url: str) -> str:
-    """URL 끝 세그먼트를 파일명으로. YTUS 다운로드 URL은 끝에 파일명을 담는다(실측)."""
-    last = unquote(urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1])
+    """URL에서 파일명을 뽑는다. 경로 끝 → 쿼리 값 순서로 본다.
+
+    경로 끝에 파일명이 있는 게시판이 많지만(YTUS 실측), **다운로드가 스크립트인 게시판은
+    파일명이 쿼리에 있다** — KTS는 `view_image.php?bo_table=pinvit&fn=….jpg`라서 경로 끝만
+    보면 이름이 `view_image.php`가 되고 `is_image`가 거짓이 된다(2026-08-05 실측).
+    확장자로 판정하므로 `bo_table` 같은 값은 파일명으로 오인하지 않는다.
+    """
+    split = urlsplit(url)
+    last = unquote(split.path.rstrip("/").rsplit("/", 1)[-1])
+    looks_like_script = last.lower().endswith(_SCRIPT_SUFFIXES)
+    if not looks_like_script and (_FILENAME_PATTERN.search(last) or not split.query):
+        return last or "unknown"
+    for value in parse_qs(split.query).values():
+        candidate = unquote(value[0])
+        if _FILENAME_PATTERN.search(candidate):
+            return candidate
     return last or "unknown"
 
 

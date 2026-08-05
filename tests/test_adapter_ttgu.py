@@ -144,3 +144,20 @@ def test_all_rows_filtered_as_notices_is_an_error(source: SourceConfig) -> None:
     )
     with pytest.raises(ParseError, match="전부 걸러짐"):
         ttgu.parse_list(notice_only, source)
+
+
+def test_attachment_bearing_posting_is_measured(
+    refs: tuple[PostingRef, ...],
+) -> None:
+    """첨부가 달린 실제 공고로 셀렉터를 고정한다(2026-08-05 실측 · `detail_file.html`).
+
+    ⚠️ 표본 공고에 첨부가 없으면 셀렉터가 틀려도 "정상인데 첨부 0개"로 통과한다 —
+    그래서 첨부 있는 공고를 따로 받아 여기서 못을 박는다.
+    """
+    path = _FIXTURES / "detail_file.html"
+    if not path.exists():
+        pytest.skip("detail_file.html 없음")
+    marked = [ref for ref in refs if ref.list_meta.get("has_attachment")]
+    assert marked, "목록에 첨부 표시된 공고가 없다 — 대조 신호가 사라졌다"
+    raw = ttgu.parse_detail(path.read_text(encoding="utf-8"), marked[0])
+    assert raw.attachments or raw.image_urls, "첨부·이미지를 하나도 못 찾았다"

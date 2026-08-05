@@ -37,6 +37,7 @@ from minjob_ingest.sources.adapters.base import (
     normalized_text,
     page_query_request,
     parse_html,
+    require_attachment_evidence,
     require_numeric_id,
     require_one,
     require_some_kept,
@@ -60,6 +61,10 @@ _PAGE_PARAM: Final = "page"
 
 _BODY: Final = "#bo_v_con"
 _FILE_BOX: Final = "#bo_v_file"
+#: ⚠️ **이미지 첨부는 본문 밖의 다른 상자에 있다**(그누보드 기본 스킨 · 2026-08-05 실측).
+#: `#bo_v_file`(비이미지 파일 목록)만 보면 이미지 첨부를 통째로 놓치고, 목록의 첨부 아이콘과
+#: 대조하는 검사가 "셀렉터가 틀렸다"고 잘못 지목한다(실제로 31526에서 그랬다).
+_IMAGE_BOX: Final = "#bo_v_img"
 
 # ── 그누보드 목록 날짜 ────────────────────────────────────────────
 # ⚠️ **base.py 공용화 후보.** 연도 없는 목록 날짜는 그누보드 계열 전체(KTS·HAPSHIN·…)가
@@ -93,12 +98,16 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     raw_text = normalized_text(body)
     images = image_urls_in(body, base_url=ref.url)
-    files = attachments_in(soup.select_one(_FILE_BOX), base_url=ref.url)
-    if ref.list_meta.get("has_attachment") and not files:
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 목록에 첨부 아이콘이 있는데 첨부가 0건 —"
-            f" 셀렉터 `{_FILE_BOX}` 확인"
-        )
+    # 첨부는 두 상자에 나뉘어 있다 — 비이미지 파일 목록과 이미지 첨부 상자(모듈 상단 참조).
+    files = attachments_in(soup.select_one(_FILE_BOX), base_url=ref.url) + attachments_in(
+        soup.select_one(_IMAGE_BOX), base_url=ref.url
+    )
+    require_attachment_evidence(
+        ref,
+        source_key=SOURCE_KEY,
+        selector=f"{_FILE_BOX}·{_IMAGE_BOX}",
+        found=(*files, *images),
+    )
     if not raw_text and not images and not files:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
