@@ -26,7 +26,6 @@ from typing import Final
 
 from bs4 import Tag
 
-from minjob_ingest.models import Attachment
 from minjob_ingest.sources.adapters.base import (
     ListRequest,
     ParseError,
@@ -39,7 +38,9 @@ from minjob_ingest.sources.adapters.base import (
     id_from_js,
     image_urls_in,
     normalized_text,
+    page_query_request,
     parse_html,
+    require_attachment_evidence,
     require_date,
     require_one,
     require_some_kept,
@@ -69,11 +70,7 @@ _FILE_LIST: Final = "div.rd_file"
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
     """N페이지 목록. 1페이지는 `list_url` 그대로(쿼리에 이미 `mid`가 있다)."""
-    if page < 1:
-        raise ValueError(f"page는 1 이상이어야 함 ({page})")
-    if page == 1:
-        return ListRequest(url=source.list_url)
-    return ListRequest(url=f"{source.list_url}&{_PAGE_PARAM}={page}")
+    return page_query_request(source, page, param=_PAGE_PARAM)
 
 
 def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
@@ -98,25 +95,12 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     raw_text = normalized_text(body)
     images = image_urls_in(body, base_url=ref.url)
     files = attachments_in(soup.select_one(_FILE_LIST), base_url=ref.url)
-    _check_attachments_found(ref, files=files)
+    require_attachment_evidence(ref, source_key=SOURCE_KEY, selector=_FILE_LIST, found=files)
     if not raw_text and not images and not files:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
         )
     return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
-
-
-def _check_attachments_found(ref: PostingRef, *, files: tuple[Attachment, ...]) -> None:
-    """목록의 첨부 아이콘과 대조한다.
-
-    `_FILE_LIST`가 빗나가면 첨부가 조용히 0개가 되고, 본문이 있는 공고(대다수)는 "정상인데
-    첨부 0개"로 통과한다. 목록이 이미 아이콘으로 알려주므로 그 신호를 버리지 않는다.
-    """
-    if ref.list_meta.get("has_attachment") and not files:
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 목록에 첨부 아이콘이 있는데 첨부가 비었음 —"
-            f" 셀렉터 `{_FILE_LIST}` 확인"
-        )
 
 
 def _is_notice(row: Tag) -> bool:

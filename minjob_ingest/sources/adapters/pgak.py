@@ -41,6 +41,7 @@ from minjob_ingest.sources.adapters.base import (
     external_id_from_url,
     image_urls_in,
     normalized_text,
+    page_query_request,
     parse_html,
     require_date,
     require_numeric_id,
@@ -72,10 +73,7 @@ _RAW_CONTENT: Final = "div#contents textarea#temp-raw-content"
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
     """N페이지 목록. `page` 쿼리다(실측 페이저: `list.asp?boardid=…&page=2`)."""
-    if page < 1:
-        raise ValueError(f"page는 1 이상이어야 함 ({page})")
-    separator = "&" if "?" in source.list_url else "?"
-    return ListRequest(url=f"{source.list_url}{separator}{_PAGE_PARAM}={page}")
+    return page_query_request(source, page, param=_PAGE_PARAM, always_include=True)
 
 
 def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:

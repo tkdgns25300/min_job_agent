@@ -39,6 +39,7 @@ from minjob_ingest.sources.adapters.base import (
     external_id_from_url,
     image_urls_in,
     normalized_text,
+    page_query_request,
     parse_html,
     require_date,
     require_numeric_id,
@@ -70,12 +71,7 @@ def list_request(source: SourceConfig, page: int) -> ListRequest:
     `pageCode=38&page=N`으로 요청한다 — 라이브 확인 결과 같은 결과가 나온다(실측: 2페이지
     글번호 7133~6801). config의 `list_url` 하나만 정본으로 두기 위해서다.
     """
-    if page < 1:
-        raise ValueError(f"page는 1 이상이어야 함 ({page})")
-    if page == 1:
-        return ListRequest(url=source.list_url)
-    separator = "&" if "?" in source.list_url else "?"
-    return ListRequest(url=f"{source.list_url}{separator}{_PAGE_PARAM}={page}")
+    return page_query_request(source, page, param=_PAGE_PARAM)
 
 
 def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:

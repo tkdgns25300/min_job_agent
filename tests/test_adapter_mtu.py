@@ -157,5 +157,5 @@ def test_attachment_comes_from_the_file_dl(refs: tuple[PostingRef, ...]) -> None
         "https://www.mtu.ac.kr/mtu/board/download.do?mId=162&brdIdx=20687&fidx=1&itId=file"
     )
     assert not attachment.is_image  # HWP도 첨부로 남긴다(이미지만 모으지 않는다)
-    with pytest.raises(ParseError, match="첨부 아이콘"):
+    with pytest.raises(ParseError, match="첨부 표시가 있는데"):
         mtu.parse_detail((_FIXTURES / "detail.html").read_text(encoding="utf-8"), with_file)

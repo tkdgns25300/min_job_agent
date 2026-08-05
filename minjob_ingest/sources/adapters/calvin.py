@@ -37,6 +37,7 @@ from minjob_ingest.sources.adapters.base import (
     id_from_js,
     image_urls_in,
     normalized_text,
+    page_query_request,
     parse_html,
     require_date,
     require_numeric_id,
@@ -66,12 +67,7 @@ _BODY: Final = "div.box_board_detailcont"
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
     """N페이지 목록. `list_url`에 이미 쿼리가 있어 `&`로 잇는다(1페이지는 그대로)."""
-    if page < 1:
-        raise ValueError(f"page는 1 이상이어야 함 ({page})")
-    if page == 1:
-        return ListRequest(url=source.list_url)
-    separator = "&" if "?" in source.list_url else "?"
-    return ListRequest(url=f"{source.list_url}{separator}{_PAGE_PARAM}={page}")
+    return page_query_request(source, page, param=_PAGE_PARAM)
 
 
 def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:

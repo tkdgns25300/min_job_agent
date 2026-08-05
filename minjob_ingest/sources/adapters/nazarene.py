@@ -38,6 +38,7 @@ from minjob_ingest.sources.adapters.base import (
     gnuboard_list_date,
     image_urls_in,
     normalized_text,
+    page_query_request,
     parse_html,
     require_numeric_id,
     require_one,
@@ -68,12 +69,7 @@ _FILE_BOX: Final = "#bo_v_file"
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
     """N페이지 목록. 1페이지는 `list_url` 그대로(clean URL이라 쿼리가 없다 · 실측)."""
-    if page < 1:
-        raise ValueError(f"page는 1 이상이어야 함 ({page})")
-    if page == 1:
-        return ListRequest(url=source.list_url)
-    separator = "&" if "?" in source.list_url else "?"
-    return ListRequest(url=f"{source.list_url}{separator}{_PAGE_PARAM}={page}")
+    return page_query_request(source, page, param=_PAGE_PARAM)
 
 
 def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:

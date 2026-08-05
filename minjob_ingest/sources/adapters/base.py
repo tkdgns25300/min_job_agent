@@ -17,13 +17,14 @@ from dataclasses import dataclass, field
 from datetime import date
 from types import MappingProxyType
 from typing import Final
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import parse_qs, unquote, urljoin, urlsplit
 
 from bs4 import BeautifulSoup, Tag
 from bs4.element import NavigableString
 
 from minjob_ingest.clock import board_today, parse_iso_date
 from minjob_ingest.models import Attachment, JsonValue, as_json_value
+from minjob_ingest.sources.registry import SourceConfig
 
 #: `lxml`을 쓴다 — 깨진 마크업(닫히지 않은 `<td>` 등)에서 표준 파서보다 관대하다.
 HTML_PARSER: Final = "lxml"
@@ -221,6 +222,26 @@ def _filename_from(url: str) -> str:
     return last or "unknown"
 
 
+def page_query_request(
+    source: SourceConfig, page: int, *, param: str, always_include: bool = False
+) -> ListRequest:
+    """쿼리 파라미터로 페이지를 넘기는 목록 요청.
+
+    31곳 중 **22곳이 이 형태**이고 파라미터 이름만 다르다(`page`·`pageno`·`b_page`·`PageNo`·
+    `gotopage`·`page_now`…). 같은 코드를 22번 두면 하나를 고칠 때 나머지가 남는다.
+
+    `always_include`는 **1페이지에도 파라미터를 붙인다.** 기본값이 `False`인 이유는 대부분
+    게시판이 `list_url` 그대로 1페이지를 주기 때문이고, `True`가 필요한 곳은 "기본 페이지가
+    무엇인지 서버 구현에 맡기지 않는다"는 판단이다(WGST·PUTS·PGAK·KAICAM 실측).
+    """
+    if page < 1:
+        raise ValueError(f"page는 1 이상이어야 함 ({page})")
+    if page == 1 and not always_include:
+        return ListRequest(url=source.list_url)
+    separator = "&" if "?" in source.list_url else "?"
+    return ListRequest(url=f"{source.list_url}{separator}{param}={page}")
+
+
 def rows_with_data(table: Tag, *, row: str = "tr", cell: str = "td") -> list[Tag]:
     """헤더를 뺀 데이터 행. 헤더는 `th`만 갖고 있어 `td`가 없다.
 
@@ -241,6 +262,25 @@ def require_some_kept(
         raise ParseError(
             f"{source_key}: 데이터 행 {len(data_rows)}개가 전부 걸러짐 —"
             f" {filtered_by} 확인(사이트 개편 의심)"
+        )
+
+
+def require_attachment_evidence(
+    ref: PostingRef, *, source_key: str, selector: str, found: Sequence[object]
+) -> None:
+    """목록이 "첨부 있음"이라고 표시했는데 하나도 못 찾았으면 에러.
+
+    ⚠️ 이 대조가 없으면 첨부 셀렉터가 빗나갔을 때 **본문 있는 공고는 "정상인데 첨부 0개"로
+    통과한다** — 첨부에만 내용이 있는 공고를 통째로 잃는다(YTUS 실측). 목록의 첨부 아이콘이
+    상세와 **독립된 신호**이므로 대조가 성립한다.
+
+    `found`에 무엇을 세느냐는 게시판이 정한다 — 첨부만 인정하는 곳도, 본문 이미지까지 인정하는
+    곳도 있다(첨부를 이미지로 렌더하는 게시판이 있다 · KOSIN_TH·KOREABAPTIST 실측).
+    """
+    if ref.list_meta.get("has_attachment") and not found:
+        raise ParseError(
+            f"{source_key} {ref.external_id}: 목록에 첨부 표시가 있는데 아무것도 못 찾음 —"
+            f" 셀렉터 `{selector}` 확인"
         )
 
 
@@ -324,6 +364,23 @@ def id_from_js(text: str, *, pattern: re.Pattern[str], source_key: str, what: st
     if found is None:
         raise ParseError(f"{source_key}: {what}에서 글번호를 못 찾음 ({text[:60]!r})")
     return found.group(1)
+
+
+def external_id_from_query(url: str, *, param: str, source_key: str, numeric: bool = True) -> str:
+    """상세 URL의 **쿼리 파라미터 이름으로** 글번호를 뽑는다.
+
+    ⚠️ `external_id_from_url`(접두사 매칭)이 못 쓰이는 게시판이 있다 — **2페이지부터 상세 href에
+    페이지 파라미터가 끼어들어** config `detail_pattern`의 접두사와 어긋난다(KOSIN_TH `pg`·
+    MTU `page` 실측 2026-08-05). 그러면 2페이지 이후 **모든 행에서** 추출이 실패해, 1페이지를
+    뺀 게시판 전체를 조용히 잃는다. 이름으로 찾으면 파라미터 순서·개수와 무관해진다.
+    """
+    found = parse_qs(urlsplit(url).query).get(param)
+    if not found or not found[0].strip():
+        raise ParseError(
+            f"{source_key}: 상세 URL에 `{param}`가 없음 ({url}) — 링크 형태가 바뀌었다"
+        )
+    value = found[0].strip()
+    return require_numeric_id(value, source_key=source_key) if numeric else value
 
 
 def external_id_from_url(url: str, *, detail_pattern: str, what: str) -> str:

@@ -150,5 +150,5 @@ def test_attached_poster_arrives_as_an_image_not_a_download(
     assert "mode=fv&idx=304339" in raw.image_urls[0]
     assert raw.attachments == ()
     assert all("yysb.co.kr" not in url for url in raw.image_urls)
-    with pytest.raises(ParseError, match="첨부 아이콘"):
+    with pytest.raises(ParseError, match="첨부 표시가 있는데"):
         kosin_th.parse_detail(detail.replace("board-view-files", "renamed-files"), refs[0])

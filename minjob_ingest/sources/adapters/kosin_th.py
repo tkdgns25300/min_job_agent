@@ -27,7 +27,7 @@ config `detail_pattern`의 접두사(`?pCode=…&mode=view&idx=`)로 자르면 *
 from __future__ import annotations
 
 from typing import Final
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import urljoin
 
 from bs4 import Tag
 
@@ -40,11 +40,12 @@ from minjob_ingest.sources.adapters.base import (
     as_listing,
     attachments_in,
     cell_text,
+    external_id_from_query,
     image_urls_in,
     normalized_text,
     parse_html,
+    require_attachment_evidence,
     require_date,
-    require_numeric_id,
     require_one,
     require_some_kept,
     rows_with_data,
@@ -107,28 +108,14 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     raw_text = normalized_text(body)
     images = image_urls_in(body, file_box, base_url=ref.url)
     files = attachments_in(file_box, base_url=ref.url)
-    _check_attachments_found(ref, images=images, files=files)
+    require_attachment_evidence(
+        ref, source_key=SOURCE_KEY, selector=_FILE_BOX, found=(*files, *images)
+    )
     if not raw_text and not images and not files:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
         )
     return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
-
-
-def _check_attachments_found(
-    ref: PostingRef, *, images: tuple[str, ...], files: tuple[object, ...]
-) -> None:
-    """목록 첨부 아이콘과 대조한다.
-
-    첨부가 이미지로만 나오는 게시판이라 `attachments`가 비는 것은 정상이다 — 그래서 **둘 다**
-    비었을 때만 실패시킨다. 이 검사가 없으면 `_FILE_BOX`가 바뀐 날 포스터형 공고가 조용히
-    내용 없는 레코드가 된다.
-    """
-    if ref.list_meta.get("has_attachment") and not images and not files:
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 목록에 첨부 아이콘이 있는데 이미지·첨부가 모두 0개 —"
-            f" 셀렉터 `{_FILE_BOX}` 확인"
-        )
 
 
 def _is_notice(row: Tag) -> bool:
@@ -142,7 +129,9 @@ def _ref_from_row(row: Tag, source: SourceConfig) -> PostingRef:
     if link is None:
         raise ParseError(f"{SOURCE_KEY} 목록 행에 상세 링크가 없음 — 셀렉터 `{_DETAIL_LINK}` 확인")
     href = str(link.get("href") or "").strip()
-    external_id = _external_id_from(urljoin(source.list_url, href))
+    external_id = external_id_from_query(
+        urljoin(source.list_url, href), param=_ID_PARAM, source_key=SOURCE_KEY
+    )
     title = link.get_text(" ", strip=True)
     return PostingRef(
         external_id=external_id,
@@ -159,17 +148,3 @@ def _ref_from_row(row: Tag, source: SourceConfig) -> PostingRef:
             "has_attachment": bool(row.select(f'img[alt="{_ATTACHMENT_ICON_ALT}"]')),
         },
     )
-
-
-def _external_id_from(url: str) -> str:
-    """상세 URL의 `idx`. 표시번호(431)가 아니라 이 값이 원장 키다.
-
-    파라미터 **이름**으로 찾는다 — 2페이지부터 `pg`가 끼어들어 접두사 매칭이 깨진다
-    (모듈 docstring 참조).
-    """
-    found = parse_qs(urlsplit(url).query).get(_ID_PARAM)
-    if not found or not found[0].strip():
-        raise ParseError(
-            f"{SOURCE_KEY}: 상세 URL에 `{_ID_PARAM}`가 없음 ({url}) — 링크 형태가 바뀌었다"
-        )
-    return require_numeric_id(found[0].strip(), source_key=SOURCE_KEY)

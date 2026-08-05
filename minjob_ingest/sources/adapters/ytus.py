@@ -64,9 +64,10 @@ _PAGE_SEGMENT: Final = "/page/"
 def list_request(source: SourceConfig, page: int) -> ListRequest:
     """N페이지 목록 요청. GET이고 1페이지는 `list_url` 그대로.
 
-    ⚠️ 페이지 규칙이 config가 아니라 여기 있는 이유: 31곳의 pagination 형태가
-    쿼리(`?page=N`)·경로(`/page/N`)·POST 본문으로 갈려 **한 소스만 보고 config 필드를 설계하면
-    나머지 30곳에서 안 맞는다**. 1-4에서 형태가 모이면 config로 올린다(ROADMAP).
+    ⚠️ 페이지 규칙은 config가 아니라 어댑터에 둔다 — **30곳을 다 만들어 본 결론이다**(2026-08-05).
+    형태가 쿼리(`?page=N`)·경로(`/page/N`)·POST 본문·행 오프셋(`/page/50`)·두 파라미터 동시로
+    갈려서 config 필드 하나로는 절반이 예외가 된다. 쿼리형 24곳은 `page_query_request`가
+    공유하고, 이 게시판처럼 경로형인 곳만 각자 쓴다.
     """
     if page < 1:
         raise ValueError(f"page는 1 이상이어야 함 ({page})")

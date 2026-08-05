@@ -39,7 +39,9 @@ from minjob_ingest.sources.adapters.base import (
     external_id_from_url,
     image_urls_in,
     normalized_text,
+    page_query_request,
     parse_html,
+    require_attachment_evidence,
     require_date,
     require_numeric_id,
     require_one,
@@ -67,12 +69,7 @@ _DOWNLOAD_PATH: Final = "/lib/download.asp"
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
     """N페이지 목록. 1페이지는 `list_url` 그대로(`gotopage` 없이 1페이지가 나온다 · 실측)."""
-    if page < 1:
-        raise ValueError(f"page는 1 이상이어야 함 ({page})")
-    if page == 1:
-        return ListRequest(url=source.list_url)
-    separator = "&" if "?" in source.list_url else "?"
-    return ListRequest(url=f"{source.list_url}{separator}{_PAGE_PARAM}={page}")
+    return page_query_request(source, page, param=_PAGE_PARAM)
 
 
 def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
@@ -95,7 +92,7 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     raw_text = normalized_text(body)
     images = image_urls_in(body, base_url=ref.url)
     files = _attachments(require_one(soup, _VIEW, what=f"{SOURCE_KEY} 상세 영역"), base_url=ref.url)
-    _check_attachments_found(ref, files=files)
+    require_attachment_evidence(ref, source_key=SOURCE_KEY, selector=_DOWNLOAD_PATH, found=files)
     if not raw_text and not images and not files:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
@@ -115,19 +112,6 @@ def _attachments(view: Tag, *, base_url: str) -> tuple[Attachment, ...]:
         if (href := str(link.get("href") or "").strip())
         and (name := link.get_text(" ", strip=True))
     )
-
-
-def _check_attachments_found(ref: PostingRef, *, files: tuple[Attachment, ...]) -> None:
-    """목록의 첨부 아이콘이라는 **독립 신호**와 대조한다.
-
-    다운로드 링크 형태가 바뀌면 첨부가 조용히 0개가 되고, 본문이 있는 공고(대다수)는
-    "정상인데 첨부 0개"로 통과한다. 목록에 첨부 칸이 있으니 그것으로 교차 확인한다.
-    """
-    if ref.list_meta.get("has_attachment") and not files:
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 목록에 첨부 표시가 있는데 링크를 못 찾음 —"
-            f" 다운로드 경로 `{_DOWNLOAD_PATH}` 확인"
-        )
 
 
 def _has_posting_number(row: Tag) -> bool:

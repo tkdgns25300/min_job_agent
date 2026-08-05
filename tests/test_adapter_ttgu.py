@@ -126,7 +126,7 @@ def test_attachment_icon_without_a_file_list_is_an_error(refs: tuple[PostingRef,
         title=refs[0].title,
         list_meta={"has_attachment": True},
     )
-    with pytest.raises(ParseError, match="첨부 아이콘"):
+    with pytest.raises(ParseError, match="첨부 표시가 있는데"):
         ttgu.parse_detail((_FIXTURES / "detail.html").read_text(encoding="utf-8"), flagged)
 
 

@@ -29,7 +29,6 @@ from urllib.parse import urljoin
 
 from bs4 import Tag
 
-from minjob_ingest.models import Attachment
 from minjob_ingest.sources.adapters.base import (
     ListRequest,
     ParseError,
@@ -42,7 +41,9 @@ from minjob_ingest.sources.adapters.base import (
     external_id_from_url,
     image_urls_in,
     normalized_text,
+    page_query_request,
     parse_html,
+    require_attachment_evidence,
     require_date,
     require_numeric_id,
     require_one,
@@ -80,12 +81,7 @@ def list_request(source: SourceConfig, page: int) -> ListRequest:
     `layout` 토큰이 있어 `(source, page)`만 받는 계약으로 만들 수 없다. GET이 먹는 것을
     실측했다(BU와 같은 CMS · `_curPage`가 바뀐다).
     """
-    if page < 1:
-        raise ValueError(f"page는 1 이상이어야 함 ({page})")
-    if page == 1:
-        return ListRequest(url=source.list_url)
-    separator = "&" if "?" in source.list_url else "?"
-    return ListRequest(url=f"{source.list_url}{separator}{_PAGE_PARAM}={page}")
+    return page_query_request(source, page, param=_PAGE_PARAM)
 
 
 def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
@@ -112,25 +108,12 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     raw_text = normalized_text(body)
     images = image_urls_in(body, base_url=ref.url)
     files = attachments_in(soup.select_one(_FILE_LIST), base_url=ref.url)
-    _check_attachments_found(ref, files=files)
+    require_attachment_evidence(ref, source_key=SOURCE_KEY, selector=_FILE_LIST, found=files)
     if not raw_text and not images and not files:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 본문·이미지·첨부가 모두 없음 — 셀렉터 `{_BODY}` 확인"
         )
     return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
-
-
-def _check_attachments_found(ref: PostingRef, *, files: tuple[Attachment, ...]) -> None:
-    """목록이 "첨부 있음"이라고 한 글에서 첨부가 0개면 에러.
-
-    `_FILE_LIST`가 빗나가면 첨부가 **조용히** 0개가 되고, 본문이 있는 공고(대다수)는
-    "정상인데 첨부 0개"로 통과한다. 목록에 이미 독립 신호가 있으니 쓴다.
-    """
-    if ref.list_meta.get("has_attachment") and not files:
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 목록은 첨부가 있다고 표시했는데 0개 —"
-            f" 셀렉터 `{_FILE_LIST}` 확인"
-        )
 
 
 def _is_notice(row: Tag) -> bool:

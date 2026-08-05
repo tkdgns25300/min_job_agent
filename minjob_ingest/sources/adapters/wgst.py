@@ -40,6 +40,7 @@ from minjob_ingest.sources.adapters.base import (
     cell_text,
     image_urls_in,
     normalized_text,
+    page_query_request,
     parse_html,
     require_date,
     require_numeric_id,
@@ -72,10 +73,7 @@ def list_request(source: SourceConfig, page: int) -> ListRequest:
 
     1페이지에도 `pageno=1`을 명시한다 — 기본 페이지가 어디인지 서버 구현에 맡기지 않는다.
     """
-    if page < 1:
-        raise ValueError(f"page는 1 이상이어야 함 ({page})")
-    separator = "&" if "?" in source.list_url else "?"
-    return ListRequest(url=f"{source.list_url}{separator}{_PAGE_PARAM}={page}")
+    return page_query_request(source, page, param=_PAGE_PARAM, always_include=True)
 
 
 def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
