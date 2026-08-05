@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -292,3 +293,21 @@ def test_logs_emitted_during_collect_reach_the_console(
     monkeypatch.setattr(cli, "collect_source", logging_collect)
     main(["collect", "--config", str(_write_config(tmp_path)), "--dry-run"])
     assert "YTUS 일시 오류 — 재시도" in capsys.readouterr().out
+
+
+def test_failed_details_are_reported(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 글 하나의 실패로 게시판을 포기하지 않되 **조용히 넘기지도 않는다**.
+
+    개수와 사유를 보여줘야 운영자가 셀렉터가 조금씩 어긋나는 것을 알아챈다.
+    """
+    partial = replace(
+        _canned_report(rows=18, saved=17),
+        failed=1,
+        failure_samples=("25580: ParseError: 본문 컨테이너 없음",),
+    )
+    _run_collect_with(monkeypatch, tmp_path, outcome=partial, dry_run=False)
+    printed = capsys.readouterr().out
+    assert "상세를 못 읽은 글 1건" in printed
+    assert "25580" in printed

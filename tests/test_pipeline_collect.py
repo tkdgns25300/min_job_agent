@@ -693,3 +693,59 @@ def test_a_run_option_can_go_below_the_source_limit(
             today=_TODAY,
         )
     assert report.pages_read == 1
+
+
+# ── 글 하나의 실패가 게시판 전체를 멈추지 않는다 ─────────────────
+
+
+class _FlakyBoard(_Board):
+    """특정 글번호의 상세만 깨진 응답을 주는 게시판 대역."""
+
+    def __init__(self, list_html: str, detail_html: str, *, broken: str) -> None:
+        super().__init__(list_html, detail_html)
+        self._broken = broken
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        if self._broken in str(request.url) and "/board/view/" in request.url.path:
+            # 본문 컨테이너가 없는 페이지 — 어댑터가 ParseError 를 낸다.
+            return httpx.Response(200, text="<html><body>" + "가" * 300 + "</body></html>")
+        return super().handler(request)
+
+
+def test_one_broken_posting_does_not_abandon_the_board(
+    board_html: tuple[str, str], tmp_path: Path
+) -> None:
+    """⚠️ 800행 게시판에서 350번째가 이상하면 나머지 450건에 **영구히** 도달하지 못한다.
+
+    원장이 이미 저장한 것만 건너뛰고 같은 자리에서 또 실패하기 때문이다. 그래서 글 단위로
+    격리하고 개수를 보고한다.
+    """
+    board = _FlakyBoard(*board_html, broken="25580")
+    report = _collect(board, JsonStore(tmp_path / "data"), CollectOptions(max_pages=1))
+    assert report.failed == 1
+    assert report.saved == 17  # 18건 중 깨진 1건만 빠졌다
+    assert any("25580" in sample for sample in report.failure_samples)
+
+
+def test_all_details_failing_fails_the_source(board_html: tuple[str, str], tmp_path: Path) -> None:
+    """⚠️ 전량 실패는 어댑터가 깨진 것이다.
+
+    "실패 800건·저장 0건"을 경고로 흘리면 조용한 0건과 다르지 않다.
+    """
+    broken = "<html><body>" + "가" * 300 + "</body></html>"
+    board = _Board(board_html[0], broken)
+    with pytest.raises(ParseError, match="전부 실패"):
+        _collect(board, JsonStore(tmp_path / "data"), CollectOptions(max_pages=1))
+
+
+def test_failure_samples_are_capped(board_html: tuple[str, str], tmp_path: Path) -> None:
+    """전부 남기면 800건 실패 시 리포트가 로그가 된다."""
+    broken = "<html><body>" + "가" * 300 + "</body></html>"
+    board = _Board(board_html[0], broken)
+    tally_report = None
+    try:
+        _collect(board, JsonStore(tmp_path / "data"), CollectOptions(max_pages=1))
+    except ParseError as err:
+        tally_report = str(err)
+    assert tally_report is not None
+    assert tally_report.count("ParseError") <= 3

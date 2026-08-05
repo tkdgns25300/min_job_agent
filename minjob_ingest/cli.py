@@ -422,7 +422,22 @@ def _print_report(console: Console, report: CollectReport, *, dry_run: bool) -> 
         )
         for attachment in sample.attachments:
             console.bullet(console.paint(f"첨부 {attachment.name}", "dim"))
+    _warn_if_details_failed(console, report)
     _warn_if_short(console, report)
+
+
+def _warn_if_details_failed(console: Console, report: CollectReport) -> None:
+    """상세를 못 읽은 글이 있으면 알린다.
+
+    한 건의 실패로 게시판 전체를 포기하지 않되(SPEC §4) **조용히 넘기지도 않는다** — 개수와
+    사유를 보여줘야 운영자가 셀렉터가 조금씩 어긋나는 것을 알아챈다.
+    """
+    if not report.failed:
+        return
+    console.warn(
+        f"상세를 못 읽은 글 {report.failed}건 — 나머지는 계속 수집했습니다.",
+        *report.failure_samples,
+    )
 
 
 def _warn_if_short(console: Console, report: CollectReport) -> None:

@@ -18,7 +18,7 @@ from typing import Final
 from uuid import UUID
 
 from minjob_ingest.clock import utc_now
-from minjob_ingest.fetch.client import SourceClient
+from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.models import SourceData
 from minjob_ingest.sources.adapters.base import ParseError, PostingRef, RawPosting
 from minjob_ingest.sources.adapters.registry import Adapter, needs_detail_request
@@ -195,6 +195,12 @@ class CollectReport:
     newest: date | None
     #: 사람이 눈으로 확인할 표본.
     samples: tuple[PostingRef, ...]
+    #: 상세를 읽지 못한 글 수. ⚠️ **한 건이 그 게시판 전체를 멈추게 하지 않는다** — 800행
+    #: 게시판에서 350번째가 이상하면 나머지 450건에 영구히 도달하지 못한다(원장이 이미 저장한
+    #: 것만 건너뛰고 같은 자리에서 또 실패한다). 세어서 보고하고 계속 간다.
+    failed: int = 0
+    #: 실패 사유 표본. 개수만으로는 무엇이 깨졌는지 알 수 없다.
+    failure_samples: tuple[str, ...] = ()
     #: `--dry-run`에서 상세 파싱을 확인한 표본(없으면 새 글이 없었다는 뜻).
     detail_sample: RawPosting | None = None
     #: 적용된 게시일 컷오프(`None`이면 날짜로 자르지 않았다).
@@ -235,6 +241,9 @@ class Progress:
 #: 진행 알림 수신자. `None`이면 알리지 않는다(테스트·비대화형).
 ProgressSink = Callable[[Progress], None]
 
+#: 실패 사유를 몇 개까지 남길지. 전부 남기면 800건 실패 시 리포트가 로그가 된다.
+_FAILURE_SAMPLE_SIZE: Final = 3
+
 #: `--dry-run` 리포트에 넣을 표본 수.
 _SAMPLE_SIZE: Final = 3
 
@@ -272,20 +281,27 @@ def collect_source(
         _notify(on_progress, tally)
 
         for ref in plan.fresh:
-            if options.dry_run:
-                if not tally.sample_detail_once(adapter, client, ref):
-                    continue
-            else:
-                assert run_id is not None  # 위에서 검증
-                tally.saved += int(
-                    store.save_source_data(_record(source, adapter, client, ref, run_id))
-                )
-                tally.details += 1
+            # ⚠️ 글 하나의 실패로 게시판 전체를 포기하지 않는다(`CollectReport.failed` 참조).
+            # 잡는 것은 **예상된 실패만**이다 — 그 밖의 예외는 버그라서 그대로 터뜨린다.
+            try:
+                if options.dry_run:
+                    if not tally.sample_detail_once(adapter, client, ref):
+                        continue
+                else:
+                    assert run_id is not None  # 위에서 검증
+                    tally.saved += int(
+                        store.save_source_data(_record(source, adapter, client, ref, run_id))
+                    )
+                    tally.details += 1
+            except (ParseError, FetchError) as err:
+                tally.note_failure(ref, err)
+                continue
             _notify(on_progress, tally, latest=ref)
         if not plan.has_more_pages:
             capped = False
             break
 
+    tally.require_some_saved(source.key, dry_run=options.dry_run)
     return tally.report(
         source.key,
         dry_run=options.dry_run,
@@ -388,6 +404,8 @@ class _Tally:
     shifted: int = 0
     #: 상세를 실제로 요청한 횟수. `saved`와 다르다 — 이미 있는 행은 저장되지 않는다.
     details: int = 0
+    failed: int = 0
+    failures: list[str] = field(default_factory=list)
     scanned: set[str] = field(default_factory=set)
     dates: list[date] = field(default_factory=list)
     samples: list[PostingRef] = field(default_factory=list)
@@ -414,6 +432,28 @@ class _Tally:
             ref.posted_on for ref in (*plan.fresh, *plan.seen) if ref.posted_on is not None
         )
         self.samples.extend(plan.fresh[: max(0, _SAMPLE_SIZE - len(self.samples))])
+
+    def note_failure(self, ref: PostingRef, err: Exception) -> None:
+        """상세 실패를 세고 사유 표본을 남긴다. **삼키는 것이 아니라 보고로 돌린다.**"""
+        self.failed += 1
+        if len(self.failures) < _FAILURE_SAMPLE_SIZE:
+            self.failures.append(f"{ref.external_id}: {type(err).__name__}: {err}")
+
+    def require_some_saved(self, source_key: str, *, dry_run: bool) -> None:
+        """실패만 있고 하나도 못 가져왔으면 **소스를 실패시킨다.**
+
+        글 하나의 실패는 넘어가도 되지만 **전량 실패는 어댑터가 깨진 것**이다(상세 셀렉터가
+        빗나갔거나 게시판이 차단했다). 그걸 "실패 800건·저장 0건"이라는 경고로 흘리면
+        조용한 0건과 다르지 않다.
+        """
+        if not self.failed:
+            return
+        got = self.detail_sample is not None if dry_run else bool(self.saved)
+        if not got:
+            raise ParseError(
+                f"{source_key}: 상세 {self.failed}건이 전부 실패하고 하나도 못 가져왔음 —"
+                f" 어댑터·차단 확인 ({' · '.join(self.failures)})"
+            )
 
     def sample_detail_once(self, adapter: Adapter, client: SourceClient, ref: PostingRef) -> bool:
         """`--dry-run`에서 상세 파싱을 한 번만 확인한다(요청 1건). 요청했으면 `True`."""
@@ -456,6 +496,8 @@ class _Tally:
             oldest=min(self.dates, default=None),
             newest=max(self.dates, default=None),
             samples=tuple(self.samples),
+            failed=self.failed,
+            failure_samples=tuple(self.failures),
             detail_sample=self.detail_sample if dry_run else None,
             cutoff=cutoff,
             max_pages=max_pages,
