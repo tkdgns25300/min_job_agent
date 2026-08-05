@@ -24,10 +24,11 @@
       "list_url": "http://calvin.ac.kr/main/boardList.do?brd_mgrno=692&menu_no=2282",
       "flags": {
         "http_only": true,
-        "needs_session": true
+        "needs_session": true,
+        "image_only": true
       },
       "detail_pattern": "/main/boardView.do?brd_mgrno=692&menu_no=2282&brd_no={id}",
-      "fetch_note": "eGov. https 연결거부→http 전용. onclick fView('{id}')→brd_no. pagination page_now. ⚠️2차검증: 상세는 **세션 쿠키 필요** — 목록 GET으로 JSESSIONID 확보 후 그 쿠키로 boardView(쿠키자 없이 cold 요청은 404)."
+      "fetch_note": "eGov. https 연결거부→http 전용. onclick fView('{id}')→brd_no. pagination page_now. ⚠️2차검증: 상세는 **세션 쿠키 필요** — 목록 GET으로 JSESSIONID 확보 후 그 쿠키로 boardView(쿠키자 없이 cold 요청은 404). ⚠️2026-08-04 실측 추가 — `image_only`: 본문 텍스트가 **항상 0자**이고 내용이 인라인 `data:image/png;base64`(약 150KB) 한 장에 들어 있다(2026-08-04 실측 · 2건 확인)."
     },
     {
       "key": "KWANGSHIN",
@@ -104,7 +105,7 @@
         "www_required": true
       },
       "detail_pattern": "/Board/BoardView.aspx?BoardNo={id}&BoardMstNo=6&CategoryNo=1",
-      "fetch_note": "ASP.NET. apex 404→www 필수. pagination PageNo. BoardMstNo=6이 이 게시판."
+      "fetch_note": "ASP.NET. apex 404→www 필수. pagination PageNo. BoardMstNo=6이 이 게시판. ⚠️2026-08-04 재실측: 공지행에 클래스가 없다 — 번호 칸의 `공지` 글자가 유일한 신호. **첨부 링크에 href가 없고**(`javascript:__doPostBack`) 실제 경로는 형제 hidden input `hdnFilePath`에 있다."
     },
     {
       "key": "PCK",
@@ -115,7 +116,7 @@
       "encoding": "utf-8",
       "list_url": "https://pck.or.kr/bbs/board.php?bo_table=SM05_05",
       "detail_pattern": "/bbs/board.php?bo_table=SM05_05&wr_id={id}",
-      "fetch_note": "그누보드. bo_notice 5개 pinned skip. pagination page. apex OK(www 불요)."
+      "fetch_note": "그누보드. bo_notice 5개 pinned skip. pagination page. apex OK(www 불요). ⚠️2026-08-04 재실측: 고정공지는 5개가 아니라 **2개**이고 `bo_notice` 클래스가 없다 — 번호 칸의 아이콘 이미지가 유일한 신호다. 목록 표는 `form#fboardlist` 안에 있고 빈 tr 23개가 섞여 있다."
     },
     {
       "key": "SJS",
@@ -180,7 +181,7 @@
       "encoding": "utf-8",
       "list_url": "https://pgak.net/sys-infra/components/board/list.asp?skin=basic&boardid=B5FF8",
       "detail_pattern": "/sys-infra/components/board/view.asp?boarddetailseq={id}&boardid=B5FF8",
-      "fetch_note": "⚠️문서의 spoofUA·iframe 오류(재현 안 됨). 서버렌더 tr.list. Cloudflare. HEAD→404·빈 UA→520(GET+UA 사용)."
+      "fetch_note": "⚠️문서의 spoofUA·iframe 오류(재현 안 됨). 서버렌더 tr.list. Cloudflare. HEAD→404·빈 UA→520(GET+UA 사용). ⚠️2026-08-04 재실측: **상세 본문은 서버렌더가 아니다** — 숨은 `textarea#temp-raw-content`에 HTML 문자열로 있고 화면은 JS가 채운다(한 번 더 파싱해야 한다). 목록에 모바일 중복행(`tr.list.m_wrap`)이 12개 섞여 있다. 페이징 `page`."
     },
     {
       "key": "KTS",
@@ -206,7 +207,7 @@
       "encoding": "utf-8",
       "list_url": "https://best.kosin.ac.kr/th/index.php?pCode=MN6000030&mode=list",
       "detail_pattern": "/th/index.php?pCode=MN6000030&mode=view&idx={id}",
-      "fetch_note": "IIS/PHP. 공지 pinned. 청빙+타 교단 혼재→교단은 공고별 판정. HEAD Content-Length:0→GET."
+      "fetch_note": "IIS/PHP. 공지 pinned. 청빙+타 교단 혼재→교단은 공고별 판정. HEAD Content-Length:0→GET. ⚠️2026-08-04 재실측: **2페이지 이상의 상세 href에 `pg=N`이 끼어들어** config `detail_pattern` 접두 매칭이 전 행에서 실패한다 → id를 쿼리 이름(`idx`)으로 뽑아야 한다. 안 하면 1페이지 말고 전부 유실된다."
     },
     {
       "key": "HAPSHIN",
@@ -217,7 +218,7 @@
       "encoding": "utf-8",
       "list_url": "https://hapdong.ac.kr/bbs/board.php?bo_table=e03",
       "detail_pattern": "/bbs/board.php?bo_table=e03&wr_id={id}",
-      "fetch_note": "⚠️도메인 hapdong.ac.kr이나 교단=예장'합신'(합동 아님). source_key는 혼동 방지 위해 HAPSHIN. 그누보드. 공지 6개 pinned. apex·www 둘다 OK. pagination page(731p)."
+      "fetch_note": "⚠️도메인 hapdong.ac.kr이나 교단=예장'합신'(합동 아님). source_key는 혼동 방지 위해 HAPSHIN. 그누보드. 공지 6개 pinned. apex·www 둘다 OK. pagination page(731p). ⚠️2026-08-04 재실측: 고정공지는 6개가 아니라 **1개**. `tr.bo_notice`가 아니라 `td.list-subject.notice`+`span.wr-notice`로 표시된다. 연도 없는 날짜의 구분자가 **점**(`08.02`)이다."
     },
     {
       "key": "MTU",
@@ -232,7 +233,7 @@
         "spoof_ua": true
       },
       "detail_pattern": "/mtu/board/view.do?mId=162&brdIdx={id}",
-      "fetch_note": "⚠️2차검증: 기본 UA→보안차단 스텁(0건), **브라우저 UA 필수**(spoofUA). apex 301→www. 상세에 mId=162 필요. brdIdx=글번호."
+      "fetch_note": "⚠️2차검증: 기본 UA→보안차단 스텁(0건), **브라우저 UA 필수**(spoofUA). apex 301→www. 상세에 mId=162 필요. brdIdx=글번호. ⚠️2026-08-04 재실측: 감신대(감리교신학대)다. **2페이지 이상의 상세 href에 `page=N`이 끼어들어** 접두 매칭이 실패한다 → id를 쿼리 이름(`brdIdx`)으로 뽑는다. 제목 칸 클래스가 `tltle`(게시판 자체 오타)."
     },
     {
       "key": "UHS",
@@ -243,10 +244,11 @@
       "encoding": "utf-8",
       "list_url": "https://www.uhs.ac.kr/gsthe/2386/subview.do",
       "flags": {
-        "www_required": true
+        "www_required": true,
+        "soft_200": true
       },
       "detail_pattern": "/bbs/gsthe/183/{id}/artclView.do",
-      "fetch_note": "Konnect subview. apex 000(dead)→www 필수. 목록 menu 2386·board 183. id=artclNo(경로 세그먼트)."
+      "fetch_note": "Konnect subview. apex 000(dead)→www 필수. 목록 menu 2386·board 183. id=artclNo(경로 세그먼트). ⚠️2026-08-04 실측 추가 — `soft_200`: 잘못된 상세 경로가 HTTP 200 + eGov '알림메세지' 껍데기를 준다(BU와 동일 · 2026-08-04 실측)."
     },
     {
       "key": "MOKWON",
@@ -290,7 +292,7 @@
       "encoding": "utf-8",
       "list_url": "https://job.kbtus.ac.kr/job/CMS/Board/Board.do?mCode=MN014",
       "detail_pattern": "/job/CMS/Board/Board.do?mCode=MN014&mode=view&mgr_seq=91&board_seq={id}",
-      "fetch_note": "⚠️GET 본문은 UTF-8(HEAD 헤더가 EUC-KR로 오보고). HEAD→400이라 GET 사용. 상세링크 javascript:URL_encode()이나 실제는 GET query. ~20건 롤링."
+      "fetch_note": "⚠️GET 본문은 UTF-8(HEAD 헤더가 EUC-KR로 오보고). HEAD→400이라 GET 사용. 상세링크 javascript:URL_encode()이나 실제는 GET query. ~20건 롤링. ⚠️2026-08-04 재실측: 페이징 `page` 확인. **2페이지는 실제로 비어 있다**(약 20건 롤링 게시판) — `td.no-data` '등록된 게시글이 없습니다.'를 정상 빈 페이지로 처리한다."
     },
     {
       "key": "KOREABAPTIST",
@@ -301,7 +303,7 @@
       "encoding": "utf-8",
       "list_url": "https://koreabaptist.or.kr/Board/Index/21317",
       "detail_pattern": "/Board/Detail/21317/{id}",
-      "fetch_note": "21317=board 식별자(글번호 아님). row onclick location.href. 이미지 공고 다수→Gemini 멀티모달. id=마지막 경로."
+      "fetch_note": "21317=board 식별자(글번호 아님). row onclick location.href. 이미지 공고 다수→Gemini 멀티모달. id=마지막 경로. ⚠️2026-08-04 재실측: 행 onclick이 아니라 `td.document-title` 안의 실제 `<a>`를 읽는다. 상세 페이지가 목록 15건을 다시 그리므로(`div.list-in-detail`) 본문 범위를 `div.detail-content`로 좁혀야 한다. 목록의 💾 아이콘은 별도 첨부가 아니라 **본문 이미지**를 뜻한다."
     },
     {
       "key": "KEHC",
@@ -312,7 +314,7 @@
       "encoding": "utf-8",
       "list_url": "https://kehc.org/home/recruit/view_list/page/0",
       "detail_pattern": "/home/recruit/read_post/{id}",
-      "fetch_note": "기독교대한성결교회(기성). read_post({id}) JS→경로. pagination /view_list/page/N(step 50). 저번호 공지 pinned."
+      "fetch_note": "기독교대한성결교회(기성). read_post({id}) JS→경로. pagination /view_list/page/N(step 50). 저번호 공지 pinned. ⚠️2026-08-04 재실측: `page/N`은 페이지 번호가 아니라 **행 오프셋**이다(0·50·100…). 날짜가 **`YY.MM.DD`**(2자리 연도)라 공용 파서가 거부한다. **잠긴 글(`ico_lock.gif`)이 있고** 그 상세는 200이지만 본문이 비어 있다(비공개) → 목록에서 제외한다(가드레일 #1 · 우회 안 함). 본문 이메일은 Cloudflare가 `[email protected]`으로 가린다."
     },
     {
       "key": "SUNGKYUL",
@@ -323,7 +325,10 @@
       "encoding": "utf-8",
       "list_url": "https://sungkyul.org/NOS-Board/bbs.php?idx=com9",
       "detail_pattern": "https://www.sungkyul.org/NOS-Board/bbs.php?uid={id}&idx=com9&retype=view",
-      "fetch_note": "2차검증: 빈 UA→403이라 **UA 문자열 필수**(아무 UA나 OK·브라우저 위장까진 불요). 예수교대한성결교회(예성). uid=DB고유. 상세 www 절대경로. 공지행. 2026.07 활성."
+      "fetch_note": "2차검증: 빈 UA→403이라 **UA 문자열 필수**(아무 UA나 OK·브라우저 위장까진 불요). 예수교대한성결교회(예성). uid=DB고유. 상세 www 절대경로. 공지행. 2026.07 활성. ⚠️2026-08-04 실측 추가 — `soft_200`: 없는 `uid`가 HTTP 200을 주고 `table.board-view`가 없는 껍데기를 준다(2026-08-04 실측).목록 제목이 약 26자에서 잘리고 `title` 속성도 없다 — 온전한 제목은 상세에만 있다.",
+      "flags": {
+        "soft_200": true
+      }
     },
     {
       "key": "KAICAM",
@@ -359,7 +364,7 @@
       "encoding": "utf-8",
       "list_url": "https://www.ttgu.ac.kr/index.php?mid=ttgu_board_03",
       "detail_pattern": "/index.php?mid=ttgu_board_03&document_srl={id}",
-      "fetch_note": "XpressEngine(mid=). document_srl=글번호. pagination page(~113p). www 호스트."
+      "fetch_note": "XpressEngine(mid=). document_srl=글번호. pagination page(~113p). www 호스트. ⚠️2026-08-04 재실측: 본문은 `div.rd_body`다(`div.xe_content`는 댓글과 공유). 2페이지 href의 파라미터 순서가 뒤바뀌어 id는 `document_srl` 이름으로 뽑는다."
     },
     {
       "key": "ACTS",
@@ -370,7 +375,7 @@
       "encoding": "euc-kr",
       "list_url": "https://www.acts.ac.kr/modules/board/bd_list.asp?id=acts_csrd_guide&ca_no=1",
       "detail_pattern": "/modules/board/bd_view.asp?no={id}&id=acts_csrd_guide",
-      "fetch_note": "⚠️2차검증 대정정: 올바른 게시판 = **bd_list.asp?…&ca_no=1(사역정보 탭)** — 정적 12행. 기존 bd_jobInfo.asp(ca_no=6 '실시간채용정보')는 headless+일반채용(사역 아님)이라 폐기 → headless 불요. no=글번호. EUC-KR."
+      "fetch_note": "⚠️2차검증 대정정: 올바른 게시판 = **bd_list.asp?…&ca_no=1(사역정보 탭)** — 정적 12행. 기존 bd_jobInfo.asp(ca_no=6 '실시간채용정보')는 headless+일반채용(사역 아님)이라 폐기 → headless 불요. no=글번호. EUC-KR. ⚠️2026-08-04 재실측: '정적 12행'은 **11행**(공지 1 + 공고 10)이다. 페이징 파라미터는 `gotopage`. 이전의 '본문 34자' 실패는 재현되지 않았다 — 표시번호를 `no`에 넣었을 때로 보인다(정규형 URL은 200/57KB · 로그인 불요)."
     },
     {
       "key": "WGST",
@@ -384,7 +389,7 @@
         "http_only": true
       },
       "detail_pattern": "/wgst_renew/board/boardview.asp?key=6131&seq={id}",
-      "fetch_note": "http 전용(https는 -k로도 000). ASP. seq=글번호. pagination pageno. 2026-07-28 최신글 확인(활성)."
+      "fetch_note": "http 전용(https는 -k로도 000). ASP. seq=글번호. pagination pageno. 2026-07-28 최신글 확인(활성). ⚠️2026-08-04 재실측: 표가 아니라 `ul.newsfeed_lst > li.item` 12건/페이지. 목록 href의 파라미터 순서가 `detail_pattern`과 달라 접두 매칭이 실패한다 → `seq`를 이름으로 뽑는다."
     }
   ]
 }

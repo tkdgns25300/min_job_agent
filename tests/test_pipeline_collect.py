@@ -222,8 +222,10 @@ def test_unregistered_board_fails_loudly() -> None:
     """어댑터가 없는 게시판을 조용히 건너뛰면 "게시판이 조용하네"로 오해한다."""
     from minjob_ingest.sources.adapters.registry import AdapterMissing, find_adapter
 
-    with pytest.raises(AdapterMissing, match="PUTS"):
-        find_adapter("PUTS")
+    # ⚠️ 실제 게시판 키를 쓰지 않는다 — 그 게시판에 어댑터가 생기면 이 테스트가 깨진다
+    #    (PUTS로 쓰여 있었고 실제로 깨졌다). 검사 대상은 게시판이 아니라 **없을 때의 동작**이다.
+    with pytest.raises(AdapterMissing, match="NOSUCHBOARD"):
+        find_adapter("NOSUCHBOARD")
 
 
 def test_every_registered_key_exists_in_the_source_config() -> None:

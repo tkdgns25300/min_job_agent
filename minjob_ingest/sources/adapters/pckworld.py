@@ -38,7 +38,6 @@ from minjob_ingest.sources.adapters.base import (
     normalized_text,
     parse_html,
     require_one,
-    require_some_kept,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -68,12 +67,15 @@ def list_request(source: SourceConfig, page: int) -> ListRequest:
 def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
     """목록 HTML → 공고 참조들.
 
-    고정공지가 없는 게시판이다(광고 그리드) — 그래도 전량이 걸러지는 상황은 잡아 둔다.
+    ⚠️ 고정공지가 없는 게시판이라(광고 그리드) **걸러내는 것이 없다** — 항목 하나마다 참조
+    하나가 나오고 못 읽으면 그 자리에서 실패한다. 그래서 `require_some_kept`(전량 필터 감지)를
+    두지 않는다. 발동할 수 없는 가드는 검사하는 척만 한다.
+
+    그리드가 비어 있는 것(마지막 페이지)은 여기서 에러로 보지 않는다 — 페이징이 그걸 필요로
+    한다. 1페이지가 비는 이상 상황은 fixture 테스트와 `source_health`의 목록 0행 경보가 잡는다.
     """
     grid = require_one(parse_html(html), _GRID, what=f"{SOURCE_KEY} 목록")
-    items = grid.select(_ITEM)
-    refs = [_ref_from_item(item, source) for item in items]
-    require_some_kept(refs, items, source_key=SOURCE_KEY, filtered_by=f"항목 셀렉터(`{_ITEM}`)")
+    refs = [_ref_from_item(item, source) for item in grid.select(_ITEM)]
     return as_listing(refs, source_key=SOURCE_KEY)
 
 

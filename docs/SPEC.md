@@ -177,7 +177,7 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
 | `raw_text` | text | 확보 텍스트(이미지형은 얇거나 빈 것이 **정상** — config `image_only`) |
 | `title` | text NOT NULL | 게시판 목록의 제목 **그대로**(정리본은 `review_data.title`). 별도 컬럼인 이유: `raw_meta`에 묻으면 운영자가 원자료 표에서 무슨 공고인지 못 보고, 원장 대조에서 Store가 어댑터 키 이름을 알아야 한다 |
 | `posted_on` | date NULL | 목록에 표시된 게시일. **백필 컷오프의 유일한 기준**(§4) — 구조화 전이라 `review_data.posted_at`이 없다. 목록에 날짜가 없는 소스는 NULL이고 페이지 수로 범위를 정한다 |
-| `image_urls` | text[] | **본문에 인라인으로 박힌** 이미지 URL. 구조화 직전 바이트 fetch용(§3). raw_meta에 섞지 않고 **별도 컬럼** |
+| `image_urls` | text[] | **본문에 인라인으로 박힌** 이미지 URL. 구조화 직전 바이트 fetch용(§3). raw_meta에 섞지 않고 **별도 컬럼**. ⚠️ **`data:` URI가 들어올 수 있다**(2026-08-04 실측 · CALVIN은 본문 텍스트가 0자이고 내용이 인라인 `data:image/png;base64` 약 150KB 한 장이다) → 구조화는 **스킴을 보고 갈라야 한다**: `http(s)`는 fetch, `data:`는 **fetch하지 말고 그대로 디코드**한다. 이걸 URL로 취급해 요청하면 그 게시판 전체가 실패한다 |
 | `attachments` | jsonb | **첨부파일 전부** `[{name, url}]`. 이미지만이 아니라 HWP·PDF도 담는다 — 원문 증거를 최대한 남긴다(2026-08-04 추가). 구조화는 `is_image`인 것만 Gemini에 보내고, 못 읽는 형식은 URL만 검수로 넘긴다(사람이 열 수 있다). ⚠️ **파일명을 함께 저장**한다 — 다운로드 URL에 파일명이 없어(`/download/…/57439f…`) 이름 없이는 종류를 알 수 없다 |
 | `raw_meta` | jsonb | 작성일·조회수·첨부·게시판 원필드(비정형) |
 | `structured_at` | timestamptz NULL | ⭐ **판정 완료 시각**(게이트1 YES·NO **둘 다** 기록). **실패 시 NULL 유지** → 재구조화 대상(§4). 이 컬럼이 "제외됨"과 "실패함"을 구분한다 |

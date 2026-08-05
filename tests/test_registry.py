@@ -29,8 +29,11 @@ EXPECTED_FLAG_OWNERS = {
     # PUTS는 cipher 보안수준이 서버보다 높아 핸드셰이크 자체가 안 된다.
     "insecure_tls": {"DAESHIN", "KTS", "PUTS"},
     "needs_session": {"CALVIN", "CSU"},
-    "image_only": {"PCKWORLD"},
-    "soft_200": {"BU", "KAICAM"},
+    # CALVIN 추가(2026-08-04 실측): 본문 텍스트가 항상 0자이고 내용이 인라인
+    # `data:image/png;base64` 한 장(약 150KB)에 들어 있다.
+    "image_only": {"PCKWORLD", "CALVIN"},
+    # UHS·SUNGKYUL 추가(2026-08-04 실측): 잘못된 상세 id에도 HTTP 200 + 껍데기를 준다.
+    "soft_200": {"BU", "KAICAM", "UHS", "SUNGKYUL"},
 }
 
 

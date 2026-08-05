@@ -22,7 +22,7 @@ from urllib.parse import unquote, urljoin, urlsplit
 from bs4 import BeautifulSoup, Tag
 from bs4.element import NavigableString
 
-from minjob_ingest.clock import parse_iso_date
+from minjob_ingest.clock import board_today, parse_iso_date
 from minjob_ingest.models import Attachment, JsonValue, as_json_value
 
 #: `lxml`을 쓴다 — 깨진 마크업(닫히지 않은 `<td>` 등)에서 표준 파서보다 관대하다.
@@ -33,6 +33,12 @@ HTML_PARSER: Final = "lxml"
 #: ⚠️ `td`·`th`가 없으면 `<td>교회명</td><td>도원교회</td>` → `"교회명도원교회"`로 붙는다.
 #: YTUS 본문엔 표가 없지만 이 파일은 31곳 공용이고 표 양식 본문이 흔하다.
 _BLOCK_TAGS: Final = (
+    # `dl`/`dt`/`dd`는 양식형 본문에서 라벨·값 쌍으로 쓰인다 — 넣지 않으면
+    # `전화번호010-3832-0153`·`모집인원1명`처럼 **라벨이 값에 붙어** 구조화가 잘못 읽는다
+    # (PUTS 실측). `td`/`th`를 넣은 것과 같은 이유다.
+    "dl",
+    "dt",
+    "dd",
     "p",
     "div",
     "br",
@@ -252,6 +258,47 @@ def require_date(text: str, *, source_key: str, cell: str) -> date:
         return parse_iso_date(trimmed.replace(".", "-").replace("/", "-"))
     except ValueError as err:
         raise ParseError(f"{source_key}: 게시일 형식이 예상과 다름 ({trimmed!r})") from err
+
+
+#: 오늘 쓴 글은 시각만 나온다(`15:58`).
+_TIME_ONLY: Final = re.compile(r"^\d{1,2}:\d{2}$")
+#: 그 이전 글은 **연도 없이** 월·일만 나온다(`09-26`·`08.02` — 구분자는 스킨마다 갈린다).
+_MONTH_DAY: Final = re.compile(r"^(\d{1,2})[-.](\d{1,2})$")
+
+
+def gnuboard_list_date(text: str, *, source_key: str, cell: str, today: date | None = None) -> date:
+    """그누보드 목록의 게시일을 실제 날짜로. **연도 없는 표기를 여기서 되살린다.**
+
+    `15:58` = 오늘 · `09-26` = 오늘 이전의 가장 최근 그 월·일 · `2022.09.23` = 그대로 파싱.
+    `today`는 테스트가 고정하기 위한 것이고, 비우면 `board_today()`를 쓴다.
+
+    ⚠️ 되살린 연도가 항상 맞지는 않는다 — 그누보드는 몇 년 전 글도 `MM-DD`로 표시하므로 아주
+    오래된 글은 최근 1년 안으로 당겨진다. 컷오프(`--months`)가 **넉넉해지는** 방향이라 공고를
+    잃지는 않는다(SPEC §4). 정확한 게시일은 상세에 있고 구조화가 읽는다.
+    """
+    trimmed = text.strip()
+    if not trimmed:
+        raise ParseError(f"{source_key}: 게시일 칸이 비었음 — 셀렉터 `{cell}` 확인")
+    anchor = board_today() if today is None else today
+    if _TIME_ONLY.match(trimmed):
+        return anchor
+    found = _MONTH_DAY.match(trimmed)
+    if found is None:
+        # 연도까지 표시된 오래된 글(구분자 `-`·`.`·`/`는 base가 흡수한다).
+        return require_date(trimmed, source_key=source_key, cell=cell)
+    return _most_recent(int(found.group(1)), int(found.group(2)), anchor, source_key=source_key)
+
+
+def _most_recent(month: int, day: int, today: date, *, source_key: str) -> date:
+    """올해 → 작년 순으로 **오늘 이전의 가장 최근** 그 월·일. 올해로 두면 미래가 되면 작년이다."""
+    for year in (today.year, today.year - 1):
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            continue  # 윤일(02-29)이 그 해에 없는 경우
+        if candidate <= today:
+            return candidate
+    raise ParseError(f"{source_key}: 게시일 {month:02d}-{day:02d}을 실제 날짜로 되살릴 수 없음")
 
 
 def require_numeric_id(found: str, *, source_key: str) -> str:

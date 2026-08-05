@@ -50,7 +50,8 @@ def _row(
 ) -> str:
     return (
         f'<tr><td class="No">{no}</td>'
-        f'<td class="Title"><a href="/html/05_community/03.php?AT=V&amp;b_id={ident}">{title}</a></td>'
+        f'<td class="Title">'
+        f'<a href="/html/05_community/03.php?AT=V&amp;b_id={ident}">{title}</a></td>'
         f'<td class="Name">홍길동</td><td class="Date">2026.08.04</td>'
         f'<td class="Hits">1</td>{cells}</tr>'
     )

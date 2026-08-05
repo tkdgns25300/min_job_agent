@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from typing import Final
+from urllib.parse import urljoin
 
 from minjob_ingest.sources.adapters.base import (
     ListRequest,
@@ -54,8 +55,9 @@ def list_request(source: SourceConfig, page: int) -> ListRequest:
     """목록은 **POST**다. URL 하나로는 표현할 수 없어 `ListRequest`가 form을 함께 든다."""
     if page < 1:
         raise ValueError(f"page는 1 이상이어야 함 ({page})")
+    # 호스트를 하드코딩하지 않는다 — config의 `list_url`이 정본이다(www 강제도 거기에 있다).
     return ListRequest(
-        url=f"https://www.hanil.ac.kr{_LIST_API}",
+        url=urljoin(source.list_url, _LIST_API),
         form={"boardId": _BOARD_ID, "menuId": _MENU_ID, _PAGE_FIELD: str(page)},
     )
 

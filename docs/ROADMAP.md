@@ -51,7 +51,10 @@
 - [x] `source_data` 적재 — 불변·`UNIQUE(source_key, external_id)`(원장)·이미 본 글 skip(상세 요청 안 함)
 - [x] **`collect` 명령 + `--dry-run`** — 어댑터 레지스트리 + 결정(순수 함수: 컷오프·페이지 종료·번호 충돌) + 실행 루프 + 리포트. 소스 단위 격리 · `--dry-run`은 목록 전체 + **상세 표본 1건**(목록만 보면 상세 파싱 미검증) · mutation 17/17
 - [x] **`source_health` 기록 + 경보 판정**(`pipeline/health.py`) — 성공·실패 모두 기록(실패를 안 남기면 연속 실패를 셀 수 없다) · `--dry-run`은 기록 안 함 · `EMPTY`(목록 0행) 연속 2회 / 연속 실패 2회 = 경보, 조용한 게시판은 참고 정보 · 요약에 출력 · 12+4테스트 · mutation 12/12
-- [ ] (1-4) `PUTS` bd_name 필터 · `CSU`는 1110만 · **`HANSEI`는 `catId:artclNo` 복합키** — 각 어댑터를 만들 때 적용
+- [x] (1-4) **어댑터 29곳 완성**(2026-08-05) — 활성 30곳 중 29곳. `PUTS` bd_name 필터 적용 · `HANSEI`는 게시판 소멸로 비활성 · **`CSU`는 의도적 미구현**(목록 API가 익명 세션을 거부 · 가드레일 #1)
+  - `snapshot` 명령으로 fixture 확보(어댑터 없이 동작) · 적합성 테스트 1개가 29곳을 순회 검사 · 게시판별 테스트는 실측값만(6~9개)
+  - 계약 확장: `list_request`(POST 목록 — HANIL) · `NEEDS_DETAIL_REQUEST`(목록에 본문이 든 게시판) · config `list_has_dates`(PCKWORLD)
+  - 어댑터 등록은 **파일을 놓으면 자동**(모듈 발견) — 손으로 관리하는 dict 없음
 - [x] **원장 조회 확장** — `SourceData.title`·`posted_on` 컬럼 + `seen_postings`가 `LedgerEntry`(제목·게시일)를 함께 반환 + `points_to_another_posting`(둘 다 다르면 소스 실패). 추가 요청 0건 · mutation 12/12
 - [x] `--months N` 컷오프 = **목록의 게시일**(구조화 전이라 posted_at 없음 · 달 단위 말일 보정) · `--months 0`이면 날짜로 안 자름 · **범위는 컷오프가 정하고 페이지 상한(100p)은 폭주 방지용 · CLI 옵션 없음**
 

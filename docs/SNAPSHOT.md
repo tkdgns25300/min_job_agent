@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-08-05 — 어댑터 29곳 완성 (1-4)
+
+활성 30곳 중 **29곳** 구현. 게시판 1곳 = 파일 1개(124~213줄), 등록은 파일을 놓으면 자동(모듈 발견).
+`snapshot` 명령이 어댑터 없이 fixture를 받고, 적합성 테스트 1개가 29곳을 순회 검사한다.
+**1124 테스트 · 게이트 4개 통과 · fixture 커버리지 29/29.**
+
+**구현하지 않은 2곳**
+- `CSU` — 목록 API가 익명 호출에 `{"code":22000,"유효하지 않은 세션입니다"}`를 준다. 페이지 GET은 200인데 쿠키를 하나도 주지 않고, 번들의 해당 코드 처리는 "다른 곳에서 로그인" 안내 후 홈으로 리다이렉트한다 → 로그인 세션 요구로 보여 **우회하지 않았다**(가드레일 #1). enabled 유지 + 어댑터 없음 → `AdapterMissing`으로 드러난다. **운영자 판단 필요.**
+- `HANSEI` — 사이트가 Konnect에서 이전되며 게시판 소멸. 후속 카테고리 0건, 이력 전체에 채용 1건(2016). `enabled: false` + 재활성 URL 기록.
+
+**계약이 늘어난 세 가지** (전부 실물을 보고 결정)
+- `list_request(source, page) → ListRequest(url, form)` — 목록이 POST인 게시판(HANIL). URL만으로는 표현 불가
+- `NEEDS_DETAIL_REQUEST = False` — 목록 JSON에 본문이 든 게시판(HANIL). 상세 페이지는 JS가 채우는 빈 껍데기라 받아도 제목조차 없다
+- config `list_has_dates: false` — 목록에 게시일이 없는 게시판(PCKWORLD). 컷오프를 만들면 아무 행도 안 잘려 안전 상한까지 걷는다
+
+**실측으로 드러난 함정** (fetch_note·어댑터 docstring에 전부 기록)
+- **2페이지 이상의 상세 href에 페이지 파라미터가 끼어든다**(KOSIN_TH·MTU·TTGU·WGST·HTUS·SJS) → `detail_pattern` 접두 매칭이 **전 행에서** 실패. 1페이지만 보면 절대 안 드러나고, 걸리면 그 게시판의 1페이지 말고 전부를 잃는다. id를 **쿼리 파라미터 이름**으로 뽑아 해결
+- **상세 페이지가 목록을 다시 그린다**(KOREABAPTIST·KEHC·PGAK) → 본문 범위를 넓히면 남의 공고가 증거로 저장된다
+- **본문 밖 링크가 첨부로 들어온다** — 사이트 공용 파일(DAESHIN 장학금기탁서·WGST 안전관리계획), 본문의 `mailto:`·교회 홈페이지(ACTS), PREV/NEXT
+- CALVIN 본문은 **인라인 `data:` URI 150KB** 한 장(텍스트 0자) → SPEC §6에 "구조화는 스킴으로 갈라 `data:`는 fetch하지 말고 디코드" 못 박음
+- 그누보드는 오늘 글을 `15:58`, 올해 글을 `09-26`으로 **연도 없이** 표시 → KST 기준으로 되살린다(넉넉해지는 방향이라 유실 없음)
+- KEHC `page/N`은 페이지가 아니라 **행 오프셋**(0·50·100…) · 날짜가 `YY.MM.DD` · **잠긴 글**은 상세가 비어 제외(우회 안 함)
+- soft_200 3곳 추가 실측(UHS·SUNGKYUL·KAICAM은 없는 id에도 200) · CALVIN `image_only` 추가
+
+**남은 공용화 후보** (중복이지 버그는 아니다 — 다음 작업)
+`external_id_from_query(url, param=)` (6곳이 각자 `parse_qs`) · 첨부 교차확인 `require_attachment_evidence` (7곳) · 페이지 쿼리 `list_request` (9곳 동일) · 첨부 파일명 크기 접미사 제거 · 2자리 연도 날짜 · `attachments_in`에 링크 셀렉터 인자
+
 ## 0. 한 문장 요약
 
 `min_job_agent`는 형제 디렉토리 `../min_job`(교회 사역자 청빙 채용 플랫폼, Next.js)을 위한 **공고 수집 크롤러**다. **소스 정찰이 3차 실측 + Fable 교차감사 + 운영자 직접 전수 실측(2026-07-27)까지 끝나**, **크롤 대상 31곳을 최종 확정**했다(제외 6 · SOURCES §7). 교단 확정 방법도 CONTRACT §2로 결정됨. **`crawler-demo/`에 전 체인 관통 동작 프로토타입**(Python 4어댑터 + Next.js 어드민, 구조화 AI = Vertex **Gemini 2.5 Flash**)이 있고, **`docs/SPEC.md` 작성 완료**(파이프라인·staging 4테이블·판정 게이트·스코프·정책·배포 — 3렌즈 냉정검수+재검증 반영). **`docs/ROADMAP.md`·`CLAUDE.md` 작성 완료**(CLAUDE.md는 3렌즈 검수 반영). **Phase 0 뼈대 완료** — TS 스켈레톤(Store seam·`domain`·Gemini 래퍼·**31곳 레지스트리 라이브 2차검증**), `typecheck` 통과 · **Gemini 실호출 성공**(운영자 확인). **스택을 Python으로 교체(2026-07-29)하고 이식 완료** — TS 잔재 삭제, `minjob_ingest/` flat 패키지에 `domain`·`models`(SPEC §6 4레코드)·`clock`·`settings`·`sources.registry`·`store`(Protocol+JSON)·`lib.gemini` + CLI(`list-sources`·`check-gemini`), 4게이트(ruff·format·mypy strict·pytest **343**) 통과. **Phase 1-1도 착수** — `fetch/` 전송 층 완료(UA·cp949·타임아웃·재시도·간격·세션·본문 하한 · mutation 13/13). 현재 열린 핵심 = **1-1의 남은 4단계(어댑터 → 원장 확장 → `collect` → 관통)**. 상세는 **§10**.

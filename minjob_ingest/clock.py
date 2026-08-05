@@ -11,6 +11,8 @@ naive datetime을 저장하면 나중에 Supabase가 서버 로컬시간으로 �
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from typing import Final
+from zoneinfo import ZoneInfo
 
 _ISO_SUFFIX_UTC = "Z"
 _ISO_OFFSET_UTC = "+00:00"
@@ -59,6 +61,20 @@ def parse_iso_date(text: str) -> date:
         return date.fromisoformat(text.strip())
     except ValueError as err:
         raise ValueError(f"YYYY-MM-DD 날짜가 아님: {text!r}") from err
+
+
+#: 게시판 표기 기준 시간대. 31곳 전부 한국 게시판이다.
+_BOARD_TZ: Final = ZoneInfo("Asia/Seoul")
+
+
+def board_today() -> date:
+    """게시판이 보는 "오늘"(KST).
+
+    게시판은 한국 시간으로 날짜를 표시하므로, 연도 없는 `MM-DD`를 되살릴 때의 기준은 UTC가
+    아니라 KST여야 한다 — UTC로 하면 00~09시 KST에 올라온 글이 하루 전으로 밀린다.
+    저장값은 여전히 UTC다(§SPEC) — 이 함수는 **게시판 표기를 읽을 때만** 쓴다.
+    """
+    return utc_now().astimezone(_BOARD_TZ).date()
 
 
 def require_plain_date(value: date) -> date:

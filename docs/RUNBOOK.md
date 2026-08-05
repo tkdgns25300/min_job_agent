@@ -12,6 +12,7 @@ minjob-ingest structure                                  🔴 💰   AI 구조�
 minjob-ingest daily                                      🔴 🌐💰  매일 (증분 + 구조화)
 minjob-ingest status                                     🔴      실행·게시판 상태
 minjob-ingest list-sources [KEY]                                 등록 31곳 (요청 없음)
+minjob-ingest snapshot --source KEY                         🌐    fixture용 HTML 확보 (어댑터 없어도 됨)
 ```
 
 `collect` 옵션 — `--source`(기본: 어댑터 있는 전부) · `--months N`(`0`=날짜 무제한) · `--dry-run` · `--verbose`
@@ -27,6 +28,18 @@ minjob-ingest list-sources [KEY]                                 등록 31곳 (�
   · CSU  최신 글이 2026-04-12 (114일 전) — 게시판이 조용합니다
 ```
 ⚠(경보)는 손을 써야 하고, ·(정보)는 참고다. **신규 0건은 경보가 아니다** — 원장이 이미 본 글을 걸러낸 정상 결과다.
+
+## 어댑터
+
+게시판 1곳 = 파일 1개(`minjob_ingest/sources/adapters/<key 소문자>.py`). **파일을 놓으면 자동 등록**된다.
+현재 **29곳** 구현(활성 30곳 중) — `CSU`는 목록 API가 익명 세션을 거부해 미구현, `HANSEI`는 게시판 소멸로 비활성.
+
+fixture(`tests/fixtures/<KEY>/`)는 **커밋되지 않는다**(가드레일 #11). 새 컴퓨터에서 어댑터 테스트를 돌리려면 먼저 받아야 한다:
+```bash
+minjob-ingest snapshot                     🌐  활성 전부 (게시판당 최대 2요청)
+minjob-ingest snapshot --source YTUS       🌐  한 곳만
+```
+테스트 요약 맨 아래에 `어댑터 fixture 커버리지: N/29 검증`이 찍힌다 — 이 숫자가 낮으면 초록불이어도 검증이 건너뛰어진 것이다.
 
 ## 게이트 — 커밋 전 4개 통과
 
