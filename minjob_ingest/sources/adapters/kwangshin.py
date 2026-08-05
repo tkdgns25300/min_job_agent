@@ -70,6 +70,7 @@ from minjob_ingest.sources.adapters.base import (
     require_one,
     require_some_kept,
     rows_with_data,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -132,10 +133,13 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     soup = parse_html(html)
     body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     raw_text = normalized_text(body)
+    raw_html = structural_html(body)
     images = image_urls_in(body, base_url=ref.url)
     # ⚠️ 첨부는 `td.file`에서만 온다 — 본문에서 긁으면 교회 홈페이지가 첨부가 된다(모듈 상단).
     files = _attachments(soup.select_one(_FILE_CELL), base_url=ref.url)
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+    return RawPosting(
+        ref=ref, raw_text=raw_text, raw_html=raw_html, image_urls=images, attachments=files
+    )
 
 
 def _attachments(cell: Tag | None, *, base_url: str) -> tuple[Attachment, ...]:

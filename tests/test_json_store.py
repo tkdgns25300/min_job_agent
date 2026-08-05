@@ -76,6 +76,7 @@ def _source_data(external_id: str = "25553", *, run_id: object = None) -> Source
 
 def _review_data(source_data_id: object) -> ReviewData:
     return ReviewData(
+        source_url="https://www.ytus.ac.kr/board/view/trXXR/25553",
         source_data_id=source_data_id,  # type: ignore[arg-type]
         run_id=new_id(),
         is_church_recruitment=IsChurchRecruitment.YES,
@@ -292,6 +293,7 @@ _EVIDENCE_TAMPERINGS: Final = {
     "run_id": UUID("00000000-0000-4000-8000-00000000ffff"),
     "fetched_at": FIXED_NOW - timedelta(days=1),
     "raw_text": "바꿔치기",
+    "raw_html": "<div>바꿔치기</div>",
     "image_urls": ("https://x/injected.png",),
     "attachments": (Attachment(name="끼워넣은.hwp", url="https://x/dl/9"),),
     "raw_meta": {"injected": True},

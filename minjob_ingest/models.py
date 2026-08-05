@@ -21,7 +21,7 @@ from math import isfinite
 from types import MappingProxyType
 from uuid import UUID, uuid4
 
-from minjob_ingest.clock import ensure_utc, require_plain_date, utc_now
+from minjob_ingest.clock import ensure_kst, kst_now, require_plain_date
 from minjob_ingest.domain import (
     Confidence,
     CrawlMode,
@@ -220,6 +220,10 @@ class SourceData:
     run_id: UUID
     fetched_at: datetime
     raw_text: str
+    #: 구조만 남긴 본문 HTML. **원문 증거**이고 `raw_text`를 대체하지 않는다 — 구조화는
+    #: `raw_text`를 읽고, 이 값은 나중에 필요해진 것(링크 `href`·표 대응)을 **재수집 없이**
+    #: 뽑는 자리다. 스타일·클래스·워드 주석을 걷어내 평균 818B다(2026-08-05 실측 27곳).
+    raw_html: str = ""
     id: UUID = field(default_factory=new_id)
     #: 목록에 표시된 게시일. **백필 컷오프(`--months N`)의 유일한 기준**이다(SPEC §4) —
     #: 구조화 전이라 `review_data.posted_at`이 아직 없다. 목록에 날짜가 없는 게시판이 있어
@@ -250,9 +254,9 @@ class SourceData:
             # `datetime`은 `date`의 서브클래스라 그냥 통과한다 → date 컬럼에 시각이 섞인다.
             _set(self, "posted_on", require_plain_date(self.posted_on))
         _require_non_negative(self.structure_attempts, "structure_attempts")
-        _set(self, "fetched_at", ensure_utc(self.fetched_at))
+        _set(self, "fetched_at", ensure_kst(self.fetched_at))
         if self.structured_at is not None:
-            _set(self, "structured_at", ensure_utc(self.structured_at))
+            _set(self, "structured_at", ensure_kst(self.structured_at))
         # 순서를 지키며 중복 제거 — 같은 파일을 두 번 받으면 바이트 fetch와 Gemini 비용이
         # 두 배다. **여기 한 곳에서만** 한다(어댑터·RawPosting은 있는 대로 보고한다).
         _set(self, "image_urls", tuple(dict.fromkeys(self.image_urls)))
@@ -293,7 +297,7 @@ class SourceData:
         """판정 완료로 표시한다 — 게이트1 탈락(review 미생성)도 반드시 이걸 부른다."""
         return replace(
             self,
-            structured_at=at if at is not None else utc_now(),
+            structured_at=at if at is not None else kst_now(),
             structure_attempts=self.structure_attempts + 1,
             last_structure_error=None,
         )
@@ -331,6 +335,12 @@ class ReviewData:
     is_church_recruitment: IsChurchRecruitment
     confidence: Confidence
     denomination_source: DenominationSource
+    #: 공고 원문 링크. **필수다** — `source_data.source_url`을 그대로 복사한다.
+    #:
+    #: ⚠️ 정규화상으로는 `source_data_id`로 JOIN하면 되니 중복이다. 그래도 복사하는 이유:
+    #: min_job `jobs.source_url`은 **가드레일 #3(원문 재게시 금지·출처 표기)의 핵심 필드**이고,
+    #: 승격 코드가 JOIN을 잊으면 출처 없이 공개된다. 승격이 이 테이블 하나만 보고 끝나게 한다.
+    source_url: str
     id: UUID = field(default_factory=new_id)
 
     # 분류(게이트2)
@@ -383,18 +393,19 @@ class ReviewData:
     published_job_id: UUID | None = None
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
-    created_at: datetime = field(default_factory=utc_now)
+    created_at: datetime = field(default_factory=kst_now)
 
     def __post_init__(self) -> None:
+        _set(self, "source_url", _require_non_empty(self.source_url, "source_url"))
         self._coerce_enums()
         self._check_gate1()
         self._check_stipend()
         self._check_denomination()
         self._check_heresy()
         self._check_description()
-        _set(self, "created_at", ensure_utc(self.created_at))
+        _set(self, "created_at", ensure_kst(self.created_at))
         if self.reviewed_at is not None:
-            _set(self, "reviewed_at", ensure_utc(self.reviewed_at))
+            _set(self, "reviewed_at", ensure_kst(self.reviewed_at))
         if self.posted_at is not None:
             require_plain_date(self.posted_at)
         if self.deadline is not None:
@@ -586,12 +597,12 @@ class SourceHealth:
             raise ValueError(
                 f"last_new_count({self.last_new_count})가 last_rows({self.last_rows})보다 큼"
             )
-        _set(self, "last_run_at", ensure_utc(self.last_run_at))
-        _set(self, "first_run_at", ensure_utc(self.first_run_at))
+        _set(self, "last_run_at", ensure_kst(self.last_run_at))
+        _set(self, "first_run_at", ensure_kst(self.first_run_at))
         if self.first_run_at > self.last_run_at:
             raise ValueError("first_run_at이 last_run_at보다 늦을 수 없음")
         if self.last_success_at is not None:
-            _set(self, "last_success_at", ensure_utc(self.last_success_at))
+            _set(self, "last_success_at", ensure_kst(self.last_success_at))
         if self.last_cutoff is not None:
             _set(self, "last_cutoff", require_plain_date(self.last_cutoff))
         if self.last_posted_on is not None:
@@ -707,9 +718,9 @@ class CrawlRun:
         _require_non_negative(self.sources_ok, "sources_ok")
         _require_non_negative(self.sources_failed, "sources_failed")
         _require_non_negative(self.new_count, "new_count")
-        _set(self, "started_at", ensure_utc(self.started_at))
+        _set(self, "started_at", ensure_kst(self.started_at))
         if self.finished_at is not None:
-            _set(self, "finished_at", ensure_utc(self.finished_at))
+            _set(self, "finished_at", ensure_kst(self.finished_at))
             if self.finished_at < self.started_at:
                 raise ValueError("finished_at이 started_at보다 이를 수 없음")
         _set(self, "error_detail", _as_str_mapping(self.error_detail, "error_detail"))
@@ -730,7 +741,7 @@ class CrawlRun:
         """집계를 채워 종료 상태로 만든다. `id`는 유지된다(하위 레코드 FK가 유효해야 함)."""
         return replace(
             self,
-            finished_at=at if at is not None else utc_now(),
+            finished_at=at if at is not None else kst_now(),
             sources_ok=sources_ok,
             sources_failed=sources_failed,
             new_count=new_count,

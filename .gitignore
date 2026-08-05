@@ -37,3 +37,6 @@ build/
 # 받는 방법은 tests/fixtures/README.md.
 tests/fixtures/*
 !tests/fixtures/README.md
+
+# 시간대 이관 등 일회성 백업 (재수집 90분 · 지우지 말 것)
+data.*-backup-*/

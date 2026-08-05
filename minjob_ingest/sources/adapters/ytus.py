@@ -41,6 +41,7 @@ from minjob_ingest.sources.adapters.base import (
     require_one,
     require_some_kept,
     rows_with_data,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -102,6 +103,7 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     soup = parse_html(html)
     body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     raw_text = normalized_text(body)
+    raw_html = structural_html(body)
     # ⚠️ 미리보기(`_IMAGE_PREVIEW`)를 `image_urls`에 넣지 않는다 — 같은 첨부가 두 URL
     # (`/filelink/…` 미리보기 · `/download/…` 다운로드)로 **중복 저장**돼 바이트 fetch와
     # Gemini 비용이 두 배가 됐다(실측). 이미지형 첨부는 `attachments`의 `is_image`로 잡힌다.
@@ -110,7 +112,9 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     preview = soup.select_one(_IMAGE_PREVIEW)
     files = attachments_in(soup.select_one(_FILE_LIST), base_url=ref.url)
     _check_attachments_found(ref, preview=preview, files=files)
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+    return RawPosting(
+        ref=ref, raw_text=raw_text, raw_html=raw_html, image_urls=images, attachments=files
+    )
 
 
 def _check_attachments_found(

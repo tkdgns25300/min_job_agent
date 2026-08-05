@@ -65,6 +65,8 @@ def _full_source_data() -> SourceData:
         run_id=new_id(),
         fetched_at=FIXED_NOW,
         raw_text="오천중앙교회에서 부목사님을 모십니다.",
+        raw_html="<div><p>오천중앙교회에서 부목사님을 모십니다.</p>"
+        '<a href="http://ocjc.or.kr">교회 홈페이지</a></div>',
         image_urls=("https://a/1.jpg", "https://a/2.jpg"),
         attachments=(Attachment(name="공고.hwp", url="https://a/dl/1"),),
         raw_meta={"views": 408, "attach": ["공고.hwp"], "nested": {"page": 1}, "flag": True},
@@ -77,6 +79,7 @@ def _full_source_data() -> SourceData:
 
 def _full_review_data() -> ReviewData:
     return ReviewData(
+        source_url="https://www.ytus.ac.kr/board/view/trXXR/25553",
         id=new_id(),
         source_data_id=new_id(),
         run_id=new_id(),
@@ -216,9 +219,14 @@ def test_encodes_uuid_as_string() -> None:
     assert UUID(str(row["run_id"])) == record.run_id
 
 
-def test_encodes_timestamp_with_z_suffix_and_microseconds() -> None:
+def test_encodes_timestamp_with_the_kst_offset_and_microseconds() -> None:
+    """저장 표기는 KST(`+09:00`)다 — 운영자가 파일을 열었을 때 한국 시간으로 읽힌다.
+
+    ⚠️ `Z`와 `+09:00`은 **같은 순간의 다른 표기**이고 Postgres `timestamptz`는 둘을 동일하게
+    저장한다. 바뀐 것은 표기뿐이다(2026-08-05 운영자 결정).
+    """
     row = to_row(_full_source_data())
-    assert row["fetched_at"] == "2026-07-29T12:00:00.123456Z"
+    assert row["fetched_at"] == "2026-07-29T21:00:00.123456+09:00"
 
 
 def test_encodes_date_without_time() -> None:

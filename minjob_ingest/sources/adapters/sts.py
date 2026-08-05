@@ -73,6 +73,7 @@ from minjob_ingest.sources.adapters.base import (
     require_one,
     require_some_kept,
     rows_with_data,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -140,13 +141,16 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     if file_area is not None:
         file_area.decompose()
     raw_text = normalized_text(body)
+    raw_html = structural_html(body)
     images = image_urls_in(body, base_url=ref.url)
     # 본문 이미지를 증거로 인정하지 않는다 — 첨부 이미지는 본문에도 인라인으로 렌더되므로
     # 그것까지 세면 파일 목록 셀렉터가 깨져도 통과해 비이미지 첨부(hwp)를 조용히 잃는다.
     require_attachment_evidence(
         ref, source_key=SOURCE_KEY, selector=f"{_FILE_AREA} {_FILE_LIST}", found=files
     )
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+    return RawPosting(
+        ref=ref, raw_text=raw_text, raw_html=raw_html, image_urls=images, attachments=files
+    )
 
 
 def _attachments(

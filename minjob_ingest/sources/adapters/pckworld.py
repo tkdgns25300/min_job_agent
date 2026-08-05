@@ -86,6 +86,9 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
         raise ParseError(
             f"{SOURCE_KEY} {ref.external_id}: 포스터 이미지가 없음 — 셀렉터 `{_DETAIL_IMAGE}` 확인"
         )
+    # ⚠️ `raw_html`을 담지 않는다 — 이 게시판 상세는 포스터 `<img>` 한 장뿐이고 본문
+    # 컨테이너가 없다(내용은 이미지에만 있다 · config `image_only`). 페이지 전체를
+    # 담으면 껍데기만 저장된다.
     return RawPosting(ref=ref, raw_text=_body_text(soup), image_urls=images)
 
 

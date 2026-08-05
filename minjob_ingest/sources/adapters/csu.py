@@ -48,6 +48,7 @@ from minjob_ingest.sources.adapters.base import (
     image_urls_in,
     normalized_text,
     parse_html,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -137,11 +138,13 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     images = image_urls_in(fragment, base_url=ref.url)
     attachments = _attachments_of(ref)
     raw_text = normalized_text(fragment)
+    raw_html = structural_html(fragment)
     # ⚠️ **이미지도 증거다.** 본문이 포스터 한 장뿐인 공고가 흔하다(실측 1117808 — 성실교회).
     # 이걸 빼먹어 그런 공고를 "증거 없음"으로 버렸다(2026-08-05). 나머지 29곳은 셋을 다 본다.
     return RawPosting(
         ref=ref,
         raw_text=raw_text,
+        raw_html=raw_html,
         image_urls=images,
         attachments=attachments,
     )

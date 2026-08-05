@@ -29,6 +29,7 @@ from minjob_ingest.sources.adapters.base import (
     require_date,
     require_numeric_id,
     require_some_kept,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, find_source, load_sources
 
@@ -265,3 +266,80 @@ def test_a_malformed_image_src_is_skipped() -> None:
 
 def test_a_valid_url_still_joins() -> None:
     assert absolute_url("https://x.test/board/1", "/upfile/x.hwp") == "https://x.test/upfile/x.hwp"
+
+
+# ── 구조 보관 (`structural_html`) — 30곳 공유 ────────────────────
+
+
+def _structural(html: str) -> str:
+    return structural_html(parse_html(html))
+
+
+def test_link_addresses_survive() -> None:
+    """⚠️ **이것이 이 함수의 존재 이유다.** `raw_text`는 텍스트만 남겨 주소를 잃는다 —
+    `<a href="…">교회 홈페이지</a>`가 "교회 홈페이지"만 되어 `church_links`를 채울 수 없다.
+    """
+    kept = _structural('<div><a href="http://ocjc.or.kr">교회 홈페이지</a></div>')
+    assert "http://ocjc.or.kr" in kept
+    assert "교회 홈페이지" in kept  # 라벨도 남는다 — 무슨 채널인지 알아야 type 을 정한다
+
+
+def test_table_rows_survive() -> None:
+    """표의 라벨↔값 대응은 텍스트로 평평해지면 흐려진다."""
+    kept = _structural("<table><tr><td>교회명</td><td>도원교회</td></tr></table>")
+    assert "<tr>" in kept
+    assert kept.count("<td>") == 2
+
+
+def test_word_paste_styles_are_dropped() -> None:
+    """⚠️ 본문 HTML의 93%가 이 쓰레기였다 — YTUS 한 건이 20KB였다(실측)."""
+    bloated = (
+        '<div><p style="mso-pagination:none;text-autospace:none">'
+        '<span style="mso-fareast-font-family:함초롬바탕;letter-spacing:-0.05pt">사역자 청빙</span>'
+        "</p></div>"
+    )
+    kept = _structural(bloated)
+    assert "mso-" not in kept
+    assert "사역자 청빙" in kept
+    assert len(kept) < len(bloated) / 2
+
+
+def test_word_comments_are_dropped() -> None:
+    """⚠️ `<!--[if !supportEmptyParas]-->`가 YTUS 본문의 대부분이었다 — 주석을 빼먹으면
+    스타일만 걷어내도 16KB가 남는다(실측에서 이걸로 한 번 틀렸다)."""
+    kept = _structural("<div><p>본문</p><!--[if !supportEmptyParas]--><!--[endif]--></div>")
+    assert "supportEmptyParas" not in kept
+    assert "본문" in kept
+
+
+def test_scripts_are_dropped() -> None:
+    kept = _structural("<div><script>alert(1)</script><p>본문</p></div>")
+    assert "alert" not in kept
+
+
+def test_base64_image_bytes_are_not_stored_twice() -> None:
+    """⚠️ CALVIN은 본문이 인라인 `data:image/png;base64` 150KB 한 장이다 — 그 바이트는
+    `image_urls`가 이미 갖고 있어 여기 또 담으면 파일이 두 배가 된다."""
+    payload = "A" * 4000
+    kept = _structural(f'<div><img src="data:image/png;base64,{payload}"></div>')
+    assert payload not in kept
+    assert "data:" in kept  # 무엇이 있었는지는 남긴다
+    assert len(kept) < 120
+
+
+def test_the_argument_is_not_mutated() -> None:
+    """⚠️ 어댑터는 **같은 요소로** `normalized_text`·`image_urls_in`도 부른다.
+    여기서 태그를 지우면 호출 순서에 따라 본문·이미지가 달라진다."""
+    soup = parse_html('<div><p style="x">본문</p><img src="/a.png"></div>')
+    body = soup.select_one("div")
+    assert body is not None
+    before = str(body)
+    structural_html(body)
+    assert str(body) == before
+
+
+def test_no_document_wrapper_is_added() -> None:
+    """파서가 조각을 `<html><body>`로 감싼다 — 그 가짜 껍데기를 증거에 저장하지 않는다."""
+    kept = _structural("<div><p>본문</p></div>")
+    assert not kept.startswith("<html>")
+    assert kept.startswith("<div>")

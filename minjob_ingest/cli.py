@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Final
 from uuid import UUID
 
-from minjob_ingest.clock import utc_now
+from minjob_ingest.clock import kst_now
 from minjob_ingest.console import Console, ProgressLine
 from minjob_ingest.domain import CrawlMode
 from minjob_ingest.fetch.client import FetchError, SourceClient
@@ -317,7 +317,7 @@ def _collect_one(
     # 제목을 먼저 낸다 — 진행 줄이 그 아래에서 갱신되고, 그 자리에 최종 리포트가 온다.
     console.heading(source.key, note=source.board_name)
     line = console.progress()
-    now = utc_now()
+    now = kst_now()
     try:
         with SourceClient(source) as client:
             report = collect_source(
@@ -522,7 +522,7 @@ def _print_summary(
 
 def _print_alerts(console: Console, states: Sequence[SourceHealth]) -> None:
     """게시판별 경보. **이게 없으면 31곳 리포트를 눈으로 비교해야 조용한 실패를 잡는다.**"""
-    today = utc_now().date()
+    today = kst_now().date()
     alerts = [alert for health in states for alert in alerts_for(health, today=today)]
     if not alerts:
         return

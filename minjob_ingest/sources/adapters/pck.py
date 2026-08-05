@@ -44,6 +44,7 @@ from minjob_ingest.sources.adapters.base import (
     require_numeric_id,
     require_one,
     require_some_kept,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -104,7 +105,12 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     )
     images = image_urls_in(body, base_url=ref.url)
     files = _attachments(soup.select_one(_FILE_BOX), base_url=ref.url)
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+    # 본문 앞 상자(`extra`)까지 한 범위로 — `raw_text`가 둘을 이어 붙이는 것과 짝을 맞춘다.
+    # ⚠️ 감싸는 태그를 새로 만들지 않는다 — 원문에 없던 마크업을 증거에 넣지 않는다.
+    raw_html = "".join(structural_html(part) for part in (extra, body) if part is not None)
+    return RawPosting(
+        ref=ref, raw_text=raw_text, raw_html=raw_html, image_urls=images, attachments=files
+    )
 
 
 def _attachments(box: Tag | None, *, base_url: str) -> tuple[Attachment, ...]:

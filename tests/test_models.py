@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
-from minjob_ingest.clock import utc_now
+from minjob_ingest.clock import kst_now
 from minjob_ingest.domain import (
     Confidence,
     CrawlMode,
@@ -53,6 +53,7 @@ def _source_data() -> SourceData:
 
 def _review_data() -> ReviewData:
     return ReviewData(
+        source_url="https://www.ytus.ac.kr/board/view/trXXR/25553",
         source_data_id=new_id(),
         run_id=new_id(),
         is_church_recruitment=IsChurchRecruitment.YES,
@@ -135,10 +136,10 @@ def test_source_data_is_frozen() -> None:
 # ── SourceData: 정규화 ───────────────────────────────────────────
 
 
-def test_timestamps_are_normalized_to_utc() -> None:
+def test_timestamps_are_normalized_to_kst() -> None:
     # 검사만 하고 원본을 저장하면 +09:00이 남아 날짜 경계 비교가 로컬시간으로 어긋난다.
     record = replace(_source_data(), fetched_at=datetime(2026, 7, 29, 21, 0, tzinfo=KST))
-    assert record.fetched_at.utcoffset() == timedelta(0)
+    assert record.fetched_at.utcoffset() == timedelta(hours=9)
     assert record.fetched_at == FIXED_NOW
 
 
@@ -261,7 +262,7 @@ def test_review_data_defaults_to_pending() -> None:
     assert record.review_status.value == "PENDING"
     assert record.heresy_flag is False
     assert record.requirements == ()
-    assert record.created_at.utcoffset() == timedelta(0)
+    assert record.created_at.utcoffset() == timedelta(hours=9)
 
 
 def test_rejects_gate1_no() -> None:
@@ -519,7 +520,7 @@ def test_empty_runs_preserve_when_the_board_last_worked() -> None:
 
 
 def test_crawl_run_starts_unfinished() -> None:
-    run = CrawlRun(mode=CrawlMode.DAILY, started_at=utc_now())
+    run = CrawlRun(mode=CrawlMode.DAILY, started_at=kst_now())
     assert run.is_finished is False
     assert dict(run.error_detail) == {}
 
@@ -550,7 +551,7 @@ def test_crawl_run_rejects_finish_before_start() -> None:
 
 def test_crawl_run_rejects_negative_counts() -> None:
     with pytest.raises(ValueError, match="음수"):
-        CrawlRun(mode=CrawlMode.BACKFILL, started_at=utc_now(), sources_failed=-1)
+        CrawlRun(mode=CrawlMode.BACKFILL, started_at=kst_now(), sources_failed=-1)
 
 
 def test_crawl_run_error_detail_is_read_only() -> None:
@@ -569,6 +570,7 @@ def test_records_get_distinct_ids() -> None:
 def test_enum_strings_are_coerced_on_read() -> None:
     # JSON에서 되읽으면 값이 문자열이다. enum으로 바꾸지 않으면 `is` 비교 불변식이 전부 죽는다.
     record = ReviewData(
+        source_url="https://www.ytus.ac.kr/board/view/trXXR/25553",
         source_data_id=new_id(),
         run_id=new_id(),
         is_church_recruitment="YES",  # type: ignore[arg-type]
@@ -586,6 +588,7 @@ def test_gate1_rejection_survives_string_input() -> None:
     # 문자열 "NO"가 통과하면 제외 공고가 검수 큐에 쌓인다.
     with pytest.raises(ValueError, match="NO"):
         ReviewData(
+            source_url="https://www.ytus.ac.kr/board/view/trXXR/25553",
             source_data_id=new_id(),
             run_id=new_id(),
             is_church_recruitment="NO",  # type: ignore[arg-type]
@@ -919,3 +922,17 @@ def test_an_attachment_only_posting_is_not_empty() -> None:
 
 def test_a_posting_with_nothing_is_empty() -> None:
     assert replace(_source_data(), raw_text="").is_empty is True
+
+
+def test_a_review_draft_cannot_exist_without_its_source_link() -> None:
+    """⚠️ **`jobs.source_url`은 가드레일 #3의 핵심 필드다**(원문 재게시 금지 · 출처 표기).
+
+    승격 코드가 `source_data`와의 JOIN을 잊으면 출처 없이 공개된다. 정규화상 중복이지만
+    **빠지면 법적 문제가 되는 필드**라 우연에 맡기지 않고 타입으로 강제한다.
+    """
+    with pytest.raises(ValueError, match="source_url"):
+        replace(_review_data(), source_url="")
+
+
+def test_the_source_link_is_carried_on_the_draft() -> None:
+    assert _review_data().source_url.startswith("https://")

@@ -17,7 +17,7 @@ from datetime import date, timedelta
 from typing import Final
 from uuid import UUID
 
-from minjob_ingest.clock import utc_now
+from minjob_ingest.clock import kst_now
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.models import SourceData
 from minjob_ingest.sources.adapters.base import ParseError, PostingRef, RawPosting
@@ -399,8 +399,9 @@ def _record(
         title=ref.title,
         posted_on=ref.posted_on,
         run_id=run_id,
-        fetched_at=utc_now(),
+        fetched_at=kst_now(),
         raw_text=raw.raw_text,
+        raw_html=raw.raw_html,
         image_urls=raw.image_urls,
         attachments=raw.attachments,
         # `_`로 시작하는 키는 **어댑터가 자기 `parse_detail`에 넘기는 내부 값**이다(HANIL은

@@ -42,6 +42,7 @@ from minjob_ingest.sources.adapters.base import (
     image_urls_in,
     normalized_text,
     parse_html,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -105,6 +106,7 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     return RawPosting(
         ref=ref,
         raw_text=normalized_text(fragment),
+        raw_html=structural_html(fragment),
         image_urls=image_urls_in(fragment, base_url=ref.url),
     )
 

@@ -20,7 +20,7 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Final
 
-from minjob_ingest.clock import utc_now
+from minjob_ingest.clock import kst_now
 from minjob_ingest.domain import CrawlMode, ReviewStatus, normalize_source_key
 from minjob_ingest.models import CrawlRun, ReviewData, SourceData, SourceHealth
 from minjob_ingest.store.base import LedgerEntry, StoreError
@@ -154,7 +154,7 @@ class JsonStore:
     # ── 실행·상태 ───────────────────────────────────────────────
 
     def start_run(self, mode: CrawlMode) -> CrawlRun:
-        run = CrawlRun(mode=mode, started_at=utc_now())
+        run = CrawlRun(mode=mode, started_at=kst_now())
         rows = self._read_rows(_CRAWL_RUN_FILE)
         rows.append(to_row(run))
         self._write_rows(_CRAWL_RUN_FILE, rows)

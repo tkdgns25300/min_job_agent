@@ -1,52 +1,63 @@
 """시각 생성·직렬화 단일 창구.
 
-CLAUDE.md: "시간은 UTC·ISO8601로 한 헬퍼에서만 생성한다(포맷 드리프트 방지)".
-timestamptz 컬럼(SPEC §6)에 들어갈 값이라 **항상 타임존 인식(UTC)** 이어야 한다 —
+CLAUDE.md: "시간은 KST·ISO8601로 한 헬퍼에서만 생성한다(포맷 드리프트 방지)".
+timestamptz 컬럼(SPEC §6)에 들어갈 값이라 **항상 타임존 인식** 이어야 한다 —
 naive datetime을 저장하면 나중에 Supabase가 서버 로컬시간으로 해석해 조용히 어긋난다.
 
-`date` 컬럼(`posted_at`·`deadline`)도 여기서 다룬다 — serde가 따로 포맷하면
-"한 헬퍼에서만"이 하루 만에 무너진다.
+⚠️ **KST로 바꾼 것은 표기이고 순간이 아니다**(2026-08-05 · 운영자 결정). `...Z`(UTC)와
+`+09:00`(KST)은 **같은 순간의 다른 표기**이고, Postgres `timestamptz`는 둘을 동일하게
+저장한다. 바뀌는 것은 사람이 파일·로그를 열었을 때 보이는 값뿐이다 — 운영자·게시판·공고가
+모두 한국 시간을 쓰므로 그쪽에 맞춘다.
+
+⚠️ **오프셋을 떼면 안 된다.** `+09:00` 없는 naive KST는 "언제인지 모르는 값"이고, DB가
+서버 시간대로 해석해 9시간 어긋난다. 그래서 `ensure_kst`가 naive를 거부한다.
+
+`date` 컬럼(`posted_on`·`deadline`)은 시간대가 없다 — 게시판이 이미 KST로 표시한 날짜라
+**변환 대상이 아니다**(하루씩 밀면 백필 컷오프가 어긋난다).
 """
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Final
 from zoneinfo import ZoneInfo
 
-_ISO_SUFFIX_UTC = "Z"
-_ISO_OFFSET_UTC = "+00:00"
+#: 저장·표시 기준 시간대. 게시판 31곳과 운영자가 모두 한국이다.
+KST: Final = ZoneInfo("Asia/Seoul")
 
 
-def utc_now() -> datetime:
-    """현재 시각(UTC, 마이크로초 유지)."""
-    return datetime.now(UTC)
+def kst_now() -> datetime:
+    """현재 시각(KST, 마이크로초 유지)."""
+    return datetime.now(KST)
 
 
-def ensure_utc(value: datetime) -> datetime:
-    """타임존 인식 UTC로 **정규화한 값을 반환**한다. naive면 거부.
+def ensure_kst(value: datetime) -> datetime:
+    """타임존 인식 KST로 **정규화한 값을 반환**한다. naive면 거부.
 
-    호출자는 반환값을 써야 한다 — 검사만 하고 원본을 저장하면 `+09:00`이 그대로 남아
-    날짜 경계 비교(백필 컷오프·§7 경보)와 로그가 로컬시간으로 어긋난다.
+    호출자는 반환값을 써야 한다 — 검사만 하고 원본을 저장하면 소스마다 다른 오프셋이 그대로
+    남아 날짜 경계 비교(백필 컷오프·§7 경보)와 로그가 어긋난다. `Z`로 들어온 값도 여기서
+    `+09:00`으로 바뀐다(같은 순간).
     """
     if value.tzinfo is None:
-        raise ValueError(f"naive datetime은 저장할 수 없음(UTC 명시 필요): {value!r}")
-    return value.astimezone(UTC)
+        raise ValueError(f"naive datetime은 저장할 수 없음(시간대 명시 필요): {value!r}")
+    return value.astimezone(KST)
 
 
 def to_iso(value: datetime) -> str:
-    """저장용 ISO8601(UTC, `Z` 접미)."""
-    # astimezone(UTC) 후 isoformat()은 항상 `+00:00`으로 끝난다.
-    return ensure_utc(value).isoformat().removesuffix(_ISO_OFFSET_UTC) + _ISO_SUFFIX_UTC
+    """저장용 ISO8601(KST, `+09:00` 오프셋)."""
+    return ensure_kst(value).isoformat()
 
 
 def parse_iso(text: str) -> datetime:
-    """`to_iso` 출력(및 오프셋 있는 ISO8601)을 되읽는다. 오프셋이 없으면 거부."""
+    """오프셋 있는 ISO8601을 되읽는다. 오프셋이 없으면 거부.
+
+    ⚠️ 과거에 저장한 `...Z`(UTC)도 그대로 읽힌다 — 같은 순간이므로 KST로 정규화된다.
+    """
     try:
         parsed = datetime.fromisoformat(text.strip())
     except ValueError as err:
         raise ValueError(f"ISO8601 시각이 아님: {text!r}") from err
-    return ensure_utc(parsed)
+    return ensure_kst(parsed)
 
 
 def to_iso_date(value: date) -> str:
@@ -63,18 +74,14 @@ def parse_iso_date(text: str) -> date:
         raise ValueError(f"YYYY-MM-DD 날짜가 아님: {text!r}") from err
 
 
-#: 게시판 표기 기준 시간대. 31곳 전부 한국 게시판이다.
-_BOARD_TZ: Final = ZoneInfo("Asia/Seoul")
-
-
 def board_today() -> date:
     """게시판이 보는 "오늘"(KST).
 
-    게시판은 한국 시간으로 날짜를 표시하므로, 연도 없는 `MM-DD`를 되살릴 때의 기준은 UTC가
-    아니라 KST여야 한다 — UTC로 하면 00~09시 KST에 올라온 글이 하루 전으로 밀린다.
-    저장값은 여전히 UTC다(§SPEC) — 이 함수는 **게시판 표기를 읽을 때만** 쓴다.
+    게시판은 한국 시간으로 날짜를 표시하므로, 연도 없는 `MM-DD`를 되살릴 때의 기준도 KST다.
+    저장 시각도 이제 KST라 `kst_now().date()`와 같지만, **의도가 다른 두 값**이므로 이름을
+    유지한다 — 게시판 표기를 읽는 자리에서 이 함수를 부르면 왜 KST인지가 코드에 남는다.
     """
-    return utc_now().astimezone(_BOARD_TZ).date()
+    return kst_now().date()
 
 
 def require_plain_date(value: date) -> date:

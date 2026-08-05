@@ -67,6 +67,7 @@ from minjob_ingest.sources.adapters.base import (
     require_numeric_id,
     require_one,
     require_some_kept,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -126,6 +127,7 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     soup = parse_html(html)
     body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     raw_text = normalized_text(body)
+    raw_html = structural_html(body)
     images = image_urls_in(body, base_url=ref.url)
     # ⚠️ 이미지 첨부는 base의 `attachments_in`이 그대로 처리한다 — 링크 텍스트가 비어 있어
     # 파일명을 `fn=` 쿼리에서 되살리는 경로를 탄다(KTS와 같은 `view_image.php` 형태).
@@ -135,7 +137,9 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     require_attachment_evidence(
         ref, source_key=SOURCE_KEY, selector=f"{_IMAGE_BOX}·{_FILE_BOX} {_FILE_LINK}", found=files
     )
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+    return RawPosting(
+        ref=ref, raw_text=raw_text, raw_html=raw_html, image_urls=images, attachments=files
+    )
 
 
 def _attachments(box: Tag | None, *, base_url: str) -> tuple[Attachment, ...]:

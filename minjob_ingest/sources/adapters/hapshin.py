@@ -73,6 +73,7 @@ from minjob_ingest.sources.adapters.base import (
     require_one,
     require_some_kept,
     rows_with_data,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -102,6 +103,10 @@ _IMAGE_BOX: Final = "div.view-img"
 #: 첨부 링크는 스킨 클래스가 아니라 **그누보드 공용 다운로드 경로**로 찾는다 —
 #: 경로는 스킨이 바뀌어도 남는다(`a.view_file_download` 클래스는 스킨 것이다).
 _FILE_LINK: Final = 'a[href*="download.php"]'
+#: ⚠️ 그누보드의 **관련 링크**(`wr_link`). 작성자가 파일이 아니라 **URL**을 붙인 것이고,
+#: 그것도 `no-attach`를 떼어낸다(실측 2026-08-05 · 15242 = `cafe.daum.net/peace5851`).
+#: 이걸 모르면 "첨부 있다고 표시됐는데 없다"로 판정해 **정상 공고를 버린다**(전량 수집에서 7건).
+_RELATED_LINK: Final = 'a[href*="link.php"]'
 _FILE_HREF: Final = re.compile(r"(?:https?://[^\s'\"]+|/)[^\s'\"]*download\.php[^\s'\"]*")
 _UNNAMED_FILE: Final = "attachment"
 #: 링크 텍스트에 섞인 chrome — 다운로드 횟수 배지(`span.view-cnt`)·등록일(`span.text-muted`)·
@@ -138,12 +143,15 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     body = require_one(view, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     image_box = view.select_one(_IMAGE_BOX)
     raw_text = normalized_text(body)
+    raw_html = structural_html(body)
     box_images = image_urls_in(image_box, base_url=ref.url)
     images = image_urls_in(body, base_url=ref.url) + box_images
     files = _attachments(view, base_url=ref.url) + attachments_in(image_box, base_url=ref.url)
     # 대조에 세는 것은 **첨부 영역에서 온 것만**이다 — 본문 이미지는 첨부의 증거가 아니다.
     _check_attachments_found(view, ref, found=(*files, *box_images))
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+    return RawPosting(
+        ref=ref, raw_text=raw_text, raw_html=raw_html, image_urls=images, attachments=files
+    )
 
 
 def _attachments(view: Tag, *, base_url: str) -> tuple[Attachment, ...]:
@@ -187,11 +195,16 @@ def _check_attachments_found(view: Tag, ref: PostingRef, *, found: Sequence[obje
     if head is None:
         raise ParseError(f"{SOURCE_KEY} {ref.external_id}: 셀렉터 `{_VIEW_HEAD}` 없음 — 개편 의심")
     classes: list[str] = head.get_attribute_list("class")
-    if _NO_ATTACH_CLASS not in classes and not found:
-        raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 첨부가 있다고 표시됐는데 목록이 비었음 —"
-            f" 셀렉터 `{_FILE_LINK}`·`{_IMAGE_BOX}` 확인"
-        )
+    if _NO_ATTACH_CLASS in classes or found:
+        return
+    # ⚠️ `no-attach`는 **파일도 링크도 없을 때만** 붙는다. 작성자가 URL만 붙인 글에서는
+    # 파일이 없는 것이 정상이므로 실패로 보면 안 된다(교회 카페·홈페이지 주소가 흔하다).
+    if head.select(_RELATED_LINK):
+        return
+    raise ParseError(
+        f"{SOURCE_KEY} {ref.external_id}: 첨부가 있다고 표시됐는데 목록이 비었음 —"
+        f" 셀렉터 `{_FILE_LINK}`·`{_IMAGE_BOX}` 확인"
+    )
 
 
 def _is_notice(row: Tag) -> bool:

@@ -198,3 +198,31 @@ def test_the_image_attachment_box_is_read_even_though_it_sits_outside_the_body()
     raw = hapshin.parse_detail(html, ref)
     assert [(a.name, a.is_image) for a in raw.attachments] == [("poster.jpg", True)]
     assert raw.image_urls == ("https://hapdong.ac.kr/data/file/e03/poster.jpg",)
+
+
+def test_a_related_link_is_not_a_missing_attachment(refs: tuple[PostingRef, ...]) -> None:
+    """⚠️ **전량 수집에서 정상 공고 7건을 버렸다**(2026-08-05).
+
+    그누보드는 첨부가 없을 때 머리 패널에 `no-attach`를 붙이는데, 그 판정은 **파일과 링크를
+    함께** 본다. 작성자가 파일 없이 URL만 붙이면(교회 카페·홈페이지가 흔하다) `no-attach`가
+    떨어지고, 우리는 그것을 "파일이 있다"로 읽어 없는 파일을 찾다가 공고를 실패시켰다.
+    """
+    head = (
+        '<div class="panel panel-default view-head">'
+        '<div class="list-group"><a class="list-group-item" '
+        'href="https://hapdong.ac.kr/bbs/link.php?bo_table=e03&amp;wr_id=15242&amp;no=1">'
+        '<span class="label view-cnt">49</span><i class="fa fa-link"></i>'
+        " https://cafe.daum.net/peace5851</a></div></div>"
+    )
+    body = '<div class="view-content">' + "가" * 300 + "</div>"
+    raw = hapshin.parse_detail(f'<div class="view-wrap">{head}{body}</div>', refs[0])
+    assert raw.attachments == ()
+    assert raw.raw_text  # 공고는 그대로 수집된다
+
+
+def test_a_missing_attachment_is_still_an_error(refs: tuple[PostingRef, ...]) -> None:
+    """반대편 — 링크도 파일도 없는데 `no-attach`가 없으면 셀렉터가 빗나간 것이다."""
+    head = '<div class="panel panel-default view-head"><div class="panel-heading"></div></div>'
+    body = '<div class="view-content">' + "가" * 300 + "</div>"
+    with pytest.raises(ParseError, match="첨부가 있다고 표시됐는데"):
+        hapshin.parse_detail(f'<div class="view-wrap">{head}{body}</div>', refs[0])

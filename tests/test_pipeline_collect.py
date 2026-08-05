@@ -14,7 +14,7 @@ from typing import Final
 import httpx
 import pytest
 
-from minjob_ingest.clock import utc_now
+from minjob_ingest.clock import kst_now
 from minjob_ingest.domain import CrawlMode
 from minjob_ingest.fetch.client import SourceClient
 from minjob_ingest.models import SourceData
@@ -394,7 +394,7 @@ def test_loop_fails_the_source_on_a_ledger_conflict(
             title="○○교회 부목사 청빙",  # 제목·게시일이 둘 다 다르다
             posted_on=date(2026, 5, 1),
             run_id=run.id,
-            fetched_at=utc_now(),
+            fetched_at=kst_now(),
             raw_text="예전 글",
         )
     )

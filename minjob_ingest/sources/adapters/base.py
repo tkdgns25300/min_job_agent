@@ -19,7 +19,7 @@ from types import MappingProxyType
 from typing import Final
 from urllib.parse import parse_qs, unquote, urljoin, urlsplit
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Comment, Tag
 from bs4.element import NavigableString
 
 from minjob_ingest.clock import board_today, parse_iso_date
@@ -59,6 +59,30 @@ _ID_PLACEHOLDER: Final = "{id}"
 
 _SPACES: Final = re.compile("[ \\t\\u00a0]+")
 _BLANK_LINES: Final = re.compile(r"\n{3,}")
+
+#: `structural_html`이 남기는 속성. 나머지(`style`·`class`·`id`·`data-*`·`on*`)는 버린다 —
+#: 실측에서 본문 HTML의 **93%가 그 쓰레기**였다(워드 붙여넣기 `mso-*` 스타일이 span마다).
+_KEPT_ATTRS: Final = frozenset({"href", "src", "alt", "colspan", "rowspan"})
+#: 증거가 아닌 태그 — 통째로 버린다.
+_DROPPED_TAGS: Final = ("script", "style", "noscript", "iframe")
+#: 구조를 담지 않는 꾸밈 태그. 속성이 사라진 뒤 **내용만 남기고 껍데기를 벗긴다**.
+#: `o:p`는 워드가 넣는 빈 단락이다(YTUS 실측 — 이것 때문에 본문이 20배가 됐다).
+_DECORATIVE_TAGS: Final = (
+    "span",
+    "font",
+    "b",
+    "i",
+    "u",
+    "em",
+    "strong",
+    "small",
+    "center",
+    "o:p",
+)
+#: `data:` 이미지는 바이트 자체다 — `image_urls`가 이미 갖고 있어 두 번 저장하지 않는다
+#: (CALVIN 실측: 한 장이 150KB · 그 한 줄이 파일의 4분의 1이었다).
+_DATA_URI_SCHEME: Final = "data:"
+_DATA_URI_ELIDED: Final = "data:…"
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +144,9 @@ class RawPosting:
     ref: PostingRef
     #: 본문 텍스트. **빈 문자열이 정상인 소스가 있다**(`image_only` — 본문이 이미지뿐).
     raw_text: str
+    #: 구조만 남긴 본문 HTML(`structural_html`). 링크 `href`·표 행열·항목 경계를 보관해
+    #: **나중 추출이 재수집을 요구하지 않게** 한다. 본문 컨테이너가 없는 소스는 빈 문자열.
+    raw_html: str = ""
     #: **본문에 인라인으로 박힌** 이미지의 절대 URL. 페이지에 있는 대로 보고한다 —
     #: **중복 제거는 하지 않는다.** 그건 `SourceData`(저장·과금되는 레코드)가 한 곳에서 한다.
     #: 두 곳에서 하면 한쪽을 지워도 다른 쪽이 가려 테스트가 결함을 못 잡는다(실제로 그랬다).
@@ -130,6 +157,7 @@ class RawPosting:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "raw_text", self.raw_text.strip())
+        object.__setattr__(self, "raw_html", self.raw_html.strip())
         object.__setattr__(self, "image_urls", tuple(self.image_urls))
         object.__setattr__(self, "attachments", tuple(self.attachments))
 
@@ -172,6 +200,44 @@ def normalized_text(element: Tag) -> str:
     text = working.get_text("")
     lines = [_SPACES.sub(" ", line).strip() for line in text.split("\n")]
     return _BLANK_LINES.sub("\n\n", "\n".join(lines)).strip()
+
+
+def structural_html(element: Tag) -> str:
+    """구조만 남긴 본문 HTML. **원문 증거**로 저장한다(SPEC §6 `raw_html`).
+
+    `normalized_text`는 텍스트만 남기므로 **되돌릴 수 없는 손실**이 있다 — 링크의 `href`,
+    표의 행·열 대응, 항목 경계가 사라진다. 그래서 새 필드가 필요해질 때마다 게시판을 다시
+    긁어야 했다(하루에 세 번 · 2026-08-05). 구조를 함께 보관하면 **수집은 한 번, 추출은
+    여러 번**이 된다.
+
+    원본을 그대로 두면 본문 하나가 평균 11KB다(3,181건 = 34MB). 그 **93%가 스타일·클래스·
+    워드 주석**이라 그것만 걷어내면 평균 797B로 줄어든다(실측 28곳).
+
+    ⚠️ **인자를 바꾸지 않는다** — 호출자가 같은 요소로 `normalized_text`·`image_urls_in`·
+    `attachments_in`도 부른다. 여기서 태그를 지우면 호출 순서에 따라 결과가 달라진다.
+    """
+    working = BeautifulSoup(str(element), HTML_PARSER)
+    for comment in working.find_all(string=lambda node: isinstance(node, Comment)):
+        comment.extract()
+    for tag in working(_DROPPED_TAGS):
+        tag.decompose()
+    for tag in working.find_all(True):
+        tag.attrs = {name: value for name, value in tag.attrs.items() if name in _KEPT_ATTRS}
+        _elide_data_uri(tag)
+    # 속성을 걷어낸 **뒤에** 벗긴다 — `href`가 남은 앵커는 꾸밈이 아니라 구조다.
+    for tag in working.find_all(_DECORATIVE_TAGS):
+        if not tag.attrs:
+            tag.unwrap()
+    # ⚠️ `str(working)`을 쓰면 안 된다 — 파서가 조각을 `<html><body>`로 감싸고, 그 가짜
+    # 껍데기가 증거에 그대로 저장된다(실측). 내용만 꺼낸다.
+    return (working.body or working).decode_contents().strip()
+
+
+def _elide_data_uri(tag: Tag) -> None:
+    """`src="data:image/png;base64,…"`의 바이트를 뺀다. 종류는 남긴다(무엇이 있었는지 알게)."""
+    src = tag.attrs.get("src")
+    if isinstance(src, str) and src.startswith(_DATA_URI_SCHEME):
+        tag.attrs["src"] = _DATA_URI_ELIDED
 
 
 def image_urls_in(*elements: Tag | None, base_url: str) -> tuple[str, ...]:

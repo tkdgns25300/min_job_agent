@@ -73,6 +73,7 @@ from minjob_ingest.sources.adapters.base import (
     require_numeric_id,
     require_one,
     require_some_kept,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -145,12 +146,15 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
         box.extract()  # 떼어내도 태그는 그대로 쓸 수 있다 — 본문 텍스트에서만 사라진다
     files = _attachments(box, base_url=ref.url)
     raw_text = normalized_text(body)
+    raw_html = structural_html(body)
     images = image_urls_in(body, base_url=ref.url)
     # 첨부가 이미지로 렌더되는 공고를 만나면 그것도 증거다 — 형식보다 내용 유실이 중요하다.
     require_attachment_evidence(
         ref, source_key=SOURCE_KEY, selector=_ATTACHMENTS, found=(*files, *images)
     )
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+    return RawPosting(
+        ref=ref, raw_text=raw_text, raw_html=raw_html, image_urls=images, attachments=files
+    )
 
 
 def _attachments(box: Tag | None, *, base_url: str) -> tuple[Attachment, ...]:

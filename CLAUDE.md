@@ -82,7 +82,7 @@ minjob_ingest/                 ★ 패키지 (= import 이름)
 ├── cli.py                    진입점 (운영자가 실행하는 창구)
 ├── domain.py                 enum — CONTRACT §1 계약 미러 + 크롤러 enum
 ├── models.py                 레코드 dataclass — SPEC §6 4테이블
-├── clock.py                  UTC·ISO8601·date 생성/직렬화 단일 창구
+├── clock.py                  KST·ISO8601·date 생성/직렬화 단일 창구
 ├── paths.py                  리포 기준 경로 (한 곳에서만 계산)
 ├── settings.py               env 로딩 1곳 (import 시점 캡처 금지)
 ├── sources/registry.py       소스 레지스트리 로드·검증  (+ adapters/ 예정 = 게시판별 파싱)
@@ -94,6 +94,7 @@ minjob_ingest/                 ★ 패키지 (= import 이름)
 config/
 ├── sources.json              ★ 소스 레지스트리 (전송 정본 · 라이브 검증값)
 └── heresy-ref.json           이단 참고 목록 (사람이 관리 · git 이력 = 감사)
+scripts/                       일회성 이관·정리 스크립트 (CLI 명령이 아니다)
 tests/{fixtures/ ← gitignored, test_*.py}
 data/                         로컬 저장소 (gitignored)
 ```
@@ -221,7 +222,7 @@ min_job 가드레일을 승계·구체화한다. 근거는 SPEC·CONTRACT·min_j
 **Python**
 - 타입 힌트 필수, `Any` 금지. 레코드는 `@dataclass`(write-once 테이블은 `frozen=True`).
 - 표준 라이브러리 우선, 의존성은 최소.
-- 시간은 UTC·ISO8601로 한 헬퍼에서만 생성한다(포맷 드리프트 방지).
+- 시간은 **KST**·ISO8601(`+09:00`)로 한 헬퍼에서만 생성한다(포맷 드리프트 방지). ⚠️ **오프셋을 떼지 않는다** — naive KST는 DB가 서버 시간대로 해석해 9시간 어긋난다. `date` 컬럼은 시간대가 없으므로 변환 대상이 아니다(운영자 결정 2026-08-05 · `Z`↔`+09:00`은 같은 순간이라 Postgres `timestamptz`에 동일하게 저장된다).
 - 공유 타입·enum은 `domain.py`·`models.py`. 한 모듈 전용 타입은 파일 상단.
 
 **Imports**

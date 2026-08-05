@@ -172,6 +172,8 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
 
 크롤러 **staging 4테이블**(Supabase) + **참고 config 1**(GitHub JSON) + **승격 목적지 2테이블**(min_job DATA.md).
 
+> ⚠️ **시각 컬럼은 KST 표기(`+09:00`)로 저장한다**(운영자 결정 2026-08-05). `Z`(UTC)와 같은 순간이고 Postgres `timestamptz`도 동일하게 저장하지만, 운영자·게시판·공고가 모두 한국 시간을 쓰므로 사람이 파일·로그를 열었을 때 바로 읽히는 쪽을 택했다. **오프셋을 떼면 안 된다**(naive는 서버 시간대로 해석된다). `date` 컬럼(`posted_on`·`deadline`·`last_cutoff`)은 시간대가 없어 변환 대상이 아니다.
+
 ### ① `source_data` — 원자료 + 원장 (불변 · write-once · 누적)
 
 > **write-once 예외**: 운영자 **opt-out**(교회 요청)·법적 삭제 요청은 삭제/마스킹이 가능해야 한다(CLAUDE.md 가드레일 #4). 그 외 일반 경로에서는 갱신하지 않는다.
@@ -184,6 +186,7 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
 | `run_id` | uuid FK→crawl_run | ①에서 INSERT된 crawl_run 참조 |
 | `fetched_at` | timestamptz | |
 | `raw_text` | text | 확보 텍스트(이미지형은 얇거나 빈 것이 **정상** — config `image_only`) |
+| `raw_html` | text | **구조만 남긴 본문 HTML**(2026-08-05 추가). `raw_text`를 대체하지 않는다 — 구조화는 `raw_text`를 읽고, 이 값은 **나중에 필요해진 것을 재수집 없이 뽑는 자리**다. ⚠️ 텍스트만 남기면 **링크의 `href`·표의 행열 대응·항목 경계가 사라진다** — 그래서 하루에 세 번 재수집을 원했다(DAESHIN 첨부·HANIL 링크·`href` 전량). `church_links`(HOMEPAGE·YOUTUBE·BAND…)는 `href` 없이 채울 수 없고, `type`이 NOT NULL이라 링크 **라벨**도 필요하다. **남기는 것**: 태그 구조 · `href`·`src`·`alt`·`colspan`/`rowspan`. **버리는 것**: `style`·`class`·`id`·`data-*`·`on*`·`<script>`·HTML 주석·꾸밈 태그 껍데기 (`span`·`font`·`o:p`) · **`data:` 이미지 바이트**(`image_urls`가 이미 갖고 있어 두 번 저장하지 않는다). 실측: 원본 평균 11KB → **797B**(93% 절감 · 3,181건 = +2.4MB). 본문 컨테이너가 없는 소스는 빈 문자열(`PCKWORLD` — 상세가 포스터 한 장) |
 | `title` | text NOT NULL | 게시판 목록의 제목 **그대로**(정리본은 `review_data.title`). 별도 컬럼인 이유: `raw_meta`에 묻으면 운영자가 원자료 표에서 무슨 공고인지 못 보고, 원장 대조에서 Store가 어댑터 키 이름을 알아야 한다 |
 | `posted_on` | date NULL | 목록에 표시된 게시일. **백필 컷오프의 유일한 기준**(§4) — 구조화 전이라 `review_data.posted_at`이 없다. 목록에 날짜가 없는 소스는 NULL이고 페이지 수로 범위를 정한다 |
 | `image_urls` | text[] | **본문에 인라인으로 박힌** 이미지 URL. 구조화 직전 바이트 fetch용(§3). raw_meta에 섞지 않고 **별도 컬럼**. ⚠️ **`data:` URI가 들어올 수 있다**(2026-08-04 실측 · CALVIN은 본문 텍스트가 0자이고 내용이 인라인 `data:image/png;base64` 약 150KB 한 장이다) → 구조화는 **스킴을 보고 갈라야 한다**: `http(s)`는 fetch, `data:`는 **fetch하지 말고 그대로 디코드**한다. 이걸 URL로 취급해 요청하면 그 게시판 전체가 실패한다 |
@@ -198,7 +201,7 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
 ### ② `review_data` — 구조화 초안 + 검수 (가변 · 누적)
 | 그룹 | 컬럼 |
 |---|---|
-| 링크 | `id` PK · `source_data_id` FK · `run_id` FK |
+| 링크 | `id` PK · `source_data_id` FK · `run_id` FK · **`source_url` NOT NULL**(`source_data.source_url` 복사) |
 | 분류(게이트) | `is_church_recruitment`(YES/NO/UNCERTAIN — NO는 여기 안 옴) · `job_kind`(MINISTRY/GENERAL) · `role`(GENERAL용) |
 | 공고(jobs 미러) | `title`·`position`·`department`·`employment_type`·`qualification`·`housing_provided`·`stipend_min`·`stipend_max`·`stipend_note`·`stipend_period`·`work_days`·`requirements[]`·`preferred[]`·`required_docs[]`·`description`·`posted_at`·`deadline` |
 | 교회 초안 | `church_name`·`region`·`city` |
@@ -208,6 +211,9 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
 | 검수 메타 | `confidence`(high/medium/low) · `dedup_key` · `review_status`(PENDING/APPROVED/REJECTED) · `matched_church_id` FK→churches · `published_job_id` FK→jobs · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
 
 > 게이트1 `NO`(개교회 아님·비채용)는 review_data를 만들지 않는다(§1·§5.1) — 대신 `source_data.structured_at`이 기록돼 재구조화 대상에서 빠진다(§4). `UNCERTAIN`은 confidence=low로 여기 온다.
+> ⚠️ **`source_url`을 복사해 둔다**(2026-08-05 추가). 정규화상으로는 `source_data_id`로 JOIN하면 되니 중복이지만, min_job `jobs.source_url`은 **가드레일 #3(원문 재게시 금지·출처 표기)의 핵심 필드**다 — 승격 코드가 JOIN을 잊으면 출처 없이 공개된다. **승격이 이 테이블 하나만 보고 끝나게** 한다(빈 문자열도 거부).
+>
+> ⚠️⚠️ **승격 전 반드시 채워져야 하는 8칸**(min_job이 `NOT NULL`로 요구 — 없으면 INSERT가 튕긴다): `jobs` ← `title`·`job_kind`·`employment_type`·`stipend_period`·`posted_at` · `churches` ← `church_name`·`denomination`(UNKNOWN 해소)·`region`. 여기서는 **전부 nullable이 맞다** — AI가 못 뽑을 수 있고 운영자가 채우는 초안이다. 그래서 **검수 화면이 이 8칸을 미리 표시**해야 하고, 크롤러는 못 채운 칸을 `confidence=low`로 알린다.
 > **UNIQUE(`source_data_id`)** — 한 원자료당 초안 1개(중복 PENDING 방지). 재구조화 시 기존 행을 교체(upsert)한다. 게시판 default 교단은 `source_key`로 유도 가능(레지스트리)하므로 별도 hint 컬럼을 두지 않는다.
 
 ### ③ `source_health` — 게시판별 상태 (약 31행 · 매 실행 UPSERT)

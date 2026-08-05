@@ -49,6 +49,7 @@ from minjob_ingest.sources.adapters.base import (
     require_one,
     require_some_kept,
     rows_with_data,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -122,6 +123,7 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
         for boilerplate in body.select(selector):
             boilerplate.decompose()
     raw_text = normalized_text(body)
+    raw_html = structural_html(body)
     images = image_urls_in(body, base_url=ref.url)
     # 첨부는 **본문 밖의 전용 목록**에 있다. 범위를 넓히면 이전/다음글 링크와 사이트 공용
     # 파일이 첨부로 들어온다(DAESHIN 실측).
@@ -131,7 +133,9 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
             f"{SOURCE_KEY} {ref.external_id}: 목록이 첨부 있다고 표시했는데 상세에서 0개 —"
             f" 셀렉터 `{_FILE_LIST}` 확인"
         )
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+    return RawPosting(
+        ref=ref, raw_text=raw_text, raw_html=raw_html, image_urls=images, attachments=files
+    )
 
 
 def _board_of(source: SourceConfig) -> str:

@@ -44,6 +44,7 @@ from minjob_ingest.sources.adapters.base import (
     require_one,
     require_some_kept,
     rows_with_data,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -95,11 +96,14 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     soup = parse_html(html)
     body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     raw_text = normalized_text(body)
+    raw_html = structural_html(body)
     images = image_urls_in(body, base_url=ref.url)
     # ⚠️ 첨부 범위를 **본문 안으로** 제한한다 — 상세 하단(`box_board_detailbtm`)에 이전글/다음글
     # 링크가 있어 넓히면 그것이 첨부로 저장된다(실측).
     files = attachments_in(body, base_url=ref.url)
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+    return RawPosting(
+        ref=ref, raw_text=raw_text, raw_html=raw_html, image_urls=images, attachments=files
+    )
 
 
 def _is_notice(row: Tag) -> bool:

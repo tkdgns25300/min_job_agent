@@ -49,6 +49,7 @@ from minjob_ingest.sources.adapters.base import (
     require_one,
     require_some_kept,
     rows_with_data,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -106,12 +107,15 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     file_box = soup.select_one(_FILE_BOX)
     raw_text = normalized_text(body)
+    raw_html = structural_html(body)
     images = image_urls_in(body, file_box, base_url=ref.url)
     files = attachments_in(file_box, base_url=ref.url)
     require_attachment_evidence(
         ref, source_key=SOURCE_KEY, selector=_FILE_BOX, found=(*files, *images)
     )
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+    return RawPosting(
+        ref=ref, raw_text=raw_text, raw_html=raw_html, image_urls=images, attachments=files
+    )
 
 
 def _is_notice(row: Tag) -> bool:

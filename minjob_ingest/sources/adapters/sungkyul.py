@@ -55,6 +55,7 @@ from minjob_ingest.sources.adapters.base import (
     require_one,
     require_some_kept,
     rows_with_data,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -108,7 +109,14 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     raw_text = "\n\n".join(part for part in (_full_title(soup), normalized_text(body)) if part)
     images = image_urls_in(body, base_url=ref.url)
     files = attachments_in(_cell_after_header(soup, _ATTACHMENT_HEADER), base_url=ref.url)
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+    return RawPosting(
+        ref=ref,
+        raw_text=raw_text,
+        # 제목은 `ref.title`에 이미 있으므로 구조는 본문만 담는다.
+        raw_html=structural_html(body),
+        image_urls=images,
+        attachments=files,
+    )
 
 
 def _full_title(soup: BeautifulSoup) -> str:

@@ -11,12 +11,18 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Final
 
 import pytest
 
-from minjob_ingest.sources.adapters.base import ParseError, PostingRef
+from minjob_ingest.sources.adapters.base import (
+    ParseError,
+    PostingRef,
+    normalized_text,
+    parse_html,
+)
 from minjob_ingest.sources.adapters.registry import Adapter, find_adapter, implemented_keys
 from minjob_ingest.sources.registry import SourceConfig, find_source, load_sources
 
@@ -180,6 +186,55 @@ def test_fixture_detail_carries_evidence(key: str) -> None:
     assert raw.raw_text.strip() or raw.image_urls or raw.attachments, (
         f"{key}: 본문·이미지·첨부가 모두 없다"
     )
+
+
+#: `raw_html`을 담지 않는 소스와 그 이유. **비어 있는 것이 정상인 곳만** 여기 적는다 —
+#: 목록에 없으면 아래 테스트가 실패해 "어댑터가 배선을 잊었다"를 드러낸다.
+_WHITESPACE: Final = re.compile(r"[\s\u00a0]+")
+
+
+def _squashed(text: str) -> str:
+    """공백을 전부 지운 문자열. 정규화 차이를 무시하고 내용만 비교한다."""
+    return _WHITESPACE.sub("", text)
+
+
+_NO_STRUCTURE: Final = {
+    # 상세가 포스터 `<img>` 한 장뿐이고 본문 컨테이너가 없다(config `image_only`).
+    "PCKWORLD",
+}
+
+
+@pytest.mark.parametrize("key", _KEYS)
+def test_detail_keeps_the_body_structure(key: str) -> None:
+    """본문이 있으면 **구조도 함께** 담아야 한다(`raw_html` · SPEC §6).
+
+    ⚠️ 이 테스트가 없으면 새 어댑터가 조용히 배선을 빠뜨리고, 그 게시판만 링크 `href`와 표
+    대응을 잃는다. 그 사실은 몇 주 뒤 `church_links`가 비어 있을 때 드러나고, 그때는 이미
+    수집이 끝나 **재수집 90분**을 써야 한다(2026-08-05에 그렇게 됐다).
+    """
+    adapter, source = _adapter_and_source(key)
+    detail = _fixture(key, DETAIL_FIXTURE)
+    if detail is None:
+        pytest.skip(f"{key}/{DETAIL_FIXTURE} 없음")
+    refs = adapter.parse_list(_require_fixture(key, LIST_FIXTURE), source)
+    raw = adapter.parse_detail(detail, refs[0])
+    if key in _NO_STRUCTURE:
+        assert not raw.raw_html, f"{key}: 구조를 담지 않기로 한 소스인데 값이 있다 — 목록을 고친다"
+        return
+    assert raw.raw_html, f"{key}: raw_html이 비었다 — `structural_html(body)` 배선 확인"
+    assert not raw.raw_html.startswith("<html>"), f"{key}: 문서 껍데기가 저장된다"
+    # 구조는 본문과 **같은 요소**를 담아야 한다 — 다른 곳을 가리키면 배선이 어긋난 것이다.
+    # ⚠️ 문자열을 그대로 비교하면 안 된다: `raw_text`는 정규화되고(nbsp→공백·공백 접기)
+    # `raw_html`은 원문을 유지한다. 낱말 하나로 보는 것도 안 된다 — 라벨과 값이 태그 경계로
+    # 갈리기 때문이다(`홈페이지:<a>http://…</a>` · HAPSHIN 실측).
+    # → **태그를 벗겨 공백을 지운 뒤** 한쪽이 다른 쪽을 포함하는지 본다. 어느 방향이든 되는
+    #   이유: 제목을 앞에 붙이는 어댑터(SUNGKYUL)와 본문 앞 상자를 합치는 어댑터(PCK)가 있다.
+    from_html = _squashed(normalized_text(parse_html(raw.raw_html)))
+    from_text = _squashed(raw.raw_text)
+    if from_text:
+        assert from_text in from_html or from_html in from_text, (
+            f"{key}: raw_html이 본문과 다른 곳을 가리킨다"
+        )
 
 
 @pytest.mark.parametrize("key", _KEYS)

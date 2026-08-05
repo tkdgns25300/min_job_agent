@@ -59,6 +59,7 @@ from minjob_ingest.sources.adapters.base import (
     require_one,
     require_some_kept,
     rows_with_data,
+    structural_html,
 )
 from minjob_ingest.sources.registry import SourceConfig, detail_url
 
@@ -105,10 +106,13 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     soup = parse_html(html)
     body = require_one(soup, _BODY, what=f"{SOURCE_KEY} 상세 본문")
     raw_text = normalized_text(body)
+    raw_html = structural_html(body)
     images = image_urls_in(body, base_url=ref.url)
     # 첨부는 `첨부파일` 행 안으로 제한한다 — 모듈 docstring의 `mailto:`·빈 앵커 때문에.
     files = attachments_in(soup.select_one(_ATTACHED_CELL), base_url=ref.url)
-    return RawPosting(ref=ref, raw_text=raw_text, image_urls=images, attachments=files)
+    return RawPosting(
+        ref=ref, raw_text=raw_text, raw_html=raw_html, image_urls=images, attachments=files
+    )
 
 
 def _is_skippable_row(row: Tag) -> bool:
