@@ -259,8 +259,9 @@ def collect_source(
     cutoff = _cutoff_for(source, options, today=today)
     tally = _Tally()
 
+    page_limit = _page_limit_for(source, options)
     capped = True  # for-else — break 없이 끝나면 상한에 걸린 것이다
-    for page in range(1, options.max_pages + 1):
+    for page in range(1, page_limit + 1):
         listing = adapter.parse_list(_fetch_list(adapter, client, source, page), source)
         refs = tally.drop_already_scanned(listing)
         ledger = store.seen_postings(source.key, [ref.external_id for ref in refs])
@@ -289,9 +290,22 @@ def collect_source(
         source.key,
         dry_run=options.dry_run,
         cutoff=cutoff,
-        max_pages=options.max_pages,
+        max_pages=page_limit,
         stopped_at_page_cap=capped,
     )
+
+
+def _page_limit_for(source: SourceConfig, options: CollectOptions) -> int:
+    """이 소스에 적용할 페이지 상한.
+
+    기본은 폭주 방지용 안전 상한이고, **config가 더 낮은 값을 적으면 그것을 쓴다** —
+    날짜가 없어 컷오프를 만들 수 없는 게시판의 범위를 적어 두는 자리다(`list_page_limit`).
+    실행 옵션(`max_pages`)이 더 낮으면 그것을 존중한다.
+    """
+    limits = [options.max_pages]
+    if source.list_page_limit is not None:
+        limits.append(source.list_page_limit)
+    return min(limits)
 
 
 def _cutoff_for(source: SourceConfig, options: CollectOptions, *, today: date) -> date | None:

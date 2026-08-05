@@ -141,8 +141,9 @@
         "image_only": true
       },
       "detail_pattern": "/adsearch/ad_view.php?aid={id}",
-      "fetch_note": "2차검증: 상세 = /adsearch/ad_view.php?aid={id}(adview() JS가 여는 URL, headless 불요). 본문이 **JPG 이미지**(/upimg/adsearch/…jpg)·텍스트 없음→**빈 raw_text가 정상**·Gemini 멀티모달 필수. 목록 ul.grid>li: 제목 span+썸네일. id=aid. ⚠️2026-08-04 실측: 목록이 포스터 이미지 그리드(ul.grid > li.grid-item)로 **행에 게시일이 없다** → list_has_dates=false(기간 대신 페이지 상한이 범위). 상세 링크는 javascript:adview('{aid}',w,h).",
-      "list_has_dates": false
+      "fetch_note": "2차검증: 상세 = /adsearch/ad_view.php?aid={id}(adview() JS가 여는 URL, headless 불요). 본문이 **JPG 이미지**(/upimg/adsearch/…jpg)·텍스트 없음→**빈 raw_text가 정상**·Gemini 멀티모달 필수. 목록 ul.grid>li: 제목 span+썸네일. id=aid. ⚠️2026-08-04 실측: 목록이 포스터 이미지 그리드(ul.grid > li.grid-item)로 **행에 게시일이 없다** → list_has_dates=false(기간 대신 페이지 상한이 범위). 상세 링크는 javascript:adview('{aid}',w,h). ⚠️2026-08-05 실측: 날짜가 없어 컷오프를 만들 수 없으니 안전 상한(100p)이 범위가 되어 **1,200건**을 잡았다 → 그만큼 구조화하면 예상 못 한 Gemini 비용이다. `list_page_limit: 5`(60건)로 범위를 적어 둔다. 광고 게시판이라 최신 몇 페이지면 충분하고, 원장이 증분을 담당하므로 데일리로 따라간다. 더 깊이 필요하면 이 값을 올린다.",
+      "list_has_dates": false,
+      "list_page_limit": 5
     },
     {
       "key": "HANIL",

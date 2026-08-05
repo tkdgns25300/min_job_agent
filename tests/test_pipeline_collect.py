@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Final
@@ -628,3 +629,67 @@ def test_the_loop_marks_a_natural_stop(board_html: tuple[str, str], tmp_path: Pa
     )
     assert not report.stopped_at_page_cap
     assert report.stale == 18
+
+
+# ── 소스별 페이지 상한 ───────────────────────────────────────────
+
+
+def test_a_source_page_limit_bounds_a_dateless_board(
+    board_html: tuple[str, str], tmp_path: Path
+) -> None:
+    """⚠️ 날짜가 없는 게시판은 컷오프를 만들 수 없어 **안전 상한(100p)이 범위**가 된다.
+
+    PCKWORLD 실측(2026-08-05)에서 그게 1,200건이었다 — 그만큼 구조화하면 운영자가 예상하지
+    못한 Gemini 비용이다. CLI에 페이지 옵션이 없으므로(범위는 기간이 정한다) 그 게시판의
+    범위는 config `list_page_limit`에 데이터로 적는다.
+    """
+    source = find_source(load_sources(None), "YTUS")
+    assert source is not None
+    bounded = replace(source, list_has_dates=False, list_page_limit=2)
+    board = _AgingBoard(*board_html)
+    ticks = iter(range(100_000))
+    with SourceClient(
+        bounded,
+        transport=httpx.MockTransport(board.handler),
+        sleep=lambda _seconds: None,
+        monotonic=lambda: float(next(ticks)),
+    ) as client:
+        report = collect_source(
+            bounded,
+            find_adapter("YTUS"),
+            client,
+            JsonStore(tmp_path / "data"),
+            run_id=None,
+            options=CollectOptions(months=3, dry_run=True),
+            today=_TODAY,
+        )
+    assert report.pages_read == 2  # 컷오프가 아니라 config 상한이 멈췄다
+    assert report.max_pages == 2  # 리포트가 **실제로 적용된** 상한을 말한다
+    assert report.cutoff is None  # 날짜가 없는 게시판이라 컷오프를 만들지 않았다
+
+
+def test_a_run_option_can_go_below_the_source_limit(
+    board_html: tuple[str, str], tmp_path: Path
+) -> None:
+    """둘 중 **더 낮은 쪽**을 쓴다 — 진단할 때 한 페이지만 보는 것을 config가 막으면 안 된다."""
+    source = find_source(load_sources(None), "YTUS")
+    assert source is not None
+    bounded = replace(source, list_has_dates=False, list_page_limit=9)
+    board = _AgingBoard(*board_html)
+    ticks = iter(range(100_000))
+    with SourceClient(
+        bounded,
+        transport=httpx.MockTransport(board.handler),
+        sleep=lambda _seconds: None,
+        monotonic=lambda: float(next(ticks)),
+    ) as client:
+        report = collect_source(
+            bounded,
+            find_adapter("YTUS"),
+            client,
+            JsonStore(tmp_path / "data"),
+            run_id=None,
+            options=CollectOptions(months=None, max_pages=1, dry_run=True),
+            today=_TODAY,
+        )
+    assert report.pages_read == 1

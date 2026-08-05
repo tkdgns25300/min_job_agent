@@ -73,6 +73,14 @@ class SourceConfig:
     #: 기본값이 `True`인 이유: 30곳은 날짜가 있고, 있는데 못 읽는 것은 **파서 버그**라서
     #: 조용히 넘기지 않고 실패시켜야 한다(`_require_dates_for_cutoff`).
     list_has_dates: bool = True
+    #: 이 게시판만의 목록 페이지 상한. ⚠️ **`list_has_dates: false`인 게시판에만 의미가 있다** —
+    #: 날짜가 있으면 범위는 컷오프가 정하고 이 값은 쓰이지 않는다.
+    #:
+    #: 왜 필요한가: 날짜가 없으면 컷오프를 만들 수 없어 안전 상한(100p)이 범위가 된다.
+    #: PCKWORLD 실측(2026-08-05)에서 그게 1,200건이었고, 그만큼 상세를 받고 구조화하면
+    #: **운영자가 예상하지 못한 Gemini 비용**이 된다. CLI에는 페이지 옵션이 없으므로
+    #: (범위는 기간이 정한다는 원칙) 그 게시판의 범위는 여기 데이터로 적어 둔다.
+    list_page_limit: int | None = None
     #: `enabled: false`인 이유. 제외는 삭제가 아니라 비활성 + 사유로 남긴다(CLAUDE.md Registry).
     disabled_reason: str | None = None
     flags: SourceFlags = SourceFlags()
@@ -180,6 +188,16 @@ def _optional_bool(row: dict[str, object], field_name: str, what: str, *, defaul
     return _require_bool(row, field_name, what)
 
 
+def _optional_positive_int(row: dict[str, object], field_name: str, what: str) -> int | None:
+    """없으면 `None`. 있으면 1 이상 정수여야 한다(0을 넣어 조용히 0페이지가 되지 않게)."""
+    if field_name not in row:
+        return None
+    value = row[field_name]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ConfigError(f"{what}.{field_name}: 1 이상 정수여야 함 ({value!r})")
+    return value
+
+
 def _parse_source(row: dict[str, object], index: int) -> SourceConfig:
     label = _row_label(row, index)
 
@@ -208,6 +226,7 @@ def _parse_source(row: dict[str, object], index: int) -> SourceConfig:
         fetch_note=_require_str(row, "fetch_note", label),
         detail_pattern=_parse_detail_pattern(row.get("detail_pattern"), label),
         list_has_dates=_optional_bool(row, "list_has_dates", label, default=True),
+        list_page_limit=_optional_positive_int(row, "list_page_limit", label),
         disabled_reason=_parse_disabled_reason(row.get("disabled_reason"), enabled, label),
         flags=flags,
     )
