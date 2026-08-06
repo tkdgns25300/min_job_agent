@@ -40,3 +40,7 @@ tests/fixtures/*
 
 # 시간대 이관 등 일회성 백업 (재수집 90분 · 지우지 말 것)
 data.*-backup-*/
+
+# 이단 참고 목록 — 실명 122건이 담긴 민감 자료. **공개 리포이므로 커밋하지 않는다**
+# (가드레일 #11). Supabase 전환 시 DB로 옮기고 RLS 운영자 전용으로 둔다.
+config/heresy-ref.json
