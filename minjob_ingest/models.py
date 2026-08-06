@@ -354,17 +354,31 @@ class ReviewData:
     department: Department | None = None
     employment_type: EmploymentType | None = None
     qualification: Qualification | None = None
+    #: 모집 인원. **정수가 아니다** — "약간명"·"1~2명" 같은 비정형이 흔하다(min_job DATA.md).
+    headcount: str | None = None
+    #: 부임 시기. "즉시"·"협의"·"2월 중" 같은 비정형.
+    start_timing: str | None = None
+    #: 사택. **`None`이면 "언급 없음"이고 `False`(명시적 미제공)와 다르다** — 언급이 없는 것을
+    #: 미제공으로 바꾸면 우리가 틀린 정보를 만든다(실측 언급률 40%).
     housing_provided: bool | None = None
-    #: 만원 단위(min_job DATA.md).
-    stipend_min: int | None = None
-    stipend_max: int | None = None
+    #: "사택 협의"·"보증금 지원" 등 비정형 표현. `pay_note`와 같은 역할.
+    housing_note: str | None = None
+    #: 만원 단위(min_job DATA.md). 화면 라벨은 `job_kind`로 갈린다(사례비/급여).
+    pay_min: int | None = None
+    pay_max: int | None = None
     #: "교회 내규에 따름" 등 비정형 표현을 원문 그대로 보존.
-    stipend_note: str | None = None
-    stipend_period: StipendPeriod | None = None
+    pay_note: str | None = None
+    pay_period: StipendPeriod | None = None
+    #: 4대보험·교육비·안식월 등 그 외 처우.
+    benefit_note: str | None = None
     work_days: str | None = None
     requirements: tuple[str, ...] = ()
     preferred: tuple[str, ...] = ()
+    #: 제출 서류 — **필수**. 선택 서류는 `optional_docs`로 나눈다(min_job이 배열 2개로 받는다).
     required_docs: tuple[str, ...] = ()
+    optional_docs: tuple[str, ...] = ()
+    #: 전형 절차(서류→면접→설교…).
+    process_steps: tuple[str, ...] = ()
     #: **요약**이다. 원문 전문을 넣지 않는다(가드레일 #3 — 상한 `MAX_DESCRIPTION_CHARS`).
     description: str | None = None
     posted_at: date | None = None
@@ -380,8 +394,16 @@ class ReviewData:
     denomination_evidence: str | None = None
     raw_denomination: str | None = None
 
-    #: 지원용으로 공개된 연락처만(가드레일 #4 — 원문 대조는 structure 층).
-    contact: str | None = None
+    # 지원 연락처 — 지원용으로 **공개된 것만**(가드레일 #4 · 원문 대조는 structure 층).
+    #
+    # ⚠️ 대표 문자열 하나가 아니라 **방법별 컬럼 4개**다(min_job DATA.md 2026-08-05).
+    # `APPLY_METHODS`가 `ETC` 없는 닫힌 4키라 컬럼이 1:1로 대응하고, 승격이 파싱 없이 그대로
+    # INSERT한다. **승격 게이트는 이 넷 중 하나 이상**이며 `source_url`은 세지 않는다.
+    contact_email: str | None = None
+    contact_tel: str | None = None
+    contact_link: str | None = None
+    #: 우편·방문 접수처(주소).
+    contact_post: str | None = None
 
     heresy_flag: bool = False
     heresy_evidence: str | None = None
@@ -399,7 +421,7 @@ class ReviewData:
         _set(self, "source_url", _require_non_empty(self.source_url, "source_url"))
         self._coerce_enums()
         self._check_gate1()
-        self._check_stipend()
+        self._check_pay()
         self._check_denomination()
         self._check_heresy()
         self._check_description()
@@ -410,9 +432,14 @@ class ReviewData:
             require_plain_date(self.posted_at)
         if self.deadline is not None:
             require_plain_date(self.deadline)
-        _set(self, "requirements", tuple(self.requirements))
-        _set(self, "preferred", tuple(self.preferred))
-        _set(self, "required_docs", tuple(self.required_docs))
+        for name in (
+            "requirements",
+            "preferred",
+            "required_docs",
+            "optional_docs",
+            "process_steps",
+        ):
+            _set(self, name, tuple(getattr(self, name)))
 
     def _coerce_enums(self) -> None:
         _set(
@@ -442,8 +469,8 @@ class ReviewData:
         )
         _set(
             self,
-            "stipend_period",
-            _as_optional_enum(self.stipend_period, StipendPeriod, "stipend_period"),
+            "pay_period",
+            _as_optional_enum(self.pay_period, StipendPeriod, "pay_period"),
         )
         _set(self, "region", _as_optional_enum(self.region, Region, "region"))
         _set(
@@ -460,17 +487,13 @@ class ReviewData:
         ):
             raise ValueError("게이트1 UNCERTAIN은 confidence=low여야 함(SPEC §5.1)")
 
-    def _check_stipend(self) -> None:
-        if self.stipend_min is not None:
-            _require_non_negative(self.stipend_min, "stipend_min")
-        if self.stipend_max is not None:
-            _require_non_negative(self.stipend_max, "stipend_max")
-        if (
-            self.stipend_min is not None
-            and self.stipend_max is not None
-            and self.stipend_min > self.stipend_max
-        ):
-            raise ValueError(f"stipend_min({self.stipend_min}) > stipend_max({self.stipend_max})")
+    def _check_pay(self) -> None:
+        if self.pay_min is not None:
+            _require_non_negative(self.pay_min, "pay_min")
+        if self.pay_max is not None:
+            _require_non_negative(self.pay_max, "pay_max")
+        if self.pay_min is not None and self.pay_max is not None and self.pay_min > self.pay_max:
+            raise ValueError(f"pay_min({self.pay_min}) > pay_max({self.pay_max})")
 
     def _check_denomination(self) -> None:
         """근거가 값을 요구하는데 비어 있으면 거부한다(SPEC §5.3).

@@ -6,6 +6,42 @@
 
 ---
 
+## 2026-08-06 — 원문 구조 보관 · KST · min_job 스키마 재정합
+
+**① `raw_html` 추가 — 재수집을 끝냈다.** 수집이 HTML을 텍스트로 바꾸고 원본을 버려서, 새 필드가
+필요해질 때마다 게시판을 다시 긁어야 했다(하루에 세 번: DAESHIN 첨부 · HANIL 링크 · `href` 전량).
+`base.structural_html`이 구조만 남긴다 — 태그·`href`·`src`·`colspan`은 남기고 스타일·클래스·
+워드 주석·`data:` 바이트는 버린다. **실측 원본 11KB → 1,148B**(3,188건 = +3.4MB · 파일 17.1MB).
+
+⚠️ 두 번 틀렸다: **주석 제거를 빠뜨리면 YTUS가 16KB로 남고**(워드 붙여넣기가 본문의 대부분),
+`str(soup)`을 쓰면 **파서가 만든 `<html><body>` 껍데기가 증거에 저장된다**. 둘 다 테스트로 고정.
+
+적합성 테스트가 30곳을 강제한다 — 본문이 있는데 `raw_html`이 비면 실패다. 빈 값이 정상인 곳은
+`_NO_STRUCTURE`에 이유와 함께 적는다(`PCKWORLD` 하나 — 상세가 포스터 한 장).
+
+**② 시각을 KST(`+09:00`)로.** `Z`와 같은 순간이고 Postgres `timestamptz`도 동일하게 저장하지만,
+운영자·게시판·공고가 모두 한국이라 파일이 그렇게 읽혀야 한다. `date` 컬럼은 손대지 않았다 —
+하루 밀면 백필 컷오프가 어긋난다. `scripts/migrate_timestamps_to_kst.py`가 기존 행을 옮기고
+**전 값이 같은 순간인지 검증**했다(시각 3,273개 · 그 외 48,051개 바이트 동일).
+
+**③ min_job 스키마 재정합(2026-08-05 min_job 변경).** 우리 실측 3,181건으로 승격 조건이
+**8개 → 필수 4 + CHECK 2**로 줄었고, 그 과정에서 필드가 바뀌었다:
+
+```
+stipend_min/max/note/period  →  pay_min/max/note/period
+contact (대표 1개)            →  contact_email · contact_tel · contact_link · contact_post
+신규                          headcount · start_timing · housing_note · benefit_note
+                              optional_docs[] · process_steps[]
+```
+
+`denomination`·`region`·`posted_at`은 **비어도 승격된다**(실측 교단 명시 2.8% · 지역 81% ·
+PCKWORLD 게시일 0%). ⚠️ **검수 우선순위는 교단보다 지역** — 지역이 비면 min_job 지역 필터에서
+무조건 탈락해 사실상 안 보이는 공고가 된다.
+
+**우리 몫**: 승격 6개 중 못 채운 것이 있으면 `confidence=low`로 올린다(구조화 단계).
+
+**수집 결과**: 3,188건 · 30곳 · **실패 0건** · 빈 공고 56건 · `external_id` 중복 0.
+
 ## 2026-08-05 (5차) — 첫 3개월 실전 수집에서 나온 것 전부
 
 운영자가 `--months 3`을 돌려 10곳(1,480건)까지 진행한 뒤 Ctrl-C. 거기서 나온 문제 4개.
@@ -423,10 +459,12 @@ curl -sL "https://www.ytus.ac.kr/board/list/trXXR" | head   # 영남신대(통�
 | 그룹 | 컬럼 |
 |---|---|
 | 링크 | `id` PK · `source_data_id` FK · `run_id` |
-| 공고(jobs 미러) | `title`·`position`·`department`·`employment_type`·`qualification`·`housing_provided`·`stipend_min/max/note/period`·`work_days`·`requirements[]`·`preferred[]`·`required_docs[]`·`description`·`posted_at`·`deadline` |
-| 교회 초안 | `church_name`·`region`·`city` |
-| 교단 | `denomination`·`denomination_source`·`denomination_evidence`·`raw_denomination` |
-| 검수 메타 | `confidence`·`dedup_key`·`review_status`(PENDING/APPROVED/REJECTED)·`matched_church_id` FK→churches·`published_job_id` FK→jobs·`reviewed_by`·`reviewed_at` |
+| 나머지 전부 | ⚠️ **여기 복사본을 두지 않는다 — 정본은 [SPEC §6 ②](./SPEC.md)다.**
+
+⚠️ 이 표는 2026-07-27 설계 시점 복사본이었고 **2026-08-05에 낡았다**(`stipend_*`→`pay_*` ·
+`contact` 한 칸 → 방법별 4컬럼 · `headcount`·`start_timing`·`housing_note`·`benefit_note`·
+`optional_docs`·`process_steps` 추가). 같은 표를 두 곳에 두면 이렇게 조용히 갈라진다 —
+컬럼 목록은 SPEC §6에서만 본다.
 
 **③ `source_health` — 게시판별 상태 (31행)**
 `source_key` PK · `last_run_at` · `last_success_at` · `last_new_count` · `consecutive_failures` · `last_status`(OK/FAIL/ZERO) · `last_error`

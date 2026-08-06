@@ -286,18 +286,18 @@ def test_uncertain_with_low_confidence_is_allowed() -> None:
     assert record.is_church_recruitment is IsChurchRecruitment.UNCERTAIN
 
 
-def test_rejects_inverted_stipend_range() -> None:
-    with pytest.raises(ValueError, match="stipend_min"):
-        replace(_review_data(), stipend_min=300, stipend_max=200)
+def test_rejects_inverted_pay_range() -> None:
+    with pytest.raises(ValueError, match="pay_min"):
+        replace(_review_data(), pay_min=300, pay_max=200)
 
 
-def test_accepts_equal_stipend_bounds() -> None:
-    assert replace(_review_data(), stipend_min=250, stipend_max=250).stipend_min == 250
+def test_accepts_equal_pay_bounds() -> None:
+    assert replace(_review_data(), pay_min=250, pay_max=250).pay_min == 250
 
 
-def test_rejects_negative_stipend() -> None:
+def test_rejects_negative_pay() -> None:
     with pytest.raises(ValueError, match="음수"):
-        replace(_review_data(), stipend_min=-1)
+        replace(_review_data(), pay_min=-1)
 
 
 def test_rejects_source_claiming_evidence_without_denomination() -> None:

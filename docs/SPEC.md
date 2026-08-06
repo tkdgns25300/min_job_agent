@@ -164,7 +164,7 @@
 - ⚠️ 이는 min_job 가드레일 #3(개인 담당자 연락처 노출 금지)의 **정제**다 — "교회가 지원받으려 공개한 연락처는 공개"로 갱신(min_job 스키마·정책 변경 pending §8).
 
 ### 5.6 나머지 필드
-min_job `jobs` 미러(title·position·department·employment_type·qualification·housing_provided·stipend_*·work_days·requirements[]·preferred[]·required_docs[]·description·posted_at·deadline) + 교회 초안(church_name·region·city)을 raw에서 추출. `raw_text`(원문 전체)는 항상 보존.
+min_job `jobs` 미러(title·position·role·department·employment_type·qualification·headcount·start_timing·housing_provided·housing_note·pay_*·benefit_note·work_days·requirements[]·preferred[]·required_docs[]·optional_docs[]·process_steps[]·description·posted_at·deadline·**연락처 4컬럼**) + 교회 초안(church_name·region·city)을 raw에서 추출. `raw_text`(원문 전체)는 항상 보존.
 
 ---
 
@@ -203,7 +203,8 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
 |---|---|
 | 링크 | `id` PK · `source_data_id` FK · `run_id` FK · **`source_url` NOT NULL**(`source_data.source_url` 복사) |
 | 분류(게이트) | `is_church_recruitment`(YES/NO/UNCERTAIN — NO는 여기 안 옴) · `job_kind`(MINISTRY/GENERAL) · `role`(GENERAL용) |
-| 공고(jobs 미러) | `title`·`position`·`department`·`employment_type`·`qualification`·`housing_provided`·`stipend_min`·`stipend_max`·`stipend_note`·`stipend_period`·`work_days`·`requirements[]`·`preferred[]`·`required_docs[]`·`description`·`posted_at`·`deadline` |
+| 공고(jobs 미러) | `title`·`position`·`department`·`employment_type`·`qualification`·`headcount`·`start_timing`·`housing_provided`·`housing_note`·`pay_min`·`pay_max`·`pay_note`·`pay_period`·`benefit_note`·`work_days`·`requirements[]`·`preferred[]`·`required_docs[]`·`optional_docs[]`·`process_steps[]`·`description`·`posted_at`·`deadline` |
+| 지원 연락처 | `contact_email`·`contact_tel`·`contact_link`·`contact_post` — **방법별 4컬럼**(min_job `APPLY_METHODS`가 `ETC` 없는 닫힌 4키라 1:1 대응 · 승격이 파싱 없이 INSERT). ⚠️ 대표 문자열 `contact` 하나로 두던 설계는 철회됐다(2026-08-05) |
 | 교회 초안 | `church_name`·`region`·`city` |
 | 교단 | `denomination`(`UNKNOWN` 가능·임시) · `denomination_source`(stated/registry/ai_guess/unknown) · `denomination_evidence` · `raw_denomination`(원표기) |
 | 지원 | `contact` (지원 연락처) |
@@ -213,7 +214,11 @@ min_job `jobs` 미러(title·position·department·employment_type·qualificatio
 > 게이트1 `NO`(개교회 아님·비채용)는 review_data를 만들지 않는다(§1·§5.1) — 대신 `source_data.structured_at`이 기록돼 재구조화 대상에서 빠진다(§4). `UNCERTAIN`은 confidence=low로 여기 온다.
 > ⚠️ **`source_url`을 복사해 둔다**(2026-08-05 추가). 정규화상으로는 `source_data_id`로 JOIN하면 되니 중복이지만, min_job `jobs.source_url`은 **가드레일 #3(원문 재게시 금지·출처 표기)의 핵심 필드**다 — 승격 코드가 JOIN을 잊으면 출처 없이 공개된다. **승격이 이 테이블 하나만 보고 끝나게** 한다(빈 문자열도 거부).
 >
-> ⚠️⚠️ **승격 전 반드시 채워져야 하는 8칸**(min_job이 `NOT NULL`로 요구 — 없으면 INSERT가 튕긴다): `jobs` ← `title`·`job_kind`·`employment_type`·`stipend_period`·`posted_at` · `churches` ← `church_name`·`denomination`(UNKNOWN 해소)·`region`. 여기서는 **전부 nullable이 맞다** — AI가 못 뽑을 수 있고 운영자가 채우는 초안이다. 그래서 **검수 화면이 이 8칸을 미리 표시**해야 하고, 크롤러는 못 채운 칸을 `confidence=low`로 알린다.
+> ⚠️⚠️ **승격 게이트 = 필수 4 + CHECK 2**(min_job DATA.md §3 정본 · 2026-08-05 우리 실측 3,181건으로 8개→6개로 줄였다). 크롤러가 맞춰야 하는 6개: **교회 매칭 · `title` · `job_kind` · 직분(`position`) 또는 직무(`role`) · `description` · 연락처 4컬럼 중 1개**(⚠️ `source_url`은 세지 않는다 — 세면 제약이 항상 참이 되어 무의미하다).
+>
+> **`denomination`·`region`·`posted_at`은 비어도 승격된다** — 게시판이 안 주거나 원문에 없을 수 있다(실측: 교단 명시 2.8% · 지역 81% · PCKWORLD 게시일 0%). 여기서는 **전부 nullable이 맞다** — AI가 못 뽑을 수 있고 운영자가 채우는 초안이다.
+>
+> **우리 몫**: 위 6개 중 못 채운 것이 있으면 `confidence=low`로 올려 운영자가 먼저 보게 한다. ⚠️ **검수 우선순위는 교단보다 지역**이다 — 지역이 비면 min_job 지역 필터에서 무조건 탈락해 사실상 안 보이는 공고가 된다(교단 미상은 공개해도 지원에 지장 없다).
 > **UNIQUE(`source_data_id`)** — 한 원자료당 초안 1개(중복 PENDING 방지). 재구조화 시 기존 행을 교체(upsert)한다. 게시판 default 교단은 `source_key`로 유도 가능(레지스트리)하므로 별도 hint 컬럼을 두지 않는다.
 
 ### ③ `source_health` — 게시판별 상태 (약 31행 · 매 실행 UPSERT)
