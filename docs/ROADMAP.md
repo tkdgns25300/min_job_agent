@@ -67,7 +67,8 @@
 
 ### 1-3. 판정 견고화
 - [ ] 교단 확정 — alias(**긴 표현 우선**)·명부 대조(가능 시)·AI 추정(`ai_guess`)·`UNKNOWN`
-- [ ] `dedup_key`(교차게시 병합 후보) · 이단 플래그(`config/heresy-ref.json`)
+- [ ] **`dedup_key` 계산 + dedup 패스**(SPEC §4.1) — `정규화교회명:region:position:department:라운드` · **구조화 뒤에** 돈다 · 요소가 하나라도 없으면 병합하지 않음 · 대표 1건 + `posted_at` 최신
+- [ ] **이단 자동 거부**(SPEC §5.4) — `config/heresy-ref.json` **정확 일치** → `review_status=REJECTED` + `heresy_evidence`. ⚠️ 목록 파일은 커밋하지 않는다(`.gitignore` · 공개 리포)
 - [ ] **재구조화 pass** — **`structured_at IS NULL`**인 `source_data` 재처리(+`structure_attempts` 상한). ⚠️ "review_data 없는 행" 기준 금지 — 게이트1 탈락과 실패가 구분되지 않아 비용 루프(SPEC §4)
 
 ### 1-4. 소스 확장 (1 → 31곳)
@@ -104,8 +105,10 @@
 ## Phase 2: min_job 게재 연동 + 소스 확장 (게이트)
 
 > 게재 브릿지·검수 UI는 **min_job 측 작업**(min_job ROADMAP 1-10). 크롤러는 `review_data` 제공까지가 임계경로.
-- [ ] (min_job) `review_data` → `churches`/`jobs` **승격 UI** + 크롤 대시보드
-- [ ] (min_job) 스키마 변경 — `job_kind`·`role`·`contact`·`position` nullable·`KIJANG` 제거
+- [ ] (min_job) `review_data` → **`jobs`** 승격 UI + 크롤 대시보드 — ⚠️ `churches`에는 쓰지 않는다(`church_id=NULL` · SPEC §6). **일괄 승인** 필요(🟢/🟡/🔴 분류는 크롤러가 준다)
+- [ ] (min_job) **교회 claim 플로우** — 교회 가입·인증 후 `church_name`+`region`이 맞는 공고를 제시 → 확인하면 `church_id` 채움 → 교회 상세·재공고 이력이 켜진다
+- [ ] (min_job) **끌어올림 UPDATE 경로** — 지금 승격은 INSERT만. 데일리 전환 시 `published_job_id`로 기존 `jobs.posted_at` 갱신이 필요하다(SPEC §4.2)
+- [x] (min_job) 스키마 변경 — `pay_*` 개명 · 연락처 4컬럼 · `church_id` nullable · `church_name`·`jobs.region` 추가 · `owner_id` 제거 (2026-08-06 · DATA.md 반영 완료 · ⚠️ 마이그레이션 SQL은 아직 없음)
 - [ ] **로그인 티어**(KMC·AGK·기독신문·CTS) — 인증 크롤(계정=운영자 제공)
 - [ ] **커버리지 확장**(상업 CROSS: 청빙넷·cjob·갓피플) — 정책 재검토 후
 

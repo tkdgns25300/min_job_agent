@@ -10,7 +10,7 @@
 
 ## 0. 개요
 
-크롤러는 **개교회(지역 교회)의 채용 공고**를 공식 게시판(SOURCES 31곳)에서 수집해, 구조화 초안으로 만들어 **리뷰 큐(`review_data`)**에 쌓는다. 운영자가 min_job admin에서 검수·승인하면 공개(`churches`/`jobs`)로 승격한다. 크롤러는 **절대 바로 공개하지 않는다**(사람 게이트).
+크롤러는 **개교회(지역 교회)의 채용 공고**를 공식 게시판(SOURCES 31곳)에서 수집해, 구조화 초안으로 만들어 **리뷰 큐(`review_data`)**에 쌓는다. 운영자가 min_job admin에서 검수·승인하면 공개(`jobs`)로 승격한다(⚠️ `churches`에는 쓰지 않는다 — §6 승격 목적지). 크롤러는 **절대 바로 공개하지 않는다**(사람 게이트).
 
 - 자동: 수집 → 구조화 → 리뷰 큐 적재 → 운영 상태 기록.
 - 사람: 검수 → 승격.
@@ -68,7 +68,7 @@
    │
    ▼ ⑤ review_data INSERT (PENDING) + source_health UPSERT + crawl_run UPDATE(finished_at·집계)
 ──────────────────  여기까지 크롤러(자동)  ──────────────────
-   ▼ ⑥ 운영자 검수 (min_job admin) → 승인/수정 → churches/jobs 승격(공개)
+   ▼ ⑥ 운영자 검수 (min_job admin) → 승인/수정 → jobs 승격(공개 · church_id=NULL)
 ```
 
 - ①~⑤ 자동, ⑥ 사람. 크롤러 write = `source_data`·`review_data`·`source_health`·`crawl_run`. 크롤러는 `churches`/`jobs`를 직접 안 건드린다.
@@ -113,8 +113,63 @@
   - **어디까지 페이지를 넘길지는 컷오프가 정한다** — 페이지 전체가 컷오프 밖이면 종료. 페이지 상한은 **폭주 방지용(기본 100p)** 이며 범위를 정하는 값이 아니다(운영자가 `--months`에 맞는 페이지 수를 계산하게 만들면 안 된다). 컷오프를 줬는데 목록에 날짜가 하나도 없으면 **실패**시킨다 — 그러지 않으면 아무 행도 잘리지 않아 상한까지 걷는다.
 - **데일리(GitHub Actions)**: `mode=DAILY`, 증분만.
 - **수정 감지 없음(MVP)**: 한 번 수집한 스냅샷 사용. 재게시/삭제/수정 추적은 Phase 후반(§9).
-- **재공고 보존**: 같은 교회·자리의 다른 시점 공고는 **절대 합치지 않는다**(min_job 재공고 추적 차별점). dedup은 "같은 글의 중복 수집"까지만.
-- **교차게시 dedup**: 같은 공고가 여러 게시판에 올라올 수 있음 → `dedup_key = 정규화(교회명 + 직분 + 사례비 + 연락처|마감일)`로 **병합 후보 표시**(운영자 검수 단계, 자동 병합 아님).
+### 4.1 중복 판정 (`dedup_key`) — 구조화 **뒤**에 한다
+
+같은 공고가 **같은 게시판에 반복**(끌어올림)되거나 **여러 게시판에 교차게시**된다. 실측 3,188건에서
+같은 글의 반복이 **약 42%**다(`점촌제일교회` 전임 사역자 한 자리가 31건 — CSU 23·DAESHIN 5·
+KWANGSHIN 1). 그대로 승격하면 min_job 목록 절반이 중복이 된다.
+
+```
+dedup_key = 정규화교회명 : region : position : department : 라운드번호
+
+  라운드: 같은 앞 네 요소를 시간순으로 놓고 직전 공고와 간격 ≤ 3개월이면 같은 라운드,
+          넘으면 새 라운드(= 재공고 · 별개 공고로 보존)
+
+  같은 dedup_key  →  대표 1건만 승격 · `posted_at`은 그 묶음의 **최신**
+```
+
+**정규화는 교회명 하나뿐이다** — 괄호·대괄호 안 제거 → 공백·기호 제거
+(`[군산] 개복교회(전북 군산)` → `개복교회`). `region`·`position`·`department`는 enum이라
+표기 흔들림이 없다.
+
+⚠️ **네 요소 중 하나라도 비면 병합하지 않는다**(단독 처리). 지역이 없는 공고가 실측 18.6%인데,
+그것들은 각각 남는다 — **중복이 남는 것보다 다른 교회를 합치는 것이 훨씬 나쁘다**(되돌릴 수 없고
+이미 공개돼 있다). 지역을 키에 넣는 이유도 같다: 교회명 894종 중 **70종이 2개 이상 지역**에
+나타난다(`온누리교회` = 경기·대전·서울·인천).
+
+⚠️ **제목은 키에 넣지 않는다.** 같은 자리인데 게시판마다 제목이 다르다
+(`점촌제일교회에서 전임 사역자를 청빙합니다` / `점촌제일교회에서 전임사역자 청빙 광고` /
+`전임 사역자를 청빙합니다`) → 넣으면 끌어올림이 갈린다. 반대로 제목이 같아도 다른 자리인 경우가
+**24%**였다(`높은산교회` 유초등부 vs 영유아부) → 제목은 신뢰할 수 없다. `position`+`department`가
+더 정확하다.
+
+⚠️ **마감일도 키에 넣지 않는다** — 실제 날짜가 있는 공고가 **7.9%**뿐이다(`모집시까지` 19.9% ·
+나머지는 표현 자체가 없음). 92%가 NULL인 값은 키 구성요소가 될 수 없다.
+
+⚠️ **구조화 전에 하면 안 된다.** `position`·`department`는 구조화 산출물이다. 구조화 전에 쓸 수
+있는 키(교회명+제목)로 미리 합치면 **24%가 다른 자리인데 합쳐진다**(위). Gemini 호출을 42% 아낄
+수 있지만 공고를 잃는 대가가 더 크다.
+
+**방법론 주석**: 교과서적 중복 제거는 ①블로킹 ②유사도 점수 ③임계값 판정인데, 우리는 ①만 쓰고
+키를 정밀하게 만들었다. 이유는 **틀리는 방향이 안전**하고(요소가 없으면 안 합침), **설명·재현이
+가능**하기 때문이다(왜 합쳐졌는지 항상 답할 수 있다). 유사도·임계값은 정답 데이터가 쌓인 뒤에
+얹는다. 지금 넣으면 틀렸을 때 원인을 알 수 없다.
+
+### 4.2 이미 승격된 공고의 끌어올림 (데일리 전환 후)
+
+승격 시 `review_data.published_job_id`에 생성된 `jobs` 행이 기록된다. 새 공고가 들어오면
+**우리 `review_data`만 조회**하면 된다 — min_job DB를 읽지 않는다.
+
+```
+새 공고 → dedup_key 계산
+  같은 dedup_key 이면서 published_job_id 가 있는 행이 있나?
+    있으면  →  기존 job 의 끌어올림  →  그 published_job_id 를 물려주고
+                min_job 이 `jobs.posted_at` 만 UPDATE
+    없으면  →  새 공고  →  INSERT
+```
+
+⚠️ **UPDATE 경로는 min_job 승격 흐름에 아직 없다**(현재 INSERT만). 1회 백필에서는 필요 없고
+**데일리(1-7) 전환 시 필요**하다.
 
 ---
 
@@ -148,15 +203,19 @@
 - 출력: `denomination` · `denomination_source`(stated/registry/ai_guess/unknown/**operator**) · `denomination_evidence`(원문 근거).
 - **`operator`** = 운영자가 검수에서 직접 확정한 값. 위 "승격 전 10키로 해소"가 이 근거로 남는다 — 이 값이 없으면 해소된 행이 "교단은 있는데 근거는 unknown"이 되어 되읽을 때 모순으로 걸린다.
 - **공개 가능 판정**: `stated`·`registry`·`operator`만 확정으로 본다. **`ai_guess`는 값이 있어도 운영자 확인 대상**(확정 아님).
-- **`UNKNOWN`은 review_data 임시값**이다(표시 라벨 "미상"은 min_job admin 소관) — 승격 전 운영자가 반드시 **9대형+ETC 10키 중 하나로 해소**한다(9대형 화이트리스트 밖=`ETC`, 근거 전무해서 못 정하면 `ETC`+플래그). 공개 `churches.denomination`(교단은 churches에 저장·jobs는 JOIN)엔 `UNKNOWN`이 나가지 않는다.
+- **`UNKNOWN`은 "근거 없음"이다** — ⚠️ **승격 전 해소 규칙은 철회됐다**(2026-08-06). min_job이 `churches.denomination`을 nullable로 바꿨고(NULL=미상 또는 무소속), 실측 교단 명시가 **2.8%**뿐이라 교회 1,006곳을 사람이 채우는 것은 비현실적이다. **미상이면 미상으로 둔다.** 다만 크롤 공고는 `church_id=NULL`이라 지금은 `churches`에 아무것도 쓰지 않는다 — 교단은 교회가 claim한 뒤 그 교회가 채운다. `denomination_source`가 `stated`·`registry`·`operator`일 때만 확정으로 표시한다.
 - `UNKNOWN`(근거 전무) vs `ETC`(식별됐으나 화이트리스트 밖)는 다르다 — review 단계 구분용. **저장값은 영어 key로 통일**(한글 저장 금지).
 - **노회는 저장하지 않고 매핑표도 만들지 않는다**(min_job 스키마에 노회 없음). 노회명은 위 3순위(AI 추정)의 근거로만 쓴다. → 표 유지비 0, 대신 검수 의존↑(운영자가 확정).
 - ⚠️ **`raw_text`만 보면 안 되는 소스가 있다 — `CSU`.** 총신대 게시판은 공고를 폼으로 받아 값을 `properties`에 담고, 본문(`body`)은 **없거나 포스터 이미지 한 장뿐일 수 있다**(실측 40건 중 2건). 그 필드가 `raw_meta`에 그대로 있고 **교단(`order_name`)·교회명·지역·주소·자격(`certification`)·지원서류(`apply_documents`)·사례·모집인원·연락처가 전부 텍스트로** 들어 있다 → CSU는 `raw_meta`를 근거로 `stated` 확정이 가능하고, **포스터 OCR보다 이 값이 정확하다**. 구조화는 `raw_text`가 비었을 때 `raw_meta`를 읽어야 한다(빈 `raw_text`를 "내용 없음"으로 보면 안 된다).
 
-### 5.4 이단 스크리닝 — 플래그만
+### 5.4 이단 스크리닝 — **자동 거부**(근거 기록 · 낙인 금지)
 - 참고 목록 **`config/heresy-ref.json`**(교회명·교단명·키워드 + 근거 URL, 사람이 관리)과 공고의 교회명/교단을 대조.
-- 매칭 시 **`review_data.heresy_flag=true` + `heresy_evidence`** → 운영자 우선검토.
-- ⚠️ **자동 삭제·공개 이단 낙인 금지**(가드레일: 명예훼손·오판 회피). 최종 판단은 사람. 화이트리스트가 1차 방어, heresy-ref는 교회명 기반 추가망.
+- 매칭 시 **`heresy_flag=true` + `heresy_evidence`(어느 항목에 걸렸는지)** + **`review_status=REJECTED`** → 검수 큐에 뜨지 않고 승격되지 않는다(운영자 결정 2026-08-06 · 앞선 "플래그만"에서 변경).
+- ⚠️ **정확 일치만 쓴다.** 부분 문자열 매칭은 실측에서 48건이 걸렸고 **대부분 이름만 겹친 다른 교회**였다: `송도한마음교회` ⊃ `한마음교회`(춘천) · `경주동방교회` ⊃ `동방교` · `남부산제일교회` ⊃ `부산제일교회` · `김포행복한교회` ⊃ `행복한교회`(인천). 목록 원문에도 지역이 함께 적혀 있지만(`김성로(춘천 한마음교회)`) 목록 자체엔 지역 필드가 없다.
+- ⚠️ **근거는 반드시 남긴다**(운영자 검수는 안 하더라도). 없으면 "왜 이 교회 공고가 없지?"에 답할 수 없고 오판을 되돌릴 근거도 없다.
+- ⚠️ **플래그 ≠ 이단 판정.** 목록은 "어느 교단이 언제 무엇이라 했다"의 모음이고 교단마다 판단이 다르거나(`김성로` 합동 참여금지 / 기침 문제없음) 해제된 건도 있다(`이명범` 통합 2021 이단 해지).
+- ⚠️ **공개 이단 낙인·자동 삭제는 여전히 금지**(가드레일 #5). 공개하지 않는 것과 "이단이다"라고 표시하는 것은 다르다. 레코드는 남긴다.
+- ⚠️⚠️ **`config/heresy-ref.json`은 커밋하지 않는다**(`.gitignore`). 이 리포는 공개이고 목록에 **실명 122건**이 이단·이단옹호자로 적혀 있다. Supabase 전환 시 DB로 옮기고 RLS 운영자 전용.
 
 ### 5.5 지원 연락처 (contact) — 공개
 - 공고에 **지원용으로 명시된 연락처**(전화·이메일·지원 링크)를 `contact`로 추출 → 승격 시 공개(지원 경로 제공).
@@ -209,7 +268,8 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 | 교단 | `denomination`(`UNKNOWN` 가능·임시) · `denomination_source`(stated/registry/ai_guess/unknown) · `denomination_evidence` · `raw_denomination`(원표기) |
 | 지원 | `contact` (지원 연락처) |
 | 이단 | `heresy_flag`·`heresy_evidence` |
-| 검수 메타 | `confidence`(high/medium/low) · `dedup_key` · `review_status`(PENDING/APPROVED/REJECTED) · `matched_church_id` FK→churches · `published_job_id` FK→jobs · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
+| 검수 메타 | `confidence`(high/medium/low) · **`dedup_key`**(§4.1) · `review_status`(PENDING/APPROVED/REJECTED) · **`published_job_id`** FK→jobs(승격 결과 · §4.2가 이걸로 끌어올림을 찾는다) · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
+| 미사용 | ~~`matched_church_id`~~ — 교회 행을 만들지 않기로 해(2026-08-06 · §6 승격 목적지) **채우지 않는다**. 컬럼은 남겨 두되 값은 항상 NULL이다 |
 
 > 게이트1 `NO`(개교회 아님·비채용)는 review_data를 만들지 않는다(§1·§5.1) — 대신 `source_data.structured_at`이 기록돼 재구조화 대상에서 빠진다(§4). `UNCERTAIN`은 confidence=low로 여기 온다.
 > ⚠️ **`source_url`을 복사해 둔다**(2026-08-05 추가). 정규화상으로는 `source_data_id`로 JOIN하면 되니 중복이지만, min_job `jobs.source_url`은 **가드레일 #3(원문 재게시 금지·출처 표기)의 핵심 필드**다 — 승격 코드가 JOIN을 잊으면 출처 없이 공개된다. **승격이 이 테이블 하나만 보고 끝나게** 한다(빈 문자열도 거부).
@@ -239,8 +299,44 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 ### 참고 config — `config/heresy-ref.json` (GitHub, 사람 관리)
 `[{ match, type(church_name|denomination|keyword), source_url, note, added_at }]` — 민감 자료라 git 이력=감사 추적.
 
-### 승격 목적지 — `churches` / `jobs` (min_job DATA.md)
-운영자 승인 시 review_data → 승격. **요약 + `source_url` + `contact` · `source=OPERATOR` · `owner_id=NULL`.** 검수 메타·미상 교단은 넘기지 않음(교단은 승격 전 해소). ※ `job_kind`·`role`·`contact` 수용은 min_job 스키마 변경 필요(§8).
+### 승격 목적지 — `jobs` **한 테이블** (min_job DATA.md 정본)
+
+⚠️ **`churches`에는 쓰지 않는다**(2026-08-06 확정). 크롤 공고는 `church_id = NULL`로 들어가고,
+교회명은 `jobs.church_name`(텍스트)이 담는다. 그 교회가 min_job에 가입·인증한 뒤 **자기 공고를
+claim하면** `church_id`가 채워진다.
+
+**왜 교회 행을 만들지 않나** — 자동 묶기를 실측하면 95%까지는 되지만 **사각지대가 남는다**:
+(교회명+광역) 묶음 1,203개 중 **67개는 일부/전 공고에 연락처가 없어 충돌을 확인할 수 없다**.
+`중앙교회(서울)` 두 곳이 있는데 한쪽에 연락처가 없으면 **조용히 합쳐진다**. 두 오류의 무게가
+다르다 — **다른 교회를 합치면**(B교회 페이지에 A교회 공고) 되돌리기 어렵고 이미 공개돼 있고,
+**같은 교회를 나누면** 중복 행이 생길 뿐이다. 끝까지 밀어 **아예 만들지 않는** 쪽으로 갔다.
+
+**승격 시 우리가 채우는 것(33개)**
+
+| 그룹 | 컬럼 |
+|---|---|
+| 교회 | `church_id`=**NULL** · `church_name`(NOT NULL) · `region` |
+| 분류 | `job_kind` · `position` 또는 `role` · `department` |
+| 조건 | `employment_type` · `qualification` · `headcount` · `start_timing` |
+| 처우 | `pay_min`·`pay_max`·`pay_note`·`pay_period` · `housing_provided`·`housing_note` · `benefit_note` |
+| 지원 | `contact_email`·`contact_tel`·`contact_link`·`contact_post` · `required_docs[]`·`optional_docs[]`·`process_steps[]`·`work_days` · `requirements[]`·`preferred[]` |
+| 본문 | `title` · `description`(**요약** · 원문 복제 금지) · `source_url` · `posted_at` · `deadline` |
+
+**min_job이 채우는 것**: `id` · `status`(OPEN) · `source`(OPERATOR) · `featured_tier`(NONE) ·
+`created_at` · `updated_at`. ⚠️ `owner_id`는 **컬럼에서 제거됐다**(2026-08-06 · `church_id`로 충분).
+
+**승격 게이트 = 필수 4 + CHECK 2** (min_job DATA.md §3 정본): `church_name`·`title`·`job_kind`·
+`description` NOT NULL · `position` 또는 `role` · **연락처 4개 중 1개**(`source_url`은 안 셈).
+`region`·`denomination`·`posted_at`은 **비어도 승격된다**.
+
+**승인 시 `review_data`에서 바뀌는 것 — 4개**
+
+```
+review_status     PENDING → APPROVED (또는 REJECTED)
+reviewed_by       운영자 식별자
+reviewed_at       승인 시각
+published_job_id  생성된 jobs 행의 id   ← §4.2 끌어올림 판정의 열쇠
+```
 
 ---
 
