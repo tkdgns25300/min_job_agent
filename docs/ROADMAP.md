@@ -45,7 +45,7 @@
 > **작업 순서(2026-07-30 확정)**: 게시판 하나씩 **`--dry-run`으로 파싱·id 유일성 확인 → 통과분만 실제 수집(3개월) → 그 다음 `structure`(유료)**. 수집과 구조화를 다른 명령으로 나눈 이유 = 파싱이 틀린 채로 수백 건을 AI에 보내면 되돌릴 수 없다.
 - [x] `fetch/client.py`·`fetch/robots.py` — **UA 31곳 동일(브라우저)+브라우저 헤더**·인코딩(cp949)·타임아웃 20s·재시도 3회·`Retry-After` 준수·소스별 간격 1.5s·robots `Crawl-delay` 준수(`Disallow`는 미준수)·세션 쿠키·본문 길이 하한. **모든 HTTP의 단일 창구** (36테스트 · mutation 21/21)
 - [x] **YTUS fixture 확보**(`tests/fixtures/YTUS/` · 개인정보 마스킹 완료) — 실측 구조는 SNAPSHOT §10
-- [ ] **fixture 저장 경로**(`collect --save-fixture`) — 가드레일 #7이 "테스트는 fixture로"를 요구하는데 fixture를 **만드는 수단이 없다**. 어댑터를 고칠 때마다 게시판을 다시 두드리게 되므로, 받아온 HTML을 `tests/fixtures/<KEY>/`에 저장해 이후 파싱 반복은 오프라인으로 한다
+- [x] **fixture 확보 수단** — `collect --save-fixture`로 잡았으나 **별도 `snapshot` 명령**으로 냈다: 어댑터가 **없어도** 받을 수 있어야 fixture를 보고 어댑터를 쓸 수 있다(수집에 붙이면 닭이 먼저인 문제가 된다). 가드레일 #7의 "테스트는 fixture로"가 이걸로 성립한다
 - [x] **어댑터 계층** `sources/adapters/{base,ytus}.py` — 순수 파싱(네트워크 없음) · `list_page_url`/`parse_list`/`parse_detail` · 공지 이중신호 · 실측 fixture 3종 · 25테스트 · mutation 15/15
 - [x] **페이지 경계 중복 처리** — `collect`가 실행 내 스캔한 번호를 모아, 밀려 내려온 글을 **한 번만** 수집한다. 페이지 *안* 중복은 여전히 어댑터 에러(`as_listing`)이고, 페이지 *간* 중복은 정상 현상이라 에러가 아니다(SPEC §4 정정)
 - [x] `source_data` 적재 — 불변·`UNIQUE(source_key, external_id)`(원장)·이미 본 글 skip(상세 요청 안 함)
@@ -67,24 +67,58 @@
 > 한 번만 INSERT**한다 — 넣었다 고치지 않는다(`UNIQUE(source_data_id)`이고, 레코드 불변식이
 > "REJECTED면 이유가 있어야 한다"라 처음부터 맞춰 만들어야 생성된다).
 >
+> **`run_id`는 `source_data.run_id`를 승계**하고 `structure`는 `crawl_run`을 만들지 않는다 —
+> 집계가 전부 게시판 단위라 공고 단위로 도는 구조화가 들어갈 칸이 없다(SPEC §2).
+>
+> **실행은 순차다**(공고 1건씩). 병렬로 돌리면 JsonStore가 **17MB 파일을 통째로 다시 쓰는** 구조라
+> 동시 갱신이 서로를 덮어써 `structured_at`(= Gemini 재과금)이나 초안(= 조용한 유실)을 잃는다.
+> 병렬은 Supabase 전환(1-6) 이후에 본다.
+>
 > **만드는 순서 — 3단계.** 단계는 코드 모듈이 아니라 **멈춰서 확인해야 하는 지점**으로 나눈다
 > (확인할 게 없는 단계는 나눌 이유가 없다):
 >
 > | | 무엇 | 확인 | Gemini |
 > |---|---|---|---|
-> | **1단계** 길 뚫기 | 최소 4필드(교회명·제목·개교회인가·요약)로 **1건 관통** + 실패 처리 + 안전장치 | 운영자가 `--limit 1` 로 1건 확인 | 3~5회 |
-> | **2단계** 제대로 뽑기 | 33필드 · 이미지·`data:` · 한글→enum · `raw_meta` 우선 · 요약 강제 · 지원용 연락처만 | 20건씩 보며 **프롬프트 왕복** | 20~40회 × 반복 |
-> | **3단계** 마감·전량 | 규칙 판정(교단·이단·`dedup_key`·`confidence`) + 재구조화·재시도·`--source` | 운영자가 `--all` 로 전량 | 규칙 0회 · 전량 3,188회 |
+> | **1단계** 길 뚫기 | 최소 4필드(교회명·제목·개교회인가·요약)로 **1건 관통** + 실패 처리 + 안전장치(`--limit/--all` · `--dry-run` · `--source`) | `--dry-run --limit 1` → `--limit 1` → **이미지 1건 실험** | 3~5회 |
+> | **2단계** 제대로 뽑기 | 33필드 · 이미지·`data:` · 한글→enum · `raw_meta` 우선 · 요약 강제 · 지원용 연락처만 · **미리보기 파일** | `--dry-run --limit 20 --source KEY`를 **게시판 바꿔가며** | 20~40회 × 반복 |
+> | **3단계** 마감·전량 | 규칙 판정(교단·이단·`dedup_key`·`confidence`) + **되돌리기 스크립트** + 진행 표시 | 규칙 테스트(무료) → 운영자가 `--all` | 규칙 0회 · 전량 3,188회 |
 >
 > ⚠️ **1단계를 먼저 하는 이유**: Gemini가 한국 교회 공고에 실제로 어떻게 반응하는지 아무도 모른다.
-> 33필드를 다 설계한 뒤 "이건 못 뽑는다"가 나오면 처음부터 다시 한다.
+> 33필드를 다 설계한 뒤 "이건 못 뽑는다"가 나오면 처음부터 다시 한다. **끝에 이미지 공고 1건을
+> 버리는 실험으로 확인**한다 — 인라인 이미지 205건(6.4%)이 멀티모달에 달렸는데, 2단계를 다
+> 설계한 뒤 "안 된다"가 나오면 늦다. 호출 1~2회면 알 수 있다.
 >
 > ⚠️ **2단계는 코드 작업이 아니라 왕복이다** — 프롬프트를 고치고 다시 보는 것이 대부분이라
 > **기간을 미리 잡을 수 없다**. 크다고 미리 쪼개지 않는다(해보고 필요하면 그때 나눈다).
+> 순서는 **텍스트 먼저 → 이미지**(같은 프롬프트라 단계가 아니라 순서다).
+>
+> ⚠️ **`--dry-run`이 없으면 2단계가 성립하지 않는다.** 저장하면 `structured_at`이 찍혀 **같은
+> 공고가 다시 나오지 않는다** → 프롬프트를 고쳐도 다른 표본이 나와 비교가 불가능하다. 게다가
+> 규칙 판정(3단계)이 붙기 전에 저장된 행은 되돌릴 수 없다(아래 ⚠️⚠️).
+>
+> ⚠️ **`--limit 20`은 한 게시판이다.** `list_unstructured`가 `fetched_at` 오름차순이라 가장 오래된
+> 100건이 게시판 2곳뿐이다(2026-08-10 실측 · 20건은 전부 `DAESHIN`). 프롬프트 **하나로 30곳**을
+> 덮어야 하므로 `--source`로 **의도적으로 돌려가며** 본다 — 한 곳 형식에 맞추면 나머지가 깨진다.
 >
 > ⚠️⚠️ **비용 사고 방지 — `structure`는 `--limit N` 또는 `--all` 을 반드시 받는다.** 둘 다 없으면
 > 실행을 거부한다. 옵션 없이 돌면 **유료 호출 3,188회**가 한 번에 나간다. `collect`는 무료라
 > 기본값(3개월)이 있어도 되지만 유료 호출은 실수로 돌아가면 안 된다.
+>
+> ⚠️⚠️ **되돌릴 방법이 코드에 없다.** `structured_at`은 단조 증가만 허용하고
+> (`JsonStore._check_state_moves_forward`) `SourceData.with_attempts_reset`도 판정 자체는 지우지
+> 않는다(운영자 리셋 경로는 1-6). **전량을 돌린 뒤 프롬프트를 고치면 3,188건이 그대로 굳는다** —
+> 2단계 표본은 20~40건이라 1%에서만 나는 오류는 전량 후에 드러난다. → **전량 전에
+> `scripts/reset_structure.py`(로컬 JSON 한정)를 만든다.**
+>
+> ⚠️ **전량은 2~3시간짜리다**: Gemini 3,188회 순차(건당 약 3초) + JsonStore 갱신 약 20분
+> (17MB 파일을 공고마다 두 번 다시 쓴다). 중단해도 `structured_at`이 남아 이어서 되므로
+> `--source`·`--limit`으로 나눠 돌려도 결과가 같다 → **진행 표시는 선택이 아니다.**
+>
+> ✅ **이미 구현돼 있어 다시 만들지 않는 것**: `Store.list_unstructured`·`update_structure_state`·
+> `upsert_review_data` · `SourceData.is_empty`·`needs_restructure`·`exhausted_attempts`·**시도 상한 3** ·
+> `ReviewData` 33필드와 불변식 · `GeminiClient`(인증·재시도·빈/잘린 응답 거부) · `serde` 행 변환.
+> **재구조화 pass = `structure`를 다시 돌리는 것**이라 별도 코드가 아니다(`list_unstructured`가
+> `structured_at IS NULL`인 행을 준다).
 
 - [ ] **출력 JSON 계약** — Gemini가 돌려줄 스키마(필드·타입)를 `review_data`와 1:1로. 스키마 강제 + enum 밖 값 방어적 정규화
 - [ ] **프롬프트 하나** — 게시판별로 나누지 않는다. 차이는 이미 데이터에 있다: 입력에 `raw_meta`를 넣고 **"게시판이 준 구조화 필드가 있으면 본문 해석보다 우선"** 규칙 한 줄(CSU `order_name`이 교단 83%를 확정한다)
@@ -92,10 +126,12 @@
 - [ ] **게이트1**(개교회 채용? `YES`/`NO`/`UNCERTAIN`) · **게이트2**(`job_kind`·`position` 또는 `role`)
 - [ ] **`status` 판정**(모집 중 / 마감) — ⚠️ 키워드로는 못 가른다: 본문의 "채용 완료"는 실측 383건 중 대부분이 `"서류는 채용 완료 후 폐기됩니다"` 같은 안내 문구다. 제목에 명시된 것만 57건
 - [ ] **규칙 후처리**(AI 아님 · 같은 패스 · INSERT 전) — enum 정규화 · 교단 확정(**명시만** · 없으면 `UNKNOWN`) · **이단 대조**(SPEC §5.4 · 정확 일치 → `REJECTED`+`HERESY`+근거) · `dedup_key` 계산 · `confidence`(승격 6개 중 미충족 → `low`)
-- [ ] **저장 규칙** — 게이트1 `YES`/`UNCERTAIN` → `review_data`(PENDING) · `NO` → 만들지 않음. ⚠️ **둘 다 `structured_at` 기록**(SPEC §4 — 안 하면 제외 공고를 매 실행 Gemini에 재전송하는 비용 루프). 빈 공고 56건은 **Gemini를 부르지 않고** `structured_at`만 기록
-- [ ] **재구조화 pass** — `structured_at IS NULL`인 행 재처리(+`structure_attempts` 상한 3 · 초과분은 운영자 리포트)
-- [ ] **`structure` 명령** — **`--limit N` 또는 `--all` 필수**(위 ⚠️⚠️) · `--source KEY`
-- [ ] 소량(`--limit 20`) 검증 → 프롬프트 조정 → ⚠️ **전량은 운영자가 실행**(유료 API · 가드레일 #10)
+- [ ] **저장 규칙** — 게이트1 `YES`/`UNCERTAIN` → `review_data`(PENDING) · `NO` → 만들지 않음. ⚠️ **둘 다 `structured_at` 기록**(SPEC §4 — 안 하면 제외 공고를 매 실행 Gemini에 재전송하는 비용 루프). 빈 공고 **56건**(본문·이미지·첨부가 **모두** 없는 것 = `SourceData.is_empty`)은 **Gemini를 부르지 않고** `structured_at`만 기록. ⚠️ 본문·이미지가 없고 **HWP/PDF 첨부만 있는 5건**은 여기 해당하지 않는다(2026-08-10 실측 · 본문 없음 177건 → 인라인 이미지도 없음 64 → 이미지 첨부도 없음 61 → 첨부 자체가 없음 56). 그 5건은 **제목·`raw_meta`만으로 호출**해 `UNCERTAIN` 초안을 만들고 사람이 첨부를 열게 한다 — 건너뛰면 실제 공고 5건이 조용히 사라진다
+- [ ] **저장 순서 고정** — `upsert_review_data` → `update_structure_state`(`store/base.py` 계약). 뒤집으면 그 사이에 죽은 공고가 "판정 완료 + 초안 없음"으로 남는데, SPEC §4가 "review_data 없음"을 재시도 기준으로 쓰지 않기 때문에 **사후 탐지가 불가능한 유실**이 된다
+- [ ] **테스트 seam** — 파이프라인은 Gemini를 **좁은 Protocol**로 받는다(구상 `GeminiClient`를 직접 받으면 테스트가 네트워크를 타야 한다 · 가드레일 #7). fake로 5가지: 정상 1건 · 게이트1 `NO` · 빈 공고(호출 0회) · 실패(`structured_at` 없음 + `attempts` +1) · **저장 순서**
+- [ ] **`structure` 명령** — **`--limit N` 또는 `--all` 필수**(위 ⚠️⚠️) · **`--dry-run`**(호출은 하되 저장하지 않음) · `--source KEY` · 진행 표시
+- [ ] **되돌리기 스크립트** — `scripts/reset_structure.py`(로컬 JSON 한정 · CLI 명령이 아니다). ⚠️ **전량 실행 전에** 있어야 한다(위 ⚠️⚠️)
+- [ ] 소량(`--dry-run --limit 20 --source KEY`) 검증 → 프롬프트 조정 → ⚠️ **전량은 운영자가 실행**(유료 API · 가드레일 #10)
 
 ### 1-3. dedup 패스 (review_data 안에서)
 
@@ -110,19 +146,22 @@
 - [ ] **`dedup` 명령** — 몇 번을 돌려도 같은 결과(멱등)
 - [ ] (데일리 전환 시) **이미 승격된 것과의 대조** — 같은 `dedup_key`에 `published_job_id`가 있으면 끌어올림 → 그 id를 물려주고 min_job이 `jobs.posted_at`만 UPDATE(SPEC §4.2)
 
-### 1-4. 소스 확장 (1 → 31곳)
-- [ ] **유형 다른 2~3개로 어댑터 틀 먼저 검증** — `PUTS`(EUC-KR)·`CSU`/`HANIL`(JSON 엔드포인트)
-- [ ] CMS 계열별 어댑터 — 그누보드·대학 `.do`·`/Board/Index`·webchon 등(정적 일괄)
-- [ ] JSON 엔드포인트(`CSU` getBoardContent·`HANIL` article_list.ajax)
-- ~~헤드리스~~ — **불필요**(31곳 중 headless 0 · MOKWON·ACTS 모두 정적으로 확인). 새 소스가 JS 렌더면 그때 도입
-- [ ] 각 어댑터 **HTML fixture + 파서 테스트**(사이트 변동 대비)
+### 1-4. 소스 확장 (1 → 31곳)  ✅ 완료(2026-08-05 · 2026-08-10 확인)
+- [x] **유형 다른 어댑터로 틀 검증** — `PUTS`(EUC-KR)·`CSU`/`HANIL`(JSON 엔드포인트)
+- [x] **어댑터 30곳 = 활성 전부** (등록 31 · `HANSEI`는 게시판 소멸로 비활성). 실측 구성: `static` 29 · `json` 2(`CSU` getBoardContent · `HANIL` article_list.ajax) · EUC-KR 4곳
+- [x] ⚠️ **CMS 계열별로 묶지 않았다** — 원래 "그누보드·대학 `.do`·webchon 계열 일괄"로 잡았으나 **계열 base 클래스를 만들지 않기로** 뒤집었다(운영자 결정 2026-08-04 · CLAUDE.md 3층 분리). **게시판 1곳 = 파일 1개**, 공통은 `base.py` 함수로만 올린다
+- [x] ~~헤드리스~~ — **불필요**(31곳 중 headless 0 · MOKWON·ACTS 모두 정적으로 확인). 새 소스가 JS 렌더면 그때 도입
+- [x] **각 어댑터 HTML fixture + 파서 테스트** — 적합성 테스트가 **30/30 커버리지를 매 실행 검증**한다(`tests/test_adapter_conformance.py`). ⚠️ fixture는 커밋하지 않으므로(가드레일 #11) 새 환경에서는 `snapshot`으로 먼저 받는다
 
-### 1-5. 오케스트레이션·운영
-- [ ] `pipeline/run.py` — 소스 간 병렬·소스 내 순차·**에러 격리**(한 소스 실패해도 계속)
-- [ ] `crawl_run`(시작 INSERT → 종료 UPDATE) · `source_health`(UPSERT)
-- [ ] rate-limit·timeout·지수 백오프·robots.txt·UA 정책
-- [ ] 백필 CLI(`mode=BACKFILL`·최근 3개월·로컬) + 데일리(증분)
-- [ ] "0건·급감" 경보(`source_health` baseline)
+### 1-5. 오케스트레이션·운영  ← 대부분 1-1에서 함께 냈다(2026-08-10 확인)
+- [x] **에러 격리** — 한 소스가 실패해도 나머지가 계속된다(`crawl_run.error_detail`에 기록). ⚠️ 중단(Ctrl-C·예외)에도 실행 기록을 닫는다 — 안 닫으면 그 run이 영구 "진행중"으로 남아 `status`가 거짓말을 한다
+- [x] `crawl_run`(시작 INSERT → 종료 UPDATE) · `source_health`(UPSERT)
+- [x] rate-limit·timeout·지수 백오프·`Retry-After`·robots `Crawl-delay`·UA 정책 (`fetch/`)
+- [x] 백필 CLI — `collect --months N` / `--days N`(`mode=BACKFILL`·로컬)
+- [x] "0건·급감" 경보 (`pipeline/health.py`)
+- [ ] **소스 간 병렬** — 지금은 **순차**다(`cli._collect_all`의 `for source in sources`). SPEC §3의 "소스 간 병렬 · 소스 내 순차"는 아직 뒷부분만 구현됐다. 3개월 전량이 약 80분이라 급하지 않고, 순차가 디버깅에 유리해 미뤄둔다
+- [ ] **데일리(증분) 모드** — `mode=DAILY` (⚠️ GitHub Actions는 1-6 이후)
+- ⚠️ 오케스트레이션은 `pipeline/run.py`가 아니라 **`cli.py`에 있다**(CLAUDE.md 트리는 목표 구조다). 파일이 커지면 그때 옮긴다
 
 ### 1-6. DB 전환 (JSON → Supabase)
 > 스키마가 여기서 굳음(그 전까진 JSON).

@@ -9,7 +9,9 @@
 minjob-ingest collect --source YTUS --dry-run               🌐    파싱 확인 (저장 안 함)
 minjob-ingest collect --source YTUS --months 3            🌐    실제 수집 (무료)
 minjob-ingest collect --days 14                           🌐    최근 2주만 (반복 실행용)
-minjob-ingest structure                                  🔴 💰   AI 구조화
+minjob-ingest structure --dry-run --limit 1              🔴 💰   AI 구조화 미리보기 (저장 안 함)
+minjob-ingest structure --limit 20 --source YTUS         🔴 💰   소량 구조화
+minjob-ingest structure --all                            🔴 💰   전량 (약 2~3시간 · 순차)
 minjob-ingest daily                                      🔴 🌐💰  매일 (증분 + 구조화)
 minjob-ingest status                                     🔴      실행·게시판 상태
 minjob-ingest list-sources [KEY]                                 등록 31곳 (요청 없음)
@@ -17,6 +19,13 @@ minjob-ingest snapshot --source KEY                         🌐    fixture용 H
 ```
 
 `collect` 옵션 — `--source`(기본: 어댑터 있는 전부) · `--months N`(`0`=날짜 무제한) · **`--days N`**(짧은 범위 · `--months`와 함께 못 씀) · `--dry-run` · `--verbose`
+
+`structure` 옵션 — ⚠️ **`--limit N` 또는 `--all` 이 없으면 실행을 거부한다**(옵션 없이 돌면 유료 호출이 전량 나간다) · **`--dry-run`**(호출은 하되 저장하지 않음 — 프롬프트 확인용) · `--source KEY`
+
+💡 **프롬프트를 다듬는 중이면 반드시 `--dry-run`.** 저장하면 그 공고는 판정 완료로 표시돼
+**다시 나오지 않으므로** 프롬프트를 고쳐도 같은 표본으로 비교할 수 없다. 그리고 `--dry-run` 없이
+소량을 돌릴 때는 `--source`로 게시판을 바꿔가며 본다 — 기본 순서가 수집 시각이라 그냥 `--limit 20`은
+**한 게시판만** 나온다.
 
 💡 **고치고 다시 돌리는 중이면 `--days 14`를 쓴다.** 3개월치는 약 3,200건이라 요청 간격
 (1.5s)만으로 80분이 넘는다. 2주면 약 500건·13분이고, **원장이 이미 받은 건을 건너뛰므로**

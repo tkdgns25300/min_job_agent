@@ -73,6 +73,7 @@
 
 - ①~⑤ 자동, ⑥ 사람. 크롤러 write = `source_data`·`review_data`·`source_health`·`crawl_run`. 크롤러는 `churches`/`jobs`를 직접 안 건드린다.
 - **crawl_run은 실행 시작(①)에 INSERT**(started_at·mode, run_id 확보) → source_data/review_data가 이 run_id를 FK로 참조 → **종료(⑤)에 UPDATE**(finished_at·sources_ok/failed·new_count·error_detail).
+- ⚠️ **구조화를 따로 돌리는 실행은 `crawl_run`을 만들지 않는다**(Phase 1의 `structure` 명령 — 수집이 끝난 뒤 유료 호출을 별도로 집행한다). `crawl_run`의 집계는 전부 **게시판 단위**(`mode`·`sources_ok`·`sources_failed`·`new_count`·`error_detail[source_key]`)라 **공고 단위**로 도는 구조화가 들어갈 칸이 없고, 억지로 넣으면 컬럼 이름이 뜻과 어긋난다. 그때 `review_data.run_id`는 **그 공고를 수집해온 실행**(`source_data.run_id`)을 승계한다 — 위 정의("①에서 INSERT된 crawl_run")가 그대로 유지되고, ①~⑤가 한 실행으로 이어지는 데일리에서도 같은 값이 되어 두 경로가 어긋나지 않는다. 구조화 실행의 진행·집계는 명령 출력과 `source_data`의 `structured_at`·`structure_attempts`·`last_structure_error`가 담당한다.
 
 ---
 
@@ -260,13 +261,12 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 ### ② `review_data` — 구조화 초안 + 검수 (가변 · 누적)
 | 그룹 | 컬럼 |
 |---|---|
-| 링크 | `id` PK · `source_data_id` FK · `run_id` FK · **`source_url` NOT NULL**(`source_data.source_url` 복사) |
+| 링크 | `id` PK · `source_data_id` FK · `run_id` FK(**`source_data.run_id` 승계** — 구조화는 자기 `crawl_run`을 만들지 않는다 §2) · **`source_url` NOT NULL**(`source_data.source_url` 복사) |
 | 분류(게이트) | `is_church_recruitment`(YES/NO/UNCERTAIN — NO는 여기 안 옴) · `job_kind`(MINISTRY/GENERAL) · `role`(GENERAL용) |
 | 공고(jobs 미러) | `title`·`position`·`department`·`employment_type`·`qualification`·`headcount`·`start_timing`·`housing_provided`·`housing_note`·`pay_min`·`pay_max`·`pay_note`·`pay_period`·`benefit_note`·`work_days`·`requirements[]`·`preferred[]`·`required_docs[]`·`optional_docs[]`·`process_steps[]`·`description`·`posted_at`·`deadline` |
 | 지원 연락처 | `contact_email`·`contact_tel`·`contact_link`·`contact_post` — **방법별 4컬럼**(min_job `APPLY_METHODS`가 `ETC` 없는 닫힌 4키라 1:1 대응 · 승격이 파싱 없이 INSERT). ⚠️ 대표 문자열 `contact` 하나로 두던 설계는 철회됐다(2026-08-05) |
 | 교회 초안 | `church_name`·`region`·`city` |
 | 교단 | `denomination`(`UNKNOWN` 가능·임시) · `denomination_source`(stated/registry/ai_guess/unknown) · `denomination_evidence` · `raw_denomination`(원표기) |
-| 지원 | `contact` (지원 연락처) |
 | 이단 | `heresy_flag`·`heresy_evidence` |
 | 검수 메타 | `confidence`(high/medium/low) · **`dedup_key`**(§4.1) · `review_status`(PENDING/APPROVED/REJECTED) + **`reject_reason`**(DUPLICATE/HERESY/OPERATOR) · **`published_job_id`** FK→jobs(승격 결과 · §4.2가 이걸로 끌어올림을 찾는다) · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
 | 미사용 | ~~`matched_church_id`~~ — 교회 행을 만들지 않기로 해(2026-08-06 · §6 승격 목적지) **채우지 않는다**. 컬럼은 남겨 두되 값은 항상 NULL이다 |
@@ -302,6 +302,7 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 ### ④ `crawl_run` — 실행별 요약 (실행마다 1행 · 누적)
 `id` PK · `started_at` · `finished_at` · `mode`(BACKFILL/DAILY) · `sources_ok` · `sources_failed` · `new_count` · `error_detail` jsonb(source_key→에러)
 > **실행 시작(①)에 INSERT**(started_at·mode) → 종료(⑤)에 UPDATE(finished_at·집계). run_id는 시작 시 확보돼 source_data/review_data가 참조.
+> ⚠️ **수집 실행만 이 행을 만든다.** 구조화를 따로 돌리는 실행(`structure`)은 행을 만들지 않고 `review_data.run_id`로 수집 실행의 id를 승계한다(§2) — 집계가 전부 게시판 단위라 공고 단위 작업이 들어갈 칸이 없다.
 
 ### 참고 config — `config/heresy-ref.json` (GitHub, 사람 관리)
 `[{ match, type(church_name|denomination|keyword), source_url, note, added_at }]` — 민감 자료라 git 이력=감사 추적.
