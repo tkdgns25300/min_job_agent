@@ -59,17 +59,37 @@
 - [x] **원장 조회 확장** — `SourceData.title`·`posted_on` 컬럼 + `seen_postings`가 `LedgerEntry`(제목·게시일)를 함께 반환 + `points_to_another_posting`(둘 다 다르면 소스 실패). 추가 요청 0건 · mutation 12/12
 - [x] `--months N` 컷오프 = **목록의 게시일**(구조화 전이라 posted_at 없음 · 달 단위 말일 보정) · `--months 0`이면 날짜로 안 자름 · **범위는 컷오프가 정하고 페이지 상한(100p)은 폭주 방지용 · CLI 옵션 없음**
 
-### 1-2. 구조화 (source_data → review_data)  ← ★ 1소스 전 구간 관통(뼈대 완성)
-- [ ] Gemini 구조화 호출 + **출력 JSON 계약**(필드·타입) + 한글→enum 매핑(position·region 등)
-- [ ] 게이트1(개교회 채용? `YES`/`NO`/`UNCERTAIN`) · 게이트2(`job_kind` MINISTRY/GENERAL·`role`)
-- [ ] 교단·`contact`·`confidence` 산출 → `review_data`(PENDING) 적재
-- [ ] 이미지 공고 = 이미지 바이트를 Gemini에 함께(멀티모달 · 별도 OCR 없음)
+### 1-2. 구조화 패스 (source_data → review_data) ← ★ 다음 작업
 
-### 1-3. 판정 견고화
-- [ ] 교단 확정 — alias(**긴 표현 우선**)·명부 대조(가능 시)·AI 추정(`ai_guess`)·`UNKNOWN`
-- [ ] **`dedup_key` 계산 + dedup 패스**(SPEC §4.1) — `정규화교회명:region:position:department:라운드` · **구조화 뒤에** 돈다 · 요소가 하나라도 없으면 병합하지 않음 · 대표 1건 + `posted_at` 최신
-- [ ] **이단 자동 거부**(SPEC §5.4) — `config/heresy-ref.json` **정확 일치** → `review_status=REJECTED` + `heresy_evidence`. ⚠️ 목록 파일은 커밋하지 않는다(`.gitignore` · 공개 리포)
-- [ ] **재구조화 pass** — **`structured_at IS NULL`**인 `source_data` 재처리(+`structure_attempts` 상한). ⚠️ "review_data 없는 행" 기준 금지 — 게이트1 탈락과 실패가 구분되지 않아 비용 루프(SPEC §4)
+> **완료 기준**: `review_data`가 쌓이고 이단이 걸러진다.
+>
+> **공고 1건 → 결과 1건.** 한 패스 안에서 Gemini 호출과 규칙 후처리를 끝내고 **완성된 레코드를
+> 한 번만 INSERT**한다 — 넣었다 고치지 않는다(`UNIQUE(source_data_id)`이고, 레코드 불변식이
+> "REJECTED면 이유가 있어야 한다"라 처음부터 맞춰 만들어야 생성된다).
+
+- [ ] **출력 JSON 계약** — Gemini가 돌려줄 스키마(필드·타입)를 `review_data`와 1:1로. 스키마 강제 + enum 밖 값 방어적 정규화
+- [ ] **프롬프트 하나** — 게시판별로 나누지 않는다. 차이는 이미 데이터에 있다: 입력에 `raw_meta`를 넣고 **"게시판이 준 구조화 필드가 있으면 본문 해석보다 우선"** 규칙 한 줄(CSU `order_name`이 교단 83%를 확정한다)
+- [ ] **Gemini 호출**(멀티모달 · 텍스트 + 이미지 + `raw_meta`) — ⚠️ `image_urls`의 `data:` URI는 **fetch하지 말고 디코드**(CALVIN 26건) · 빈 응답·`finishReason` 이상은 실패 처리
+- [ ] **게이트1**(개교회 채용? `YES`/`NO`/`UNCERTAIN`) · **게이트2**(`job_kind`·`position` 또는 `role`)
+- [ ] **`status` 판정**(모집 중 / 마감) — ⚠️ 키워드로는 못 가른다: 본문의 "채용 완료"는 실측 383건 중 대부분이 `"서류는 채용 완료 후 폐기됩니다"` 같은 안내 문구다. 제목에 명시된 것만 57건
+- [ ] **규칙 후처리**(AI 아님 · 같은 패스 · INSERT 전) — enum 정규화 · 교단 확정(**명시만** · 없으면 `UNKNOWN`) · **이단 대조**(SPEC §5.4 · 정확 일치 → `REJECTED`+`HERESY`+근거) · `dedup_key` 계산 · `confidence`(승격 6개 중 미충족 → `low`)
+- [ ] **저장 규칙** — 게이트1 `YES`/`UNCERTAIN` → `review_data`(PENDING) · `NO` → 만들지 않음. ⚠️ **둘 다 `structured_at` 기록**(SPEC §4 — 안 하면 제외 공고를 매 실행 Gemini에 재전송하는 비용 루프). 빈 공고 56건은 **Gemini를 부르지 않고** `structured_at`만 기록
+- [ ] **재구조화 pass** — `structured_at IS NULL`인 행 재처리(+`structure_attempts` 상한 3 · 초과분은 운영자 리포트)
+- [ ] **`structure` 명령** — `--limit N`(비용 통제) · `--source KEY`
+- [ ] 소량(`--limit 20`) 검증 → 프롬프트 조정 → ⚠️ **전량은 운영자가 실행**(유료 API · 가드레일 #10)
+
+### 1-3. dedup 패스 (review_data 안에서)
+
+> **완료 기준**: 검수 큐에 중복이 없다.
+>
+> **전체를 훑는 별도 패스다.** 구조화 안에서 하면 1번째 공고를 처리할 때 31번째가 아직 없어
+> **순서에 의존하고 멱등성이 깨진다**. 대상은 `review_status = PENDING`인 행(이단 거부분은 제외).
+
+- [ ] **묶기** — 같은 `dedup_key`(SPEC §4.1: `정규화교회명:region:position:department:라운드`) · 요소가 하나라도 없으면 병합하지 않음
+- [ ] **대표 선정** — `posted_at`이 가장 최근인 행. ⚠️ 날짜를 고치는 게 아니라 **최신 행을 고르는 것**이다(계속 끌어올린다 = 아직 뽑고 있다). 최초 날짜는 admin이 `ⓘ 최초 05-06`으로 보여준다
+- [ ] **나머지 처리** — `review_status=REJECTED` + `reject_reason=DUPLICATE`
+- [ ] **`dedup` 명령** — 몇 번을 돌려도 같은 결과(멱등)
+- [ ] (데일리 전환 시) **이미 승격된 것과의 대조** — 같은 `dedup_key`에 `published_job_id`가 있으면 끌어올림 → 그 id를 물려주고 min_job이 `jobs.posted_at`만 UPDATE(SPEC §4.2)
 
 ### 1-4. 소스 확장 (1 → 31곳)
 - [ ] **유형 다른 2~3개로 어댑터 틀 먼저 검증** — `PUTS`(EUC-KR)·`CSU`/`HANIL`(JSON 엔드포인트)
