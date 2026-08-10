@@ -19,12 +19,14 @@ from minjob_ingest.domain import (
     Denomination,
     DenominationSource,
     IsChurchRecruitment,
+    RejectReason,
     ReviewStatus,
     SourceHealthStatus,
 )
 from minjob_ingest.models import (
     MAX_DESCRIPTION_CHARS,
     MAX_STRUCTURE_ATTEMPTS,
+    REVIEW_STATE_FIELDS,
     Attachment,
     CrawlRun,
     JsonValue,
@@ -936,3 +938,38 @@ def test_a_review_draft_cannot_exist_without_its_source_link() -> None:
 
 def test_the_source_link_is_carried_on_the_draft() -> None:
     assert _review_data().source_url.startswith("https://")
+
+
+# ── 거절 이유 (`reject_reason`) ──────────────────────────────────
+
+
+def test_a_rejection_must_say_why() -> None:
+    """⚠️ **자동 거부를 되짚는 유일한 통로다.**
+
+    중복·이단·운영자 거절이 전부 `REJECTED` 하나로 뭉치면 "우리 dedup이 틀렸나"·"이단 오판인가"를
+    확인할 방법이 없다. 특히 이단은 **검수 큐에 뜨지 않는 자동 거부**라(SPEC §5.4) 이유가 없으면
+    잘못 걸러도 영원히 드러나지 않는다.
+    """
+    with pytest.raises(ValueError, match="reject_reason이 있어야"):
+        replace(_review_data(), review_status=ReviewStatus.REJECTED)
+
+
+def test_a_non_rejection_cannot_carry_a_reason() -> None:
+    """승인된 행에 거절 이유가 남아 있으면 되읽을 때 모순이다."""
+    with pytest.raises(ValueError, match="reject_reason이 있음"):
+        replace(
+            _review_data(),
+            review_status=ReviewStatus.APPROVED,
+            reject_reason=RejectReason.DUPLICATE,
+        )
+
+
+def test_each_rejection_reason_is_accepted() -> None:
+    for reason in RejectReason:
+        record = replace(_review_data(), review_status=ReviewStatus.REJECTED, reject_reason=reason)
+        assert record.reject_reason is reason
+
+
+def test_the_reason_survives_restructuring() -> None:
+    """재구조화 upsert가 검수 상태를 덮으면 안 된다 — 이유도 상태의 일부다."""
+    assert "reject_reason" in REVIEW_STATE_FIELDS

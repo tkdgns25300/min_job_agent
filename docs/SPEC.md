@@ -268,11 +268,18 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 | 교단 | `denomination`(`UNKNOWN` 가능·임시) · `denomination_source`(stated/registry/ai_guess/unknown) · `denomination_evidence` · `raw_denomination`(원표기) |
 | 지원 | `contact` (지원 연락처) |
 | 이단 | `heresy_flag`·`heresy_evidence` |
-| 검수 메타 | `confidence`(high/medium/low) · **`dedup_key`**(§4.1) · `review_status`(PENDING/APPROVED/REJECTED) · **`published_job_id`** FK→jobs(승격 결과 · §4.2가 이걸로 끌어올림을 찾는다) · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
+| 검수 메타 | `confidence`(high/medium/low) · **`dedup_key`**(§4.1) · `review_status`(PENDING/APPROVED/REJECTED) + **`reject_reason`**(DUPLICATE/HERESY/OPERATOR) · **`published_job_id`** FK→jobs(승격 결과 · §4.2가 이걸로 끌어올림을 찾는다) · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
 | 미사용 | ~~`matched_church_id`~~ — 교회 행을 만들지 않기로 해(2026-08-06 · §6 승격 목적지) **채우지 않는다**. 컬럼은 남겨 두되 값은 항상 NULL이다 |
 
 > 게이트1 `NO`(개교회 아님·비채용)는 review_data를 만들지 않는다(§1·§5.1) — 대신 `source_data.structured_at`이 기록돼 재구조화 대상에서 빠진다(§4). `UNCERTAIN`은 confidence=low로 여기 온다.
 > ⚠️ **`source_url`을 복사해 둔다**(2026-08-05 추가). 정규화상으로는 `source_data_id`로 JOIN하면 되니 중복이지만, min_job `jobs.source_url`은 **가드레일 #3(원문 재게시 금지·출처 표기)의 핵심 필드**다 — 승격 코드가 JOIN을 잊으면 출처 없이 공개된다. **승격이 이 테이블 하나만 보고 끝나게** 한다(빈 문자열도 거부).
+>
+> ⚠️ **`reject_reason`은 자동 거부를 되짚는 유일한 통로다**(2026-08-06 추가). 중복(§4.1)·이단(§5.4)·운영자 거절이 전부 `REJECTED` 하나로 뭉치면 "우리 dedup이 틀렸나"·"이단 오판인가"를 확인할 수 없다. 특히 이단은 **검수 큐에 뜨지 않는 자동 거부**라 이유가 없으면 잘못 걸러도 영원히 드러나지 않는다. **불변식**: `REJECTED`면 이유가 있어야 하고, 아니면 없어야 한다(레코드가 강제). 게이트1 `NO`는 여기 없다 — `review_data`를 아예 만들지 않는다. 검수 화면은 이걸로 **[검수 대기] [중복] [이단] [거절]** 탭을 나눈다.
+>
+> ⚠️⚠️ **마이그레이션에 CHECK 제약을 넣어야 한다** — 이 불변식은 지금 **우리 Python에만** 있다. `review_data`는 min_job admin도 쓰는 테이블이라, admin이 `UPDATE review_data SET review_status='APPROVED'`만 하고 `reject_reason`을 안 지우면 **우리가 그 행을 읽을 때 `SerdeError`가 나고 손상 행으로 건너뛴다**(실측 확인). 행이 조용히 사라진다.
+> ```sql
+> CHECK ((review_status = 'REJECTED') = (reject_reason IS NOT NULL))
+> ```
 >
 > ⚠️⚠️ **승격 게이트 = 필수 4 + CHECK 2**(min_job DATA.md §3 정본 · 2026-08-05 우리 실측 3,181건으로 8개→6개로 줄였다). 크롤러가 맞춰야 하는 6개: **교회 매칭 · `title` · `job_kind` · 직분(`position`) 또는 직무(`role`) · `description` · 연락처 4컬럼 중 1개**(⚠️ `source_url`은 세지 않는다 — 세면 제약이 항상 참이 되어 무의미하다).
 >
@@ -362,6 +369,7 @@ published_job_id  생성된 jobs 행의 id   ← §4.2 끌어올림 판정의 �
 2. ✅ `jobs`에 **`contact`** + **가드레일 #3 갱신**("지원용 공개 연락처는 공개") — min_job `types/domain.ts`·`CLAUDE.md`에 반영됨.
 3. ✅ `constants/domain.ts` **`KIJANG` 제거 완료** — min_job 교단 **10키**(9대형+ETC) 확인. → CONTRACT §1의 "11개에서 제거만 하면" 표현은 폐기.
 4. ⬜ **마이그레이션 SQL**(`churches`/`jobs` + staging 4테이블)은 미작성 — staging은 **이 리포 소유**(§8 위), min_job 테이블은 min_job 소관.
+   ⚠️ staging 마이그레이션에 **반드시 넣을 CHECK**: `review_data`의 `(review_status = 'REJECTED') = (reject_reason IS NOT NULL)` — 이유는 §6 ②.
 
 ### 이 리포 문서 갱신 (✅ 완료 2026-07-28 — SPEC 정본에 맞춰 반영)
 4. ✅ **`source_key`**: DB 저장은 **대문자 정규화**(`YTUS`)로 규칙 명문화(CONTRACT §4 노트), 문서의 소문자는 가독용 라벨로 유지.

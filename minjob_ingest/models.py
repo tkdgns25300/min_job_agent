@@ -34,6 +34,7 @@ from minjob_ingest.domain import (
     Position,
     Qualification,
     Region,
+    RejectReason,
     ReviewStatus,
     SourceHealthStatus,
     StipendPeriod,
@@ -73,6 +74,7 @@ REVIEW_STATE_FIELDS: tuple[str, ...] = (
     "id",
     "created_at",
     "review_status",
+    "reject_reason",
     "matched_church_id",
     "published_job_id",
     "reviewed_by",
@@ -411,6 +413,9 @@ class ReviewData:
     # 검수 메타 — 승격 시 min_job으로 넘기지 않는다
     dedup_key: str | None = None
     review_status: ReviewStatus = ReviewStatus.PENDING
+    #: `REJECTED`일 때 **왜**인지. 자동 거부(중복·이단)를 되짚는 유일한 통로다 —
+    #: 구분이 없으면 "우리 dedup이 틀렸나"·"이단 오판인가"를 확인할 방법이 없다.
+    reject_reason: RejectReason | None = None
     matched_church_id: UUID | None = None
     published_job_id: UUID | None = None
     reviewed_by: str | None = None
@@ -424,6 +429,7 @@ class ReviewData:
         self._check_pay()
         self._check_denomination()
         self._check_heresy()
+        self._check_reject_reason()
         self._check_description()
         _set(self, "created_at", ensure_kst(self.created_at))
         if self.reviewed_at is not None:
@@ -454,6 +460,11 @@ class ReviewData:
             _as_enum(self.denomination_source, DenominationSource, "denomination_source"),
         )
         _set(self, "review_status", _as_enum(self.review_status, ReviewStatus, "review_status"))
+        _set(
+            self,
+            "reject_reason",
+            _as_optional_enum(self.reject_reason, RejectReason, "reject_reason"),
+        )
         _set(self, "job_kind", _as_optional_enum(self.job_kind, JobKind, "job_kind"))
         _set(self, "position", _as_optional_enum(self.position, Position, "position"))
         _set(self, "department", _as_optional_enum(self.department, Department, "department"))
@@ -514,6 +525,17 @@ class ReviewData:
             self.heresy_evidence is None or self.heresy_evidence.strip() == ""
         ):
             raise ValueError("heresy_flag=True면 heresy_evidence가 있어야 함(가드레일 #5)")
+
+    def _check_reject_reason(self) -> None:
+        """거절이면 이유가 있어야 하고, 거절이 아니면 이유가 없어야 한다."""
+        rejected = self.review_status is ReviewStatus.REJECTED
+        if rejected and self.reject_reason is None:
+            raise ValueError("review_status=REJECTED면 reject_reason이 있어야 함")
+        if not rejected and self.reject_reason is not None:
+            raise ValueError(
+                f"review_status={self.review_status.value}인데 reject_reason이 있음"
+                f" ({self.reject_reason.value})"
+            )
 
     def _check_description(self) -> None:
         if self.description is not None and len(self.description) > MAX_DESCRIPTION_CHARS:

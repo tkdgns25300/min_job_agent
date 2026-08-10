@@ -71,6 +71,7 @@
 | `fetched_at` | 수집 시각 |
 | `dedup_key` | 중복 판정 키 (§5) |
 | `review_status` | `PENDING`/`APPROVED`/`REJECTED` (운영자 검토) |
+| `reject_reason` | `DUPLICATE`/`HERESY`/`OPERATOR` — `REJECTED`일 때만. 자동 거부(중복·이단)를 되짚는 통로이고 검수 화면의 탭을 가른다. 정본 SPEC §6 ② |
 | `confidence` | AI 구조화 신뢰도 (낮으면 운영자 우선 검토) |
 
 > **가드레일(갱신 2026-07-28)**: **지원용으로 명시된 연락처는 방법별 4컬럼(`contact_email`·`contact_tel`·`contact_link`·`contact_post`)으로 추출·공개**(2026-08-05 — 대표 문자열 하나였던 설계 철회)(SPEC §5.5 · min_job 가드레일 #3 완화). 지원과 무관한 제3자 개인정보는 추출하지 않는다. ⚠️ 개인정보·약관 관점은 **정식 오픈 전 법률 검토 항목**. ⚠️ `owner_id`는 min_job `jobs`에서 **제거됐다**(2026-08-06 · `church_id`로 충분). 크롤 공고는 `source=OPERATOR`. **전체 staging 스키마·판정은 SPEC §5·§6 정본**(아래 표는 크롤러 메타 요약).

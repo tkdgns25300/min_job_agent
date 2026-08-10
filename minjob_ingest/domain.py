@@ -159,6 +159,24 @@ class ReviewStatus(StrEnum):
     REJECTED = "REJECTED"
 
 
+class RejectReason(StrEnum):
+    """`REJECTED`가 **왜** 거절됐나. 셋을 구분하지 않으면 자동 거부를 되짚을 수 없다.
+
+    ⚠️ 특히 `HERESY`는 **검수 큐에 뜨지 않는 자동 거부**라(SPEC §5.4), 이유를 구분해 두지 않으면
+    잘못 걸러도 영원히 드러나지 않는다. 목록 대조는 동명이교회를 만들 수 있다(실측 48건 중
+    대부분이 이름만 겹친 다른 교회) — 되짚을 수 있어야 한다.
+
+    게이트1 `NO`(개교회 아님·비채용)는 여기 없다 — 그건 `review_data`를 아예 만들지 않는다.
+    """
+
+    #: `dedup_key`가 같은 대표 행이 따로 있다(SPEC §4.1). 자동.
+    DUPLICATE = "DUPLICATE"
+    #: `config/heresy-ref.json` 정확 일치(SPEC §5.4). 자동 · 근거는 `heresy_evidence`.
+    HERESY = "HERESY"
+    #: 운영자가 검수에서 거절.
+    OPERATOR = "OPERATOR"
+
+
 class Confidence(StrEnum):
     HIGH = "high"
     MEDIUM = "medium"

@@ -26,6 +26,7 @@ from minjob_ingest.domain import (
     Position,
     Qualification,
     Region,
+    RejectReason,
     ReviewStatus,
     SourceHealthStatus,
     StipendPeriod,
@@ -124,7 +125,8 @@ def _full_review_data() -> ReviewData:
         heresy_flag=True,
         heresy_evidence="heresy-ref: 교회명 일치",
         dedup_key="오천중앙교회|ASSOCIATE_PASTOR|250",
-        review_status=ReviewStatus.APPROVED,
+        review_status=ReviewStatus.REJECTED,
+        reject_reason=RejectReason.DUPLICATE,
         matched_church_id=new_id(),
         published_job_id=new_id(),
         reviewed_by="operator@minjob",
@@ -246,7 +248,8 @@ def test_encodes_date_without_time() -> None:
 def test_encodes_enum_as_its_value() -> None:
     row = to_row(_full_review_data())
     assert row["confidence"] == "medium"  # 소문자 SPEC 값 유지
-    assert row["review_status"] == "APPROVED"
+    assert row["review_status"] == "REJECTED"
+    assert row["reject_reason"] == "DUPLICATE"
     assert row["denomination_source"] == "operator"
 
 
