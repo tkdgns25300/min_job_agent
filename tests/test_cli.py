@@ -13,15 +13,28 @@ import pytest
 
 from minjob_ingest import cli
 from minjob_ingest.cli import _NOISY_LOGGERS, _dispatch, main
-from minjob_ingest.domain import SourceHealthStatus
+from minjob_ingest.clock import kst_now
+from minjob_ingest.console import Console
+from minjob_ingest.domain import IsChurchRecruitment, SourceHealthStatus
 from minjob_ingest.fetch.client import FetchError
 from minjob_ingest.lib import gemini
+from minjob_ingest.models import SourceData, new_id
 from minjob_ingest.pipeline.collect import CollectReport
+from minjob_ingest.pipeline.extraction import Extraction
 from minjob_ingest.pipeline.health import EMPTY_RUNS_ALARM
+from minjob_ingest.pipeline.structure import (
+    StructureOptions,
+    StructureReport,
+    StructureResult,
+    Verdict,
+    build_draft,
+)
 from minjob_ingest.settings import (
+    ENV_DATA_DIR,
     ENV_VERTEX_CLIENT_EMAIL,
     ENV_VERTEX_PRIVATE_KEY,
     ENV_VERTEX_PROJECT,
+    Settings,
 )
 from minjob_ingest.store.json_store import JsonStore
 
@@ -373,3 +386,133 @@ def test_dry_run_records_no_run_even_on_a_crash(
         _run_collect_with(monkeypatch, tmp_path, outcome=RuntimeError("boom"), dry_run=True)
     assert _runs(tmp_path) == []
     capsys.readouterr()
+
+
+# ── structure — 비용 안전장치 ────────────────────────────────────
+
+
+def test_structure_refuses_to_run_without_a_scope(capsys: pytest.CaptureFixture[str]) -> None:
+    """⚠️ 기본값으로 도는 경로가 있으면 실수 한 번이 남은 전량을 유료 호출한다."""
+    with pytest.raises(SystemExit) as exit_info:
+        main(["structure"])
+
+    assert exit_info.value.code == 2
+    assert "--limit" in capsys.readouterr().err
+
+
+def test_structure_rejects_a_scope_given_twice(capsys: pytest.CaptureFixture[str]) -> None:
+    """`--limit 20 --all`은 어느 쪽이 이겼는지 리포트만 보고 알 수 없다."""
+    with pytest.raises(SystemExit) as exit_info:
+        main(["structure", "--limit", "20", "--all"])
+
+    assert exit_info.value.code == 2
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("value", ["0", "-1"], ids=["0건", "음수"])
+def test_structure_rejects_a_useless_limit(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    """0건짜리 실행이 조용히 성공하면 운영자는 "처리할 게 없다"로 오해한다."""
+    with pytest.raises(SystemExit) as exit_info:
+        main(["structure", "--limit", value])
+
+    assert exit_info.value.code == 2
+    capsys.readouterr()
+
+
+def test_structure_rejects_an_unknown_source_before_spending_anything(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """오타를 그대로 두면 "처리할 공고가 없습니다"로 조용히 넘어가 다 끝난 줄 안다."""
+    assert main(["structure", "--limit", "1", "--source", "YTUSS"]) == 1
+
+    assert "알 수 없는 source_key" in capsys.readouterr().err
+
+
+def test_structure_options_reach_the_pipeline_intact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 옵션 해석이 뒤집혀도 파서 테스트는 전부 통과한다.
+
+    `--all`↔`--limit`이 바뀌면 20건짜리 확인이 **전량 유료 호출**이 된다 — 여기서 고정한다.
+    """
+    captured: list[StructureOptions] = []
+
+    def fake_pipeline(
+        _store: object, _extractor: object, options: StructureOptions, **_kwargs: object
+    ) -> StructureReport:
+        captured.append(options)
+        return StructureReport()
+
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path))
+    monkeypatch.setattr(cli, "structure_pending", fake_pipeline)
+    monkeypatch.setattr(cli, "GeminiClient", lambda _settings: object())
+    monkeypatch.setattr(cli, "GeminiExtractor", lambda _client: object())
+    monkeypatch.setattr(Settings, "require_vertex", lambda _self: object())
+
+    assert main(["structure", "--limit", "20", "--source", "ytus"]) == 0
+    assert main(["structure", "--all", "--dry-run"]) == 0
+
+    bounded, everything = captured
+    assert (bounded.limit, bounded.source_key, bounded.dry_run) == (20, "YTUS", False)
+    assert (everything.limit, everything.source_key, everything.dry_run) == (None, None, True)
+    capsys.readouterr()
+
+
+def test_the_preview_shows_the_record_that_would_be_stored(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """⚠️ 모델 답만 보여주면 실제로 무엇이 저장되는지 알 수 없다.
+
+    `--dry-run`은 **저장만 안 하는 것**이지 덜 보여주는 것이 아니다 — `confidence`·교단 근거·
+    검수 상태처럼 코드가 붙이는 값과, 아직 비어 있는 칸이 몇 개인지가 화면에 있어야 한다.
+    """
+    record = SourceData(
+        source_key="DAESHIN",
+        external_id="37",
+        source_url="https://daeshin.ac.kr/board/37",
+        title="성원교회에서 함께할 동역자를 모십니다.",
+        run_id=new_id(),
+        fetched_at=kst_now(),
+        raw_text="성원교회 주일학교 사역자 모집",
+    )
+    draft = build_draft(
+        record,
+        Extraction(
+            is_church_recruitment=IsChurchRecruitment.YES,
+            church_name="성원교회",
+            title="성원교회 주일학교 사역자 모집",
+            description="대구 수성구 성원교회가 주일학교 사역자를 모집합니다.",
+        ),
+    )
+
+    cli._print_preview(
+        Console(color=False), StructureResult(record=record, verdict=Verdict.DRAFTED, draft=draft)
+    )
+
+    shown = capsys.readouterr().out
+    assert "review_data (PENDING)" in shown
+    assert "성원교회" in shown
+    assert "low" in shown, "운영자 우선검토라는 사실이 보여야 한다"
+    assert "unknown" in shown, "교단 근거가 없다는 사실이 보여야 한다"
+    assert record.source_url in shown
+    assert "아직 비어 있는 칸" in shown, "얇아 보이는 이유가 화면에 있어야 한다"
+
+
+def test_the_preview_says_why_no_draft_was_made(capsys: pytest.CaptureFixture[str]) -> None:
+    record = SourceData(
+        source_key="CALVIN",
+        external_id="9",
+        source_url="https://e.kr/9",
+        title="포스터 공고",
+        run_id=new_id(),
+        fetched_at=kst_now(),
+        raw_text="",
+        image_urls=("https://e.kr/p.png",),
+    )
+
+    cli._print_preview(
+        Console(color=False), StructureResult(record=record, verdict=Verdict.DEFERRED)
+    )
+
+    shown = capsys.readouterr().out
+    assert "2단계" in shown and "만들지 않음" in shown

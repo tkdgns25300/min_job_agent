@@ -1,7 +1,11 @@
 """CLI 진입점 — 운영자가 크롤을 실행하는 창구(CLAUDE.md 가드레일 #10).
 
 현재 명령: `list-sources`(등록 소스 확인) · `check-gemini`(Vertex 인증 실호출 1회) ·
-`collect`(게시판에서 공고 수집). `structure`·`daily`·`backfill`은 이후 단계에서 붙는다.
+`snapshot`(fixture용 HTML 확보) · `collect`(게시판에서 공고 수집) · `structure`(AI 구조화).
+`daily`·`backfill`·`status`는 이후 단계에서 붙는다.
+
+⚠️ **유료 호출은 `structure` 하나뿐이고 범위를 반드시 받는다**(`--limit N` 또는 `--all`).
+`collect`는 무료라 기본 범위가 있지만, 유료 호출이 옵션 없이 도는 일은 없어야 한다.
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ import logging
 import sys
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import fields
 from datetime import date
 from pathlib import Path
 from typing import Final
@@ -21,7 +26,7 @@ from minjob_ingest.console import Console, ProgressLine
 from minjob_ingest.domain import CrawlMode
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.lib.gemini import GeminiClient, GeminiError
-from minjob_ingest.models import CrawlRun, SourceHealth
+from minjob_ingest.models import REVIEW_STATE_FIELDS, CrawlRun, ReviewData, SourceHealth
 from minjob_ingest.paths import PROJECT_ROOT
 from minjob_ingest.pipeline.collect import (
     DEFAULT_MONTHS,
@@ -32,6 +37,7 @@ from minjob_ingest.pipeline.collect import (
     ProgressSink,
     collect_source,
 )
+from minjob_ingest.pipeline.extraction import GeminiExtractor
 from minjob_ingest.pipeline.health import (
     Alert,
     AlertKind,
@@ -45,6 +51,14 @@ from minjob_ingest.pipeline.snapshot import (
     fixture_dir,
     snapshot_source,
     snapshot_url,
+)
+from minjob_ingest.pipeline.structure import (
+    ResultSink,
+    StructureOptions,
+    StructureReport,
+    StructureResult,
+    Verdict,
+    structure_pending,
 )
 from minjob_ingest.settings import Settings, VertexConfigError
 from minjob_ingest.sources.adapters.base import ParseError
@@ -64,13 +78,20 @@ _LIST_SOURCES = "list-sources"
 _CHECK_GEMINI = "check-gemini"
 _COLLECT = "collect"
 _SNAPSHOT = "snapshot"
+_STRUCTURE = "structure"
 #: 요청마다 한 줄씩 찍어 리포트를 덮는 로거들. `--verbose`에서만 켠다.
-_NOISY_LOGGERS = ("httpx", "httpcore")
+#: ⚠️ 구조화는 공고마다 한 줄을 찍는다 — 빼두면 전량 실행에서 진행 줄이 수천 줄에 묻힌다.
+_NOISY_LOGGERS = ("httpx", "httpcore", "minjob_ingest.lib.gemini")
 _ENABLED_MARKER = "●"
 _DISABLED_MARKER = "○"
 _INTERDENOMINATIONAL_LABEL = "초교파"
 
 _SMOKE_PROMPT = "연결 확인용. 한국어로 정확히 'OK'라고만 답하세요."
+
+#: 뽑히지 않은 값의 표시. 빈 칸으로 두면 "안 뽑힌 것"과 "빈 문자열"이 같아 보인다.
+_NO_VALUE: Final = "—"
+#: 미리보기에 이름을 펼칠 빈 칸 개수. 40개를 다 찍으면 정작 뽑힌 값이 묻힌다.
+_UNFILLED_SAMPLES: Final = 6
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -123,6 +144,15 @@ def _dispatch(args: argparse.Namespace) -> int:
             only=str(args.source) if args.source is not None else None,
             months=None if args.days is not None else (int(args.months) or None),
             days=int(args.days) if args.days is not None else None,
+            dry_run=bool(args.dry_run),
+            verbose=bool(args.verbose),
+        )
+    if command == _STRUCTURE:
+        return _run_structure(
+            # `--all`은 "상한 없음"이고 `--limit N`은 N건이다. 둘 중 하나가 반드시 온다
+            # (파서의 required 배타 그룹) — 기본값으로 전량이 도는 경로를 만들지 않는다.
+            limit=None if bool(args.all) else int(args.limit),
+            source_key=str(args.source) if args.source is not None else None,
             dry_run=bool(args.dry_run),
             verbose=bool(args.verbose),
         )
@@ -268,10 +298,7 @@ def _snapshot_targets(
     """어댑터 유무와 무관하게 **활성 소스 전부**가 대상이다(fixture가 어댑터보다 먼저다)."""
     if only is None:
         return tuple(enabled_sources(sources))
-    found = find_source(sources, only)
-    if found is None:
-        raise ConfigError(f"알 수 없는 source_key: {only}")
-    return (found,)
+    return (_require_source(sources, only),)
 
 
 def _print_snapshot(console: Console, result: SnapshotResult) -> None:
@@ -406,10 +433,7 @@ def _progress_renderer(console: Console, line: ProgressLine, *, dry_run: bool) -
 
 def _collect_targets(sources: Sequence[SourceConfig], only: str | None) -> tuple[SourceConfig, ...]:
     if only is not None:
-        found = find_source(sources, only)
-        if found is None:
-            raise ConfigError(f"알 수 없는 source_key: {only}")
-        return (found,)
+        return (_require_source(sources, only),)
     # 어댑터가 있는 곳만. 없는 곳까지 돌면 매번 실패가 쌓인다(1-4에서 채운다).
     implemented = set(implemented_keys())
     return tuple(s for s in enabled_sources(sources) if s.key in implemented)
@@ -556,6 +580,219 @@ def _alert_sentence(alert: Alert, *, today: date) -> str:
     return f"최신 글이 {health.last_posted_on} ({elapsed}일 전) — 게시판이 조용합니다"
 
 
+def _run_structure(
+    *, limit: int | None, source_key: str | None, dry_run: bool, verbose: bool
+) -> int:
+    """수집한 원자료를 AI로 구조화해 검수 초안(`review_data`)을 만든다.
+
+    ⚠️ **유료 호출이다**(가드레일 #10 — 운영자가 실행한다). 범위는 `--limit N` 또는 `--all`이
+    반드시 정한다: 기본값으로 도는 경로를 두면 실수 한 번이 남은 전량을 호출한다.
+    """
+    options = StructureOptions(limit=limit, source_key=_registered_key(source_key), dry_run=dry_run)
+    console = Console()
+    settings = Settings.load()
+    store = JsonStore(settings.data_dir)
+    extractor = GeminiExtractor(GeminiClient(settings.require_vertex()))
+
+    console.heading("구조화 미리보기" if dry_run else "구조화", note=_structure_scope(options))
+    line = console.progress()
+    with _console_logging(console, verbose=verbose):
+        report = structure_pending(
+            store,
+            extractor,
+            options,
+            on_result=_structure_renderer(console, line, dry_run=dry_run),
+        )
+    line.clear()
+    _print_structure_report(console, report, dry_run=dry_run)
+    return 1 if report.failed else 0
+
+
+def _registered_key(source_key: str | None) -> str | None:
+    """`--source`를 등록된 키로 맞춘다 — `collect`와 같은 규칙(대소문자 무시 · 오타는 즉시 오류).
+
+    맞춰주지 않으면 소문자 입력이 **저장소 경계에서 형식 오류로 터지고**, 오타는 "처리할
+    공고가 없습니다"로 조용히 넘어가 운영자가 다 끝난 줄 안다.
+
+    ⚠️ `--config`를 받지 않는다 — 이 명령은 게시판에 접속하지 않고 config를 **키 확인에만**
+    쓴다. 수집한 데이터의 키는 이미 정본 config로 저장된 값이다.
+    """
+    if source_key is None:
+        return None
+    return _require_source(load_sources(None), source_key).key
+
+
+def _require_source(sources: Sequence[SourceConfig], key: str) -> SourceConfig:
+    """등록된 소스를 찾는다(대소문자 무시). 없으면 `ConfigError` — 오타를 조용히 넘기지 않는다."""
+    found = find_source(sources, key)
+    if found is None:
+        raise ConfigError(f"알 수 없는 source_key: {key}")
+    return found
+
+
+def _structure_scope(options: StructureOptions) -> str:
+    scope = "미판정 전부" if options.limit is None else f"최대 {options.limit}건"
+    return scope if options.source_key is None else f"{scope} · {options.source_key}"
+
+
+def _structure_renderer(console: Console, line: ProgressLine, *, dry_run: bool) -> ResultSink:
+    """미리보기는 공고마다 뽑힌 값을 펼치고, 실제 실행은 한 줄에서 진행만 알린다.
+
+    `--dry-run`의 목적이 **눈으로 확인하는 것**이라 값을 접으면 쓸모가 없다. 반대로 전량
+    실행은 수천 건이라 한 줄에서 갱신한다 — 2~3시간짜리라 표시가 없으면 멈춘 줄 안다.
+    """
+
+    def render(result: StructureResult, progress: StructureReport) -> None:
+        if dry_run:
+            _print_preview(console, result)
+        else:
+            line.update(_structure_progress(progress))
+
+    return render
+
+
+def _structure_progress(progress: StructureReport) -> str:
+    counted = (
+        (Verdict.DRAFTED, progress.drafted),
+        (Verdict.EXCLUDED, progress.excluded),
+        (Verdict.EMPTY, progress.empty),
+        (Verdict.DEFERRED, progress.deferred),
+        (Verdict.FAILED, progress.failed),
+    )
+    parts = [f"{progress.scanned}건 처리"]
+    parts += [f"{_verdict_label(verdict)} {count}" for verdict, count in counted if count]
+    return "⋯ " + " · ".join(parts)
+
+
+def _verdict_label(verdict: Verdict) -> str:
+    """판정의 화면 라벨. ⚠️ `match`로 둔다 — 판정이 늘면 mypy가 여기서 잡아준다."""
+    match verdict:
+        case Verdict.DRAFTED:
+            return "초안"
+        case Verdict.EXCLUDED:
+            return "제외"
+        case Verdict.EMPTY:
+            return "빈 공고"
+        case Verdict.DEFERRED:
+            return "2단계 대기"
+        case Verdict.FAILED:
+            return "실패"
+
+
+def _print_preview(console: Console, result: StructureResult) -> None:
+    """미리보기는 **저장될 레코드**를 보여준다 — 모델이 답한 것만 보여주면 안 된다.
+
+    ⚠️ 운영자가 확인하려는 것은 "이대로 `review_data`에 들어가도 되는가"다. 모델 응답만
+    찍으면 실제로 붙는 값(`confidence`·교단 근거·검수 상태)이 안 보이고, 아직 비어 있는
+    칸이 몇 개인지도 알 수 없어 "왜 이렇게 적지?"가 된다.
+    """
+    console.heading(result.record.label, note=_verdict_label(result.verdict))
+    draft = result.draft
+    if draft is None:
+        _print_extraction_only(console, result)
+    else:
+        console.field("저장 위치", f"review_data ({draft.review_status.value})")
+        console.field("개교회 채용", draft.is_church_recruitment.value)
+        console.field("교회명", draft.church_name or _NO_VALUE)
+        console.field("제목", draft.title or _NO_VALUE)
+        console.field("요약", draft.description or _NO_VALUE)
+        console.field("신뢰도", draft.confidence.value, note="운영자 우선검토")
+        console.field(
+            "교단", str(draft.denomination or "—"), note=f"근거 {draft.denomination_source.value}"
+        )
+        console.field("원문 링크", draft.source_url)
+        _note_unfilled_columns(console, draft)
+    if result.error is not None:
+        console.warn(result.error)
+
+
+def _print_extraction_only(console: Console, result: StructureResult) -> None:
+    """초안을 만들지 않는 판정(게이트1 NO·빈 공고·이미지 대기)의 근거를 보여준다."""
+    extraction = result.extraction
+    if extraction is None:
+        console.field("초안", "만들지 않음", note=_verdict_reason(result.verdict))
+        return
+    console.field("개교회 채용", extraction.is_church_recruitment.value)
+    console.field("교회명", extraction.church_name or _NO_VALUE)
+    console.field("초안", "만들지 않음", note=_verdict_reason(result.verdict))
+
+
+def _verdict_reason(verdict: Verdict) -> str:
+    match verdict:
+        case Verdict.EXCLUDED:
+            return "개교회 채용이 아님"
+        case Verdict.EMPTY:
+            return "본문·이미지·첨부가 없어 호출하지 않음"
+        case Verdict.DEFERRED:
+            return "내용이 이미지에 있음 — 2단계(멀티모달) 대기"
+        case Verdict.FAILED:
+            return "실패 — 다음 실행이 다시 시도"
+        case Verdict.DRAFTED:
+            return "초안 있음"
+
+
+def _note_unfilled_columns(console: Console, draft: ReviewData) -> None:
+    """아직 비어 있는 칸을 세어 보여준다.
+
+    ⚠️ 이게 없으면 1단계 결과가 "데이터가 빠진 것"처럼 보인다 — 실제로는 **아직 안 뽑는
+    칸**이고 2단계가 채운다. 화면에서 바로 알 수 있어야 같은 질문이 반복되지 않는다.
+    """
+    empty = [
+        info.name
+        for info in fields(draft)
+        if info.name not in REVIEW_STATE_FIELDS and not getattr(draft, info.name)
+    ]
+    if not empty:
+        return
+    console.bullet(
+        console.paint(f"아직 비어 있는 칸 {len(empty)}개 — 2단계에서 채운다: ", "dim")
+        + console.paint(" · ".join(empty[:_UNFILLED_SAMPLES]) + " …", "dim")
+    )
+
+
+def _print_structure_report(console: Console, report: StructureReport, *, dry_run: bool) -> None:
+    console.line()
+    if not report.scanned:
+        console.warn(
+            "처리할 공고가 없습니다.",
+            "이미 전부 판정됐거나(structured_at), 시도 상한을 넘겼거나,",
+            "--source 가 가리키는 게시판에 남은 것이 없습니다.",
+        )
+        return
+    console.field("훑음", f"{report.scanned}건")
+    console.field(
+        "초안",
+        console.paint(f"{report.drafted}건", "green", "bold"),
+        note="저장하지 않음(미리보기)" if dry_run else "검수 대기(PENDING)",
+    )
+    if report.excluded:
+        console.field("제외", f"{report.excluded}건", note="개교회 채용이 아님 — 초안 없음")
+    if report.empty:
+        console.field("빈 공고", f"{report.empty}건", note="내용이 없어 호출하지 않음")
+    if report.deferred:
+        console.field(
+            "2단계 대기",
+            f"{report.deferred}건",
+            note="내용이 이미지에 있음 — 멀티모달이 붙을 때까지 손대지 않음",
+        )
+    if report.failed:
+        console.warn(
+            f"구조화 실패 {report.failed}건 — 판정을 남기지 않아 다음 실행이 다시 시도합니다.",
+            *(f"{failure.posting}: {failure.reason}" for failure in report.failures),
+        )
+    if dry_run:
+        console.line()
+        console.ok("미리보기입니다 — 저장하지 않았으므로 같은 공고를 다시 볼 수 있습니다.")
+
+
+def _positive_int(value: str) -> int:
+    """`--limit` 전용. 0·음수를 허용하면 **아무것도 안 하는 실행이 조용히 성공**한다."""
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"1 이상이어야 합니다 ({value})")
+    return parsed
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=_PROGRAM, description="청빙 공고 수집 크롤러")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -604,6 +841,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     collect.add_argument("--verbose", action="store_true", help="HTTP 요청 로그까지 표시 (진단용)")
     collect.add_argument("--config", default=None, help="sources.json 경로")
+
+    structure = subcommands.add_parser(
+        _STRUCTURE, help="수집한 공고를 AI로 구조화 (⚠️ 유료 호출 · 게시판에는 요청하지 않음)"
+    )
+    # ⚠️ **비용 사고 방지**: 범위를 반드시 받는다. 기본값을 두면 옵션 없는 실행이 남은
+    # 전량(수천 건)을 호출한다 — `collect`는 무료라 기본 범위가 있지만 여기는 다르다.
+    scope = structure.add_mutually_exclusive_group(required=True)
+    scope.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        help="판정할 최대 건수 = 유료 호출 상한 (예: --limit 20)",
+    )
+    scope.add_argument(
+        "--all", action="store_true", help="미판정 전부 (⚠️ 남은 건수만큼 유료 호출이 나간다)"
+    )
+    structure.add_argument("--source", default=None, help="한 게시판만 (예: YTUS)")
+    structure.add_argument(
+        "--dry-run", action="store_true", help="호출은 하되 저장 안 함 (프롬프트 확인용)"
+    )
+    structure.add_argument("--verbose", action="store_true", help="호출 로그까지 표시")
     return parser
 
 

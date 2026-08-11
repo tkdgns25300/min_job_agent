@@ -226,6 +226,23 @@ def test_a_trailing_size_is_stripped_from_the_name() -> None:
     assert found[0].is_image is True
 
 
+def test_a_size_written_without_the_b_is_stripped_too() -> None:
+    """⚠️ `B` 없이 쓰는 게시판이 있다(KTS 실측 11건 · 2026-08-10).
+
+    남겨두면 확장자가 마지막이 아니게 되어 `is_image`가 이미지를 못 알아보고, 그 공고가
+    포스터를 못 본 채 텍스트만으로 판정된다.
+    """
+    found = _attachments('<a href="/d/x">포스터.jpg (152.5K)</a>')
+    assert found[0].name == "포스터.jpg"
+    assert found[0].is_image is True
+
+
+def test_a_parenthesised_number_that_is_not_a_size_survives() -> None:
+    """`서식(3).hwp`의 `(3)`은 크기가 아니다 — 단위 없는 괄호는 이름의 일부다."""
+    found = _attachments('<a href="/d/x">서식(3).hwp</a>')
+    assert found[0].name == "서식(3).hwp"
+
+
 def test_internal_whitespace_in_the_name_is_collapsed() -> None:
     """앵커 안이 `<img>` + 파일명 + nbsp·줄바꿈 + 크기 한 덩어리인 게시판이 있다(KBTUS)."""
     found = _attachments('<a href="/d/x"><img src="/i.gif">양식.hwp\xa0\n\t (57KB)</a>')

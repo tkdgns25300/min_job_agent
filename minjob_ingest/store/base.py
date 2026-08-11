@@ -99,10 +99,17 @@ class Store(Protocol):
 
     # ── 구조화 (SPEC §4) ─────────────────────────────────────────
 
-    def list_unstructured(self, limit: int) -> tuple[SourceData, ...]:
+    def list_unstructured(
+        self, limit: int, *, source_key: str | None = None
+    ) -> tuple[SourceData, ...]:
         """판정이 안 끝났고 시도 상한도 안 넘긴 원자료를 오래된 것부터 최대 `limit`건.
 
         백필 직후 backlog가 한 실행을 폭주시키지 않도록 **상한이 필수**다.
+
+        `source_key`를 주면 그 게시판만 돌려준다. ⚠️ **필터가 여기 있어야 한다** — 반환값을
+        호출자가 거르면 `limit`이 "그 게시판에서 N건"이 아니라 "전체에서 N건 중 남은 것"이
+        되어, 프롬프트를 다듬을 때 표본이 0건이 되는 일이 생긴다(수집 시각 순이라 오래된
+        쪽은 한 게시판에 뭉쳐 있다 · 2026-08-10 실측).
         """
         ...
 

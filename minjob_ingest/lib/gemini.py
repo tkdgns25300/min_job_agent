@@ -34,10 +34,17 @@ _RETRY_ATTEMPTS: Final = 5
 _RETRY_INITIAL_DELAY_SEC: Final = 1.0
 _RETRY_MAX_DELAY_SEC: Final = 30.0
 
-#: 스모크·범용 텍스트 호출 파라미터. 구조화 전용 config(JSON 스키마·이미지)는 Phase 1-2.
+#: 스모크·범용 텍스트 호출 파라미터. 구조화는 `structure_config`가 따로 쓴다.
 _SMOKE_MAX_OUTPUT_TOKENS: Final = 256
 #: 같은 입력에 같은 출력을 원한다(구조화는 창작이 아니다).
 _DETERMINISTIC_TEMPERATURE: Final = 0.0
+
+#: 구조화 응답 상한. 1단계는 4필드지만 2단계에서 33필드를 담아야 한다. 상한에 걸려 잘린
+#: JSON은 `require_text`가 `MAX_TOKENS`로 걸러 실패로 만든다(반쯤 온 JSON을 파싱하지 않는다).
+_STRUCTURE_MAX_OUTPUT_TOKENS: Final = 4_096
+
+#: 응답 형식. `response_schema`와 **함께** 줘야 한다 — mime만 주면 "JSON 비슷한 것"이 온다.
+_JSON_MIME_TYPE: Final = "application/json"
 
 _SCOPES: Final = ("https://www.googleapis.com/auth/cloud-platform",)
 
@@ -108,6 +115,26 @@ def smoke_config() -> types.GenerateContentConfig:
     )
 
 
+def structure_config(schema: types.Schema) -> types.GenerateContentConfig:
+    """구조화 설정 — 출력 스키마를 모델에 **강제**한다(SPEC §5).
+
+    `response_mime_type`만 주면 "JSON처럼 생긴 것"이 오고 필드·타입은 보장되지 않는다.
+    스키마까지 줘야 모델이 그 모양으로만 답한다.
+
+    ⚠️ **생각 예산 0**: 추출은 추론이 아니라 옮겨 적기다(입력 중앙값 507자 · 2026-08-10 실측).
+    켜두면 생각 토큰이 출력 상한을 먹어 **본문 대신 빈 응답**으로 끝나는 경로가 생긴다.
+    품질이 모자라면 2단계에서 올린다. ⚠️ 0을 받지 않는 모델(2.5 Pro 계열)로 `VERTEX_MODEL`을
+    바꾸면 이 값도 함께 고쳐야 한다 — `smoke_config`도 같은 전제다.
+    """
+    return types.GenerateContentConfig(
+        temperature=_DETERMINISTIC_TEMPERATURE,
+        max_output_tokens=_STRUCTURE_MAX_OUTPUT_TOKENS,
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
+        response_mime_type=_JSON_MIME_TYPE,
+        response_schema=schema,
+    )
+
+
 #: 정상 종료. `None`은 응답에 종료 사유가 없는 경우(비스트리밍에선 드묾)로, 텍스트가 있으면 받는다.
 _COMPLETE_REASONS: Final = (None, types.FinishReason.STOP)
 
@@ -153,13 +180,25 @@ class GeminiClient:
         """연결 확인용 텍스트 호출. 실패·빈 응답·잘린 응답은 `GeminiError`.
 
         ⚠️ **구조화에 쓰지 말 것.** `smoke_config()`의 출력 상한(256토큰)에 걸려 공고 대부분이
-        잘린다. 구조화는 자기 config(JSON 스키마·상한·이미지)를 가진 별도 메서드로 Phase 1-2에
-        추가한다 — 범용 이름으로 두면 그 상한을 눈치채지 못한 채 재사용된다.
+        잘린다 — 구조화는 `generate_structured_json`이다.
         """
-        _LOG.info("Gemini 호출 (model=%s, prompt=%d자)", self._model, len(prompt))
+        _LOG.info("Gemini 연결 확인 (model=%s, prompt=%d자)", self._model, len(prompt))
+        return self._generate(prompt, smoke_config())
+
+    def generate_structured_json(self, prompt: str, *, schema: types.Schema) -> str:
+        """스키마를 강제해 받은 JSON **텍스트**. 실패·빈 응답·잘린 응답은 `GeminiError`.
+
+        파싱하지 않고 문자열로 돌려준다 — 무엇을 기대하는지는 부르는 쪽(`pipeline/extraction.py`)이
+        알고 이 층은 전송만 안다. SDK의 `response.parsed`를 쓰지 않는 이유도 같다: 그건 우리
+        dataclass가 아니고, 받아 쓰면 경계 검증을 건너뛴다(CLAUDE.md "경계에서 검증").
+        """
+        _LOG.info("Gemini 구조화 (model=%s, prompt=%d자)", self._model, len(prompt))
+        return self._generate(prompt, structure_config(schema))
+
+    def _generate(self, prompt: str, config: types.GenerateContentConfig) -> str:
         try:
             response = self._client.models.generate_content(
-                model=self._model, contents=prompt, config=smoke_config()
+                model=self._model, contents=prompt, config=config
             )
         except Exception as err:  # SDK 예외 계층이 넓다 → 파이프라인이 다룰 한 종류로 좁힌다.
             raise GeminiError(f"Gemini 호출 실패: {err}") from err

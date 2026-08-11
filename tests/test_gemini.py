@@ -200,3 +200,44 @@ def test_config_error_does_not_leak_the_key(caplog: pytest.LogCaptureFixture) ->
         build_client(broken)
     assert "SHHH-SECRET" not in str(caught.value)
     assert "SHHH-SECRET" not in caplog.text
+
+
+# ── 구조화 호출 ──────────────────────────────────────────────────
+
+
+def test_structure_config_forces_the_output_schema() -> None:
+    """`response_mime_type`만 주면 "JSON처럼 생긴 것"이 온다 — 스키마까지 줘야 모양이 강제된다."""
+    schema = types.Schema(type=types.Type.OBJECT, properties={})
+
+    config = gemini.structure_config(schema)
+
+    assert config.response_mime_type == "application/json"
+    assert config.response_schema is schema
+    assert config.temperature == 0.0
+
+
+def test_structure_config_leaves_more_room_than_the_smoke_call() -> None:
+    """스모크 상한을 그대로 쓰면 공고 대부분이 잘려 실패로 떨어진다(값 자체는 조정 대상)."""
+    schema = types.Schema(type=types.Type.OBJECT, properties={})
+    structure_limit = gemini.structure_config(schema).max_output_tokens
+    smoke_limit = smoke_config().max_output_tokens
+    assert structure_limit is not None and smoke_limit is not None
+    assert structure_limit > smoke_limit
+
+
+def test_generate_structured_json_returns_the_raw_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """파싱하지 않고 문자열을 돌려준다 — 무엇을 기대하는지는 부르는 쪽이 안다."""
+    client, fake = _client_with(monkeypatch, _response('{"a": 1}'))
+    schema = types.Schema(type=types.Type.OBJECT, properties={})
+
+    assert client.generate_structured_json("공고", schema=schema) == '{"a": 1}'
+    assert fake.calls[0]["contents"] == "공고"
+
+
+def test_a_truncated_structured_answer_is_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⚠️ 반쯤 온 JSON은 "값이 있으니 성공"처럼 보인다 — 통과시키면 영구히 재시도되지 않는다."""
+    client, _ = _client_with(
+        monkeypatch, _response('{"church_name": "점촌', finish_reason=types.FinishReason.MAX_TOKENS)
+    )
+    with pytest.raises(GeminiError, match="온전히 끝나지 않음"):
+        client.generate_structured_json("공고", schema=types.Schema(type=types.Type.OBJECT))

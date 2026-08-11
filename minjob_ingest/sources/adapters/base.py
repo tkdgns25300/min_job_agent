@@ -326,7 +326,11 @@ def _is_not_a_file(href: str) -> bool:
 
 #: 파일명 뒤에 붙는 크기 표기. `이력서.hwp (33.50 KB)` 같은 형태다(HTUS·HAPSHIN·KBTUS 실측).
 #: 단위 `B`를 **요구한다** — `(2)`처럼 파일명의 일부일 수 있는 괄호를 떼지 않으려는 것이다.
-_SIZE_SUFFIX: Final = re.compile(r"\s*\(\s*[\d.,]+\s*[KMGT]?B\s*\)\s*$", re.IGNORECASE)
+#: 파일명 뒤에 붙은 크기 표기(`(37.5K)`·`(1.2 MB)`). ⚠️ **`B` 없이 쓰는 게시판이 있다**
+#: (KTS 실측 11건 · 2026-08-10) — `B`를 필수로 두면 이름에 크기가 남고, 그러면 확장자가
+#: 마지막이 아니게 되어 `is_image`가 이미지를 못 알아본다(= 그 공고가 텍스트만으로 판정된다).
+#: 단위 글자나 `B` 중 **하나는 있어야** 한다 — `서식(3).hwp` 같은 정상 이름을 깎지 않기 위해서다.
+_SIZE_SUFFIX: Final = re.compile(r"\s*\(\s*[\d.,]+\s*(?:[KMGT]B?|B)\s*\)\s*$", re.IGNORECASE)
 
 
 def _filename_like(text: str) -> str:

@@ -295,6 +295,14 @@ class SourceData:
         """원장 유일키 — UNIQUE(source_key, external_id). 해시 가능한 식별자."""
         return (self.source_key, self.external_id)
 
+    @property
+    def label(self) -> str:
+        """로그·리포트에 쓰는 사람이 읽는 식별자. **저장값이 아니다.**
+
+        여기 두는 이유: 층마다 따로 조립하면 리포트와 진행 표시의 형식이 조용히 갈라진다.
+        """
+        return f"{self.source_key}/{self.external_id}"
+
     def with_verdict_recorded(self, at: datetime | None = None) -> SourceData:
         """판정 완료로 표시한다 — 게이트1 탈락(review 미생성)도 반드시 이걸 부른다."""
         return replace(

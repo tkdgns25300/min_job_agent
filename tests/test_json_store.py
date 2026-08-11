@@ -593,3 +593,19 @@ def test_missing_file_reads_as_empty(store: JsonStore) -> None:
     # 첫 실행에는 파일이 없다 — 이때 예외가 나면 크롤이 시작조차 못 한다.
     assert store.list_unstructured(limit=5) == ()
     assert store.get_health("YTUS") is None
+
+
+def test_list_unstructured_can_be_bound_to_one_source(store: JsonStore) -> None:
+    """⚠️ 필터가 여기 있어야 `limit`이 "그 게시판에서 N건"이 된다.
+
+    반환값을 호출자가 거르면, 수집 시각 순이라 오래된 쪽이 한 게시판에 뭉쳐 있어 표본이
+    0건이 되는 일이 생긴다(2026-08-10 실측: 가장 오래된 100건이 게시판 2곳).
+    """
+    store.save_source_data(_source_data("1"))
+    store.save_source_data(replace(_source_data("2"), source_key="PUTS"))
+
+    only_puts = store.list_unstructured(10, source_key="PUTS")
+
+    assert [record.source_key for record in store.list_unstructured(10)] == ["YTUS", "PUTS"]
+    assert [record.external_id for record in only_puts] == ["2"]
+    assert store.list_unstructured(10, source_key="ACTS") == ()
