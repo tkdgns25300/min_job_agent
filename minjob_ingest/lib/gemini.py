@@ -9,14 +9,15 @@ SDK가 던지는 것과 어긋나 **재시도되어야 할 오류가 즉시 실�
 구조화 실패는 `SourceData.with_failed_attempt`로 기록되고 **다음 실행이 다시 집는다**
 (SPEC §4, 상한 3회). 즉 유실이 아니라 지연이므로, 재시도 계층을 두 겹으로 쌓지 않는다.
 
-⚠️ **토큰이 곧 돈이다**(가드레일 #2). 여기는 "부르는 법"만 담고, 무엇을 몇 번 부를지는
+⚠️ **토큰이 곧 돈이다**. 여기는 "부르는 법"만 담고, 무엇을 몇 번 부를지는
 파이프라인(`pipeline/structure.py`)이 결정한다.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Final
+from collections.abc import Sequence
+from typing import Final, Protocol
 
 from google import genai
 from google.genai import types
@@ -39,7 +40,7 @@ _SMOKE_MAX_OUTPUT_TOKENS: Final = 256
 #: 같은 입력에 같은 출력을 원한다(구조화는 창작이 아니다).
 _DETERMINISTIC_TEMPERATURE: Final = 0.0
 
-#: 구조화 응답 상한. 1단계는 4필드지만 2단계에서 33필드를 담아야 한다. 상한에 걸려 잘린
+#: 구조화 응답 상한. 34필드 + 목록 다섯 칸을 담아야 한다. 상한에 걸려 잘린
 #: JSON은 `require_text`가 `MAX_TOKENS`로 걸러 실패로 만든다(반쯤 온 JSON을 파싱하지 않는다).
 _STRUCTURE_MAX_OUTPUT_TOKENS: Final = 4_096
 
@@ -50,6 +51,19 @@ _SCOPES: Final = ("https://www.googleapis.com/auth/cloud-platform",)
 
 #: 오류 메시지에 쓰는 환경변수 이름(운영자가 고칠 대상을 정확히 가리킨다).
 ENV_PRIVATE_KEY_HINT: Final = "VERTEX_AI_PRIVATE_KEY"
+
+
+class MediaPart(Protocol):
+    """이 층이 그림에 대해 아는 전부. 구현은 `pipeline/media.Media`.
+
+    구조화 모듈을 import하지 않으려고 프로토콜로 둔다 — 전송 층이 파이프라인을 알면 층이
+    뒤집힌다(CLAUDE.md Layer Responsibilities).
+    """
+
+    @property
+    def media_type(self) -> str: ...
+    @property
+    def data(self) -> bytes: ...
 
 
 class GeminiError(Exception):
@@ -183,22 +197,36 @@ class GeminiClient:
         잘린다 — 구조화는 `generate_structured_json`이다.
         """
         _LOG.info("Gemini 연결 확인 (model=%s, prompt=%d자)", self._model, len(prompt))
-        return self._generate(prompt, smoke_config())
+        return self._generate([types.Part.from_text(text=prompt)], smoke_config())
 
-    def generate_structured_json(self, prompt: str, *, schema: types.Schema) -> str:
+    def generate_structured_json(
+        self, prompt: str, *, schema: types.Schema, images: Sequence[MediaPart] = ()
+    ) -> str:
         """스키마를 강제해 받은 JSON **텍스트**. 실패·빈 응답·잘린 응답은 `GeminiError`.
 
         파싱하지 않고 문자열로 돌려준다 — 무엇을 기대하는지는 부르는 쪽(`pipeline/extraction.py`)이
         알고 이 층은 전송만 안다. SDK의 `response.parsed`를 쓰지 않는 이유도 같다: 그건 우리
         dataclass가 아니고, 받아 쓰면 경계 검증을 건너뛴다(CLAUDE.md "경계에서 검증").
-        """
-        _LOG.info("Gemini 구조화 (model=%s, prompt=%d자)", self._model, len(prompt))
-        return self._generate(prompt, structure_config(schema))
 
-    def _generate(self, prompt: str, config: types.GenerateContentConfig) -> str:
+        ⚠️ **그림은 프롬프트 뒤에 붙인다.** 앞에 두면 모델이 지시를 읽기 전에 그림부터 보고,
+        무엇을 뽑아야 하는지 모른 채 묘사를 시작한다.
+        """
+        _LOG.info(
+            "Gemini 구조화 (model=%s, prompt=%d자, 그림 %d장)",
+            self._model,
+            len(prompt),
+            len(images),
+        )
+        parts = [
+            types.Part.from_text(text=prompt),
+            *(types.Part.from_bytes(data=item.data, mime_type=item.media_type) for item in images),
+        ]
+        return self._generate(parts, structure_config(schema))
+
+    def _generate(self, parts: Sequence[types.Part], config: types.GenerateContentConfig) -> str:
         try:
             response = self._client.models.generate_content(
-                model=self._model, contents=prompt, config=config
+                model=self._model, contents=list(parts), config=config
             )
         except Exception as err:  # SDK 예외 계층이 넓다 → 파이프라인이 다룰 한 종류로 좁힌다.
             raise GeminiError(f"Gemini 호출 실패: {err}") from err

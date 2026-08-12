@@ -141,10 +141,10 @@ def row_to_review_data(row: Row) -> ReviewData:
             is_church_recruitment=_enum(row, "is_church_recruitment", IsChurchRecruitment),
             confidence=_enum(row, "confidence", Confidence),
             denomination_source=_enum(row, "denomination_source", DenominationSource),
-            job_kind=_optional_enum(row, "job_kind", JobKind),
+            job_kind=_enum_tuple(row, "job_kind", JobKind),
             role=_optional_str(row, "role"),
             title=_optional_str(row, "title"),
-            position=_optional_enum(row, "position", Position),
+            position=_enum_tuple(row, "position", Position),
             department=_optional_enum(row, "department", Department),
             employment_type=_optional_enum(row, "employment_type", EmploymentType),
             qualification=_optional_enum(row, "qualification", Qualification),
@@ -359,6 +359,24 @@ def _str_tuple(row: Row, key: str) -> tuple[str, ...]:
             raise SerdeError(f"{key}[{index}]: 문자열이어야 함 ({item!r})")
         items.append(item)
     return tuple(items)
+
+
+def _enum_tuple[E: StrEnum](row: Row, key: str, enum_type: type[E]) -> tuple[E, ...]:
+    """여러 값을 담는 enum 칸(`job_kind`·`position`).
+
+    중복 제거·정렬은 레코드가 한다(`ReviewData.__post_init__`). 허용값은 여기서 보되
+    **형제 헬퍼와 같은 메시지**를 쓴다 — `_enum`이 만든 "허용 [...]" 안내가 배열 칸에서만
+    영어 기본 메시지로 바뀌면 손상 행을 고칠 때 원인을 못 읽는다.
+    """
+    return tuple(_as_member(item, key, enum_type) for item in _str_tuple(row, key))
+
+
+def _as_member[E: StrEnum](value: str, key: str, enum_type: type[E]) -> E:
+    try:
+        return enum_type(value)
+    except ValueError as err:
+        allowed = sorted(member.value for member in enum_type)
+        raise SerdeError(f"{key}: {value!r}는 허용값 아님 (허용 {allowed})") from err
 
 
 def _json_mapping(row: Row, key: str) -> Mapping[str, JsonValue]:

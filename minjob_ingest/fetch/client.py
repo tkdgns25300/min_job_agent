@@ -42,7 +42,7 @@ _LOG = logging.getLogger(__name__)
 #: 요청 상한. 응답 없는 게시판 하나가 실행 전체를 붙잡지 못하게 한다.
 REQUEST_TIMEOUT_SECONDS: Final = 20.0
 
-#: 같은 소스에 연속 요청할 때의 최소 간격(예의 · 가드레일 #7).
+#: 같은 소스에 연속 요청할 때의 최소 간격(예의).
 MIN_REQUEST_INTERVAL_SECONDS: Final = 1.5
 
 #: 총 시도 횟수(최초 1 + 재시도 2).
@@ -142,6 +142,19 @@ class Response:
         return self.text.lstrip()[:1] in {"{", "["}
 
 
+@dataclass(frozen=True, slots=True)
+class Binary:
+    """디코드하지 않은 응답 — 이미지·첨부 바이트(구조화가 Gemini에 넘긴다)."""
+
+    url: str
+    media_type: str
+    data: bytes
+
+
+#: 파일을 요청했는데 이게 오면 실패다 — 그누보드가 세션 없는 첨부 요청에 주는 안내 페이지.
+_NOT_A_FILE_TYPES: Final = frozenset({"text/html", "application/xhtml+xml"})
+
+
 def _legacy_tls_context() -> ssl.SSLContext:
     """`insecure_tls` 소스용 TLS 설정.
 
@@ -236,6 +249,31 @@ class SourceClient:
         """상대 URL은 `list_url` 기준으로 합쳐진다(호스트·스킴이 따라온다)."""
         return self._request("GET", url, form=None)
 
+    def get_bytes(self, url: str) -> Binary:
+        """이미지·첨부 **바이트**. 디코드하지 않는다.
+
+        ⚠️ **경로를 우리가 인코딩하지 않는다.** `httpx`가 공백·한글을 이미 percent-encode하고
+        이미 인코딩된 부분을 두 번 굽지도 않는다(2026-08-11 실측). 우리가 `quote`를 한 번 더
+        걸었더니 `초빙공고(0).jpg`의 괄호까지 인코딩돼 **실제 이미지 URL 26개가 바뀌었다** —
+        얻는 것 없이 깨뜨리는 코드였다. NFD 분해(KAICAM)는 어느 쪽으로도 해결되지 않으므로
+        실패하면 사유로 남는다.
+
+        ⚠️ **HTML이 오면 실패로 본다.** 그누보드는 세션 없이 첨부를 요청하면 파일 대신
+        `잘못된 접근입니다` 페이지를 200으로 준다 — 그대로 Gemini에 보내면 조용히 쓰레기가
+        섞인다.
+        """
+        absolute = urljoin(self._source.list_url, url)
+        self._apply_robots_policy(absolute)
+        self._ensure_session()
+        raw = self._attempt("GET", absolute, form=None)
+        media_type = raw.headers.get("content-type", "").split(";")[0].strip().lower()
+        if media_type in _NOT_A_FILE_TYPES:
+            raise FetchError(
+                f"{self._source.key} {absolute}: 파일 대신 {media_type} 응답"
+                " — 세션이 필요한 첨부이거나 접근이 막혔다"
+            )
+        return Binary(url=absolute, media_type=media_type, data=raw.content)
+
     def _ajax_headers(self, absolute_url: str) -> dict[str, str]:
         """POST에 붙일 헤더. `Origin`·`Referer`는 이 소스 기준으로 만든다."""
         origin = urlsplit(absolute_url)
@@ -292,7 +330,11 @@ class SourceClient:
             fetched = self._send(
                 "GET", robots.robots_url_for(absolute_url), form=None, min_body_length=0
             )
-        except FetchError as err:
+        except (FetchError, ValueError) as err:
+            # ⚠️ `ValueError`도 잡는다 — 게시판 본문에 `file:///C:\...` 이미지가 섞여 있고
+            #    (실측 8건 · PUTS·PCK), 그 URL로 robots를 만들면 표준 라이브러리가
+            #    `unknown url type`으로 죽는다. 그러면 그 실행 내내 `Crawl-delay`를 못 읽어
+            #    선언한 속도를 어긴다.
             _LOG.info("%s robots.txt 없음/실패 — 제한 없음으로 진행 (%s)", self._source.key, err)
             return
         self._robots = robots.parse_robots(fetched.text)
@@ -307,6 +349,12 @@ class SourceClient:
         min_body_length: int = MIN_BODY_LENGTH,
     ) -> Response:
         absolute = urljoin(self._source.list_url, url)
+        return self._decoded(absolute, self._attempt(method, absolute, form=form), min_body_length)
+
+    def _attempt(
+        self, method: str, absolute: str, *, form: Mapping[str, str] | None
+    ) -> httpx.Response:
+        """재시도·백오프·`Retry-After`. 텍스트와 바이트가 같은 정책을 쓰도록 여기 모은다."""
         last_error: str = ""
         retry_after: float | None = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -326,7 +374,9 @@ class SourceClient:
                 last_error = f"{type(err).__name__}: {err}" if str(err) else type(err).__name__
             else:
                 if raw.status_code not in _RETRYABLE_STATUS:
-                    return self._decoded(absolute, raw, min_body_length)
+                    if raw.status_code >= 400:
+                        raise FetchError(f"{self._source.key} {absolute}: HTTP {raw.status_code}")
+                    return raw
                 last_error = f"HTTP {raw.status_code}"
                 retry_after = _retry_after_seconds(raw)
 
@@ -346,8 +396,7 @@ class SourceClient:
         )
 
     def _decoded(self, url: str, raw: httpx.Response, min_body_length: int) -> Response:
-        if raw.status_code >= 400:
-            raise FetchError(f"{self._source.key} {url}: HTTP {raw.status_code}")
+        # 상태코드는 `_attempt`가 이미 걸렀다(≥400은 거기서 던진다).
         text = raw.content.decode(self._source.encoding.python_codec, errors="replace")
         # 200인데 빈/스텁 본문을 주는 보드가 있다 → 상태코드만으로 성공을 판정하지 않는다.
         # (내용 수준의 검증은 어댑터가 한다 — `soft_200` 소스는 그게 필수다.)

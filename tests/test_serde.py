@@ -87,10 +87,11 @@ def _full_review_data() -> ReviewData:
         is_church_recruitment=IsChurchRecruitment.YES,
         confidence=Confidence.MEDIUM,
         denomination_source=DenominationSource.OPERATOR,
-        job_kind=JobKind.MINISTRY,
+        # 사역직·일반직이 섞인 공고 — 배열 두 칸을 한 번에 왕복시킨다
+        job_kind=(JobKind.MINISTRY, JobKind.GENERAL),
         role="음향",
         title="오천중앙교회 부목사 청빙",
-        position=Position.ASSOCIATE_PASTOR,
+        position=(Position.ASSOCIATE_PASTOR, Position.EVANGELIST),
         department=Department.YOUTH,
         employment_type=EmploymentType.FULL_TIME,
         qualification=Qualification.ORDAINED,
@@ -528,3 +529,12 @@ def test_ledger_key_of_row_avoids_full_decode() -> None:
 def test_ledger_key_of_row_rejects_missing_key() -> None:
     with pytest.raises(SerdeError, match="source_key"):
         ledger_key_of_row({"external_id": "1"})
+
+
+def test_a_corrupt_array_enum_says_what_is_allowed() -> None:
+    """⚠️ 배열 칸만 영어 기본 메시지가 나오면 손상 행을 고칠 때 원인을 못 읽는다."""
+    row = to_row(_full_review_data())
+    row["position"] = ["부목사"]
+
+    with pytest.raises(SerdeError, match="허용값 아님"):
+        row_to_review_data(row)

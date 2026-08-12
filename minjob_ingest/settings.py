@@ -4,7 +4,7 @@ CLAUDE.md: "env는 `settings.py` 한 곳에서 읽는다. import 시점에 캡�
 먼저 실행됨), 빈 문자열은 미설정으로 취급한다."
 
 그래서 모듈 상단에서 값을 읽지 않고, CLI가 `Settings.load()`를 **한 번** 호출해 아래로 넘긴다.
-비밀은 코드·config·로그에 남기지 않는다(가드레일).
+비밀은 코드·config·로그에 남기지 않는다.
 """
 
 from __future__ import annotations
@@ -25,9 +25,12 @@ ENV_VERTEX_LOCATION = "VERTEX_AI_LOCATION"
 ENV_VERTEX_CLIENT_EMAIL = "VERTEX_AI_CLIENT_EMAIL"
 ENV_VERTEX_PRIVATE_KEY = "VERTEX_AI_PRIVATE_KEY"
 ENV_VERTEX_MODEL = "VERTEX_MODEL"
+#: 값싼 대안 모델. **기본이 아니다** — `--lite`로 명시할 때만 쓴다.
+ENV_VERTEX_MODEL_LITE = "VERTEX_MODEL_LITE"
 
 DEFAULT_VERTEX_LOCATION = "global"
-#: 운영자가 실사용 가능함을 확인한 모델(2026-07-29). `gemini-2.5-flash-lite`도 사용 가능.
+#: 운영자가 실사용 가능함을 확인한 모델(2026-07-29). ⚠️ 모델 ID는 env에서 읽고
+#: 하드코딩하지 않는다(CLAUDE.md) — 이 값은 env가 비었을 때의 마지막 안전망일 뿐이다.
 DEFAULT_VERTEX_MODEL = "gemini-2.5-flash"
 
 _MASKED = "***"
@@ -55,8 +58,8 @@ class VertexSettings:
     """Vertex AI(Gemini) 접속 정보. 서비스계정 비밀을 담으므로 repr를 마스킹한다.
 
     ⚠️ 기본 `repr`는 예외 트레이스백·디버그 로그에 **private key 전문을 그대로 찍는다**
-    (frozen dataclass의 `repr`은 모든 필드를 나열한다). 그래서 직접 정의한다 — 가드레일:
-    비밀은 코드·config·로그에 남기지 않는다.
+    (frozen dataclass의 `repr`은 모든 필드를 나열한다). 그래서 직접 정의한다 — 비밀은
+    코드·config·로그에 남기지 않는다.
     """
 
     project_id: str
@@ -103,12 +106,14 @@ class Settings:
             sources_path=_first_path(sources_path, env_str(ENV_SOURCES), DEFAULT_SOURCES_PATH),
         )
 
-    def require_vertex(self) -> VertexSettings:
+    def require_vertex(self, *, lite: bool = False) -> VertexSettings:
         """Vertex 설정을 검증해 반환한다. 하나라도 없으면 `VertexConfigError`.
 
         `Settings`를 거쳐야만 얻을 수 있게 **메서드로** 둔다 — `load()`가 `.env`를 이미
         읽었음이 보장되므로 "dotenv보다 먼저 env를 읽어 빈 값을 보는" 순서 사고가 불가능하다.
         `list-sources`처럼 Gemini가 필요 없는 명령은 이걸 부르지 않아 GCP 계정 없이도 돈다.
+
+        `lite=True`면 `VERTEX_MODEL_LITE`를 쓴다 — 기본은 `VERTEX_MODEL`이다.
         """
         missing = [
             name
@@ -124,7 +129,9 @@ class Settings:
             # `.env`는 개행을 한 줄로 넣으려고 `\n`(리터럴 백슬래시+n)으로 이스케이프한다 →
             # PEM으로 복원한다. 이미 실제 개행이면 이 치환은 아무 일도 하지 않는다.
             private_key=_require_env(ENV_VERTEX_PRIVATE_KEY).replace("\\n", "\n"),
-            model=env_str(ENV_VERTEX_MODEL) or DEFAULT_VERTEX_MODEL,
+            model=_require_env(ENV_VERTEX_MODEL_LITE)
+            if lite
+            else (env_str(ENV_VERTEX_MODEL) or DEFAULT_VERTEX_MODEL),
         )
 
 

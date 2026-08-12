@@ -215,13 +215,18 @@ dedup_key = 정규화교회명 : region : position : department : 라운드번�
 - ⚠️ **정확 일치만 쓴다.** 부분 문자열 매칭은 실측에서 48건이 걸렸고 **대부분 이름만 겹친 다른 교회**였다: `송도한마음교회` ⊃ `한마음교회`(춘천) · `경주동방교회` ⊃ `동방교` · `남부산제일교회` ⊃ `부산제일교회` · `김포행복한교회` ⊃ `행복한교회`(인천). 목록 원문에도 지역이 함께 적혀 있지만(`김성로(춘천 한마음교회)`) 목록 자체엔 지역 필드가 없다.
 - ⚠️ **근거는 반드시 남긴다**(운영자 검수는 안 하더라도). 없으면 "왜 이 교회 공고가 없지?"에 답할 수 없고 오판을 되돌릴 근거도 없다.
 - ⚠️ **플래그 ≠ 이단 판정.** 목록은 "어느 교단이 언제 무엇이라 했다"의 모음이고 교단마다 판단이 다르거나(`김성로` 합동 참여금지 / 기침 문제없음) 해제된 건도 있다(`이명범` 통합 2021 이단 해지).
-- ⚠️ **공개 이단 낙인·자동 삭제는 여전히 금지**(가드레일 #5). 공개하지 않는 것과 "이단이다"라고 표시하는 것은 다르다. 레코드는 남긴다.
+- ⚠️ **공개 이단 낙인·자동 삭제는 여전히 금지**. 공개하지 않는 것과 "이단이다"라고 표시하는 것은 다르다. 레코드는 남긴다.
 - ⚠️⚠️ **`config/heresy-ref.json`은 커밋하지 않는다**(`.gitignore`). 이 리포는 공개이고 목록에 **실명 122건**이 이단·이단옹호자로 적혀 있다. Supabase 전환 시 DB로 옮기고 RLS 운영자 전용.
+
+### 5.4b 끝난 공고 — **자동 거부**(2026-08-11)
+- 공고가 스스로 끝났다고 말하면 `review_status=REJECTED` + `reject_reason=CLOSED`로 **만들면서 거절**한다. 그대로 두면 `jobs.status` 기본값이 `OPEN`이라 **이미 채워진 자리가 공개된다**.
+- ⚠️ **판정 근거는 게시판 상태 필드와 제목에 명시된 것만**이다(실측 110건: 상태 필드 80 · 제목 30). 본문의 `서류는 채용 완료 후 폐기합니다`·`초빙 완료 시까지`는 **안내 문구이지 마감이 아니다** — 본문까지 세면 370건이 걸리고 대부분이 오탐이라 되돌릴 수 없는 손실이 된다.
+- 레코드와 근거는 남긴다(이단과 같은 취급 · §5.4). 삭제하지 않는다.
 
 ### 5.5 지원 연락처 (contact) — 공개
 - 공고에 **지원용으로 명시된 연락처**(전화·이메일·지원 링크)를 `contact`로 추출 → 승격 시 공개(지원 경로 제공).
 - 본문에 우연히 있는 **무관한 제3자 개인정보는 추출하지 않는다**(프라이버시 취지 유지).
-- ⚠️ 이는 min_job 가드레일 #3(개인 담당자 연락처 노출 금지)의 **정제**다 — "교회가 지원받으려 공개한 연락처는 공개"로 갱신(min_job 스키마·정책 변경 pending §8).
+- ⚠️ 이는 min_job의 기존 방침(개인 담당자 연락처 노출 금지)을 **정제**한 것이다 — "교회가 지원받으려 공개한 연락처는 공개"로 갱신(min_job 스키마·정책 변경 pending §8).
 
 ### 5.6 나머지 필드
 min_job `jobs` 미러(title·position·role·department·employment_type·qualification·headcount·start_timing·housing_provided·housing_note·pay_*·benefit_note·work_days·requirements[]·preferred[]·required_docs[]·optional_docs[]·process_steps[]·description·posted_at·deadline·**연락처 4컬럼**) + 교회 초안(church_name·region·city)을 raw에서 추출. `raw_text`(원문 전체)는 항상 보존.
@@ -236,7 +241,7 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 
 ### ① `source_data` — 원자료 + 원장 (불변 · write-once · 누적)
 
-> **write-once 예외**: 운영자 **opt-out**(교회 요청)·법적 삭제 요청은 삭제/마스킹이 가능해야 한다(CLAUDE.md 가드레일 #4). 그 외 일반 경로에서는 갱신하지 않는다.
+> **write-once 예외**: 운영자 **opt-out**(교회 요청)·법적 삭제 요청은 삭제/마스킹이 가능해야 한다(CLAUDE.md). 그 외 일반 경로에서는 갱신하지 않는다.
 | 컬럼 | 타입 | 비고 |
 |---|---|---|
 | `id` | uuid PK | |
@@ -268,11 +273,11 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 | 교회 초안 | `church_name`·`region`·`city` |
 | 교단 | `denomination`(`UNKNOWN` 가능·임시) · `denomination_source`(stated/registry/ai_guess/unknown) · `denomination_evidence` · `raw_denomination`(원표기) |
 | 이단 | `heresy_flag`·`heresy_evidence` |
-| 검수 메타 | `confidence`(high/medium/low) · **`dedup_key`**(§4.1) · `review_status`(PENDING/APPROVED/REJECTED) + **`reject_reason`**(DUPLICATE/HERESY/OPERATOR) · **`published_job_id`** FK→jobs(승격 결과 · §4.2가 이걸로 끌어올림을 찾는다) · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
+| 검수 메타 | `confidence`(high/medium/low) · **`dedup_key`**(§4.1) · `review_status`(PENDING/APPROVED/REJECTED) + **`reject_reason`**(DUPLICATE/HERESY/**CLOSED**/OPERATOR) · **`published_job_id`** FK→jobs(승격 결과 · §4.2가 이걸로 끌어올림을 찾는다) · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
 | 미사용 | ~~`matched_church_id`~~ — 교회 행을 만들지 않기로 해(2026-08-06 · §6 승격 목적지) **채우지 않는다**. 컬럼은 남겨 두되 값은 항상 NULL이다 |
 
 > 게이트1 `NO`(개교회 아님·비채용)는 review_data를 만들지 않는다(§1·§5.1) — 대신 `source_data.structured_at`이 기록돼 재구조화 대상에서 빠진다(§4). `UNCERTAIN`은 confidence=low로 여기 온다.
-> ⚠️ **`source_url`을 복사해 둔다**(2026-08-05 추가). 정규화상으로는 `source_data_id`로 JOIN하면 되니 중복이지만, min_job `jobs.source_url`은 **가드레일 #3(원문 재게시 금지·출처 표기)의 핵심 필드**다 — 승격 코드가 JOIN을 잊으면 출처 없이 공개된다. **승격이 이 테이블 하나만 보고 끝나게** 한다(빈 문자열도 거부).
+> ⚠️ **`source_url`을 복사해 둔다**(2026-08-05 추가). 정규화상으로는 `source_data_id`로 JOIN하면 되니 중복이지만, min_job `jobs.source_url`은 **원문 재게시 금지·출처 표기의 핵심 필드**다 — 승격 코드가 JOIN을 잊으면 출처 없이 공개된다. **승격이 이 테이블 하나만 보고 끝나게** 한다(빈 문자열도 거부).
 >
 > ⚠️ **`reject_reason`은 자동 거부를 되짚는 유일한 통로다**(2026-08-06 추가). 중복(§4.1)·이단(§5.4)·운영자 거절이 전부 `REJECTED` 하나로 뭉치면 "우리 dedup이 틀렸나"·"이단 오판인가"를 확인할 수 없다. 특히 이단은 **검수 큐에 뜨지 않는 자동 거부**라 이유가 없으면 잘못 걸러도 영원히 드러나지 않는다. **불변식**: `REJECTED`면 이유가 있어야 하고, 아니면 없어야 한다(레코드가 강제). 게이트1 `NO`는 여기 없다 — `review_data`를 아예 만들지 않는다. 검수 화면은 이걸로 **[검수 대기] [중복] [이단] [거절]** 탭을 나눈다.
 >
@@ -367,7 +372,7 @@ published_job_id  생성된 jobs 행의 id   ← §4.2 끌어올림 판정의 �
 
 ### min_job 스키마·정책 변경 (2026-07-29 확인 — 앱 레벨은 대부분 반영됨)
 1. ✅ `jobs`에 **`job_kind`(MINISTRY/GENERAL)** + **`role`** — min_job `types/domain.ts`에 반영됨. (목록 UI 필터·마이그레이션 SQL은 min_job 소관·진행 중)
-2. ✅ `jobs`에 **`contact`** + **가드레일 #3 갱신**("지원용 공개 연락처는 공개") — min_job `types/domain.ts`·`CLAUDE.md`에 반영됨.
+2. ✅ `jobs`에 **`contact`** + **정책 갱신**("지원용 공개 연락처는 공개") — min_job `types/domain.ts`·`CLAUDE.md`에 반영됨.
 3. ✅ `constants/domain.ts` **`KIJANG` 제거 완료** — min_job 교단 **10키**(9대형+ETC) 확인. → CONTRACT §1의 "11개에서 제거만 하면" 표현은 폐기.
 4. ⬜ **마이그레이션 SQL**(`churches`/`jobs` + staging 4테이블)은 미작성 — staging은 **이 리포 소유**(§8 위), min_job 테이블은 min_job 소관.
    ⚠️ staging 마이그레이션에 **반드시 넣을 CHECK**: `review_data`의 `(review_status = 'REJECTED') = (reject_reason IS NOT NULL)` — 이유는 §6 ②.

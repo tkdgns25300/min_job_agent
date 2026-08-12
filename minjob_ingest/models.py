@@ -48,9 +48,6 @@ type JsonValue = str | int | float | bool | list[JsonValue] | dict[str, JsonValu
 #: 구조화 재시도 상한(SPEC §4). 초과분은 재시도에서 빼고 운영자 리포트로 돌린다.
 MAX_STRUCTURE_ATTEMPTS = 3
 
-#: `description`은 **요약**이다(가드레일 #3). 원문 통째 복사를 레코드 차원에서 막는 상한.
-MAX_DESCRIPTION_CHARS = 1_000
-
 #: 교단 **값이 있어야 하는** 근거. `unknown`만 값 없음을 허용한다.
 _SOURCES_REQUIRING_DENOMINATION = frozenset(
     {
@@ -124,6 +121,20 @@ def _as_optional_enum[E: StrEnum](value: object, enum_type: type[E], field_name:
     return None if value is None else _as_enum(value, enum_type, field_name)
 
 
+def _as_enum_tuple[E: StrEnum](value: object, enum_type: type[E], field_name: str) -> tuple[E, ...]:
+    """여러 값을 담는 enum 칸(`job_kind`·`position`).
+
+    ⚠️ **중복을 제거하고 순서를 고정한다.** `전임목사·교육목사`가 둘 다 `ASSOCIATE_PASTOR`로
+    겹치는 일이 흔한데, 그대로 두면 같은 공고가 실행마다 다른 값을 갖고 `dedup_key`가
+    흔들린다(키에 이 칸이 들어간다 · SPEC §4.1). enum 정의 순서로 정렬해 항상 같게 만든다.
+    """
+    if isinstance(value, str) or not isinstance(value, Iterable):
+        raise ValueError(f"{field_name}: 여러 값을 담는 칸이다 — 목록이어야 함 ({value!r})")
+    members = {_as_enum(item, enum_type, field_name) for item in value}
+    order = list(enum_type)
+    return tuple(sorted(members, key=order.index))
+
+
 def as_json_value(value: object, where: str) -> JsonValue:
     """JSON으로 나갈 수 있는 값인지 재귀 검증하고, 컨테이너는 복사한다.
 
@@ -186,11 +197,19 @@ class Attachment:
     def is_image(self) -> bool:
         """파일명이 이미지 확장자인가. **사실 판정일 뿐 "Gemini에 보낼 대상"이 아니다.**
 
-        무엇을 멀티모달로 보낼지는 `pipeline/structure.py`가 정한다 — Gemini는 PDF도 직접
-        읽으므로 이미지 목록으로 대상을 정하면 내용이 PDF에만 있는 공고가 누락된다. 지원 형식은
-        SDK 문서를 확인해야 하고(CLAUDE.md), 그건 이 레코드가 알 일이 아니다.
+        무엇을 멀티모달로 보낼지는 `pipeline/media.py`가 정한다 — 이 레코드는 파일 이름이
+        말하는 것만 안다.
         """
         return self.name.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"))
+
+    @property
+    def is_pdf(self) -> bool:
+        """파일명이 PDF인가. `is_image`와 마찬가지로 **사실 판정**이다.
+
+        ⚠️ HWP·DOCX와 나눠 두는 이유: Gemini는 PDF를 직접 읽고 HWP는 못 읽는다. 이 구분이
+        없으면 공고문이 PDF에만 있는 공고(실측 2건 — 본문 0자·24자)를 제목만 보고 판정한다.
+        """
+        return self.name.lower().endswith(".pdf")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -199,7 +218,7 @@ class SourceData:
 
     **원문 증거 필드**(`raw_text`·`title`·`posted_on`·`image_urls`·`attachments`·`raw_meta`·
     `source_url`)는 write-once —
-    갱신 경로를 두지 않는다. 예외는 운영자 opt-out·법적 삭제(가드레일 #4).
+    갱신 경로를 두지 않는다. 예외는 운영자 opt-out·법적 삭제.
     **처리 상태 필드**(`structured_at`·`structure_attempts`·`last_structure_error`)만
     실행 중 갱신되며, 전이는 `with_verdict_recorded` / `with_failed_attempt`로만 한다.
 
@@ -348,19 +367,26 @@ class ReviewData:
     #: 공고 원문 링크. **필수다** — `source_data.source_url`을 그대로 복사한다.
     #:
     #: ⚠️ 정규화상으로는 `source_data_id`로 JOIN하면 되니 중복이다. 그래도 복사하는 이유:
-    #: min_job `jobs.source_url`은 **가드레일 #3(원문 재게시 금지·출처 표기)의 핵심 필드**이고,
+    #: min_job `jobs.source_url`은 **(원문 재게시 금지·출처 표기)의 핵심 필드**이고,
     #: 승격 코드가 JOIN을 잊으면 출처 없이 공개된다. 승격이 이 테이블 하나만 보고 끝나게 한다.
     source_url: str
     id: UUID = field(default_factory=new_id)
 
     # 분류(게이트2)
-    job_kind: JobKind | None = None
+    #: ⚠️ **여러 개일 수 있다**(운영자 결정 2026-08-11). 한 글이 사역직과 일반직을 같이
+    #: 뽑는 공고가 있는데(`② 교육전도사 2명 ③ 관리직원 1명`), 단일 값이면 **표현 자체가
+    #: 불가능해 절반을 버려야 한다**. 빈 튜플 = 아직 판정 안 됨.
+    job_kind: tuple[JobKind, ...] = ()
     #: GENERAL 대략 분류(방송·행정·시설 등). 통제 목록이 아니라 자유 텍스트.
     role: str | None = None
 
     # 공고 (min_job jobs 미러)
     title: str | None = None
-    position: Position | None = None
+    #: ⚠️ **여러 개일 수 있다**. 실측 954건이 직분을 2개 이상 적는데, 그중 826건은
+    #: **한 자리에 자격만 여러 직분**이다(`전임사역자(전도사, 강도사, 목사)`). 대표 1개만
+    #: 담으면 나머지 직분으로 검색한 지원자에게 안 보인다. 행을 쪼개는 대신 여기 다 담는다
+    #: (쪼개면 실제로 없는 자리 826건이 공개된다 · ROADMAP 1-2).
+    position: tuple[Position, ...] = ()
     department: Department | None = None
     employment_type: EmploymentType | None = None
     qualification: Qualification | None = None
@@ -389,7 +415,11 @@ class ReviewData:
     optional_docs: tuple[str, ...] = ()
     #: 전형 절차(서류→면접→설교…).
     process_steps: tuple[str, ...] = ()
-    #: **요약**이다. 원문 전문을 넣지 않는다(가드레일 #3 — 상한 `MAX_DESCRIPTION_CHARS`).
+    #: **요약**이다. 원문 전문을 넣지 않는다.
+    #: ⚠️ **길이 상한을 두지 않는다**(운영자 결정 2026-08-11). 상한이 있으면 모델이 조금
+    #: 넘겼을 때 그 공고가 실패하고, 재시도 상한을 넘겨 **조용히 사라진다**(`position`에서
+    #: 같은 일이 있었다). 요약을 강제하는 자리는 **프롬프트**이고, 원문 재게시를 막는
+    #: 최종 방어선은 **운영자 검수**다. 원문은 `source_data.raw_text`에 그대로 있다.
     description: str | None = None
     posted_at: date | None = None
     deadline: date | None = None
@@ -404,7 +434,7 @@ class ReviewData:
     denomination_evidence: str | None = None
     raw_denomination: str | None = None
 
-    # 지원 연락처 — 지원용으로 **공개된 것만**(가드레일 #4 · 원문 대조는 structure 층).
+    # 지원 연락처 — 지원용으로 **공개된 것만**.
     #
     # ⚠️ 대표 문자열 하나가 아니라 **방법별 컬럼 4개**다(min_job DATA.md 2026-08-05).
     # `APPLY_METHODS`가 `ETC` 없는 닫힌 4키라 컬럼이 1:1로 대응하고, 승격이 파싱 없이 그대로
@@ -436,9 +466,9 @@ class ReviewData:
         self._check_gate1()
         self._check_pay()
         self._check_denomination()
+        self._check_job_kind()
         self._check_heresy()
         self._check_reject_reason()
-        self._check_description()
         _set(self, "created_at", ensure_kst(self.created_at))
         if self.reviewed_at is not None:
             _set(self, "reviewed_at", ensure_kst(self.reviewed_at))
@@ -473,8 +503,8 @@ class ReviewData:
             "reject_reason",
             _as_optional_enum(self.reject_reason, RejectReason, "reject_reason"),
         )
-        _set(self, "job_kind", _as_optional_enum(self.job_kind, JobKind, "job_kind"))
-        _set(self, "position", _as_optional_enum(self.position, Position, "position"))
+        _set(self, "job_kind", _as_enum_tuple(self.job_kind, JobKind, "job_kind"))
+        _set(self, "position", _as_enum_tuple(self.position, Position, "position"))
         _set(self, "department", _as_optional_enum(self.department, Department, "department"))
         _set(
             self,
@@ -528,11 +558,38 @@ class ReviewData:
                 f" ({self.denomination})"
             )
 
+    def _check_job_kind(self) -> None:
+        """`job_kind` ↔ `position`/`role` 정합성(min_job DATA.md §3 CHECK와 같은 규칙).
+
+        "사역직이면 직분이 있고, 아니면 직분도 없다" — **양방향**이다.
+
+        ⚠️ 여기서 막지 않으면 min_job DB만 막게 되어 어긋난 초안이 **승격 시점에야** 터진다.
+        그때는 이미 판정이 기록돼 재구조화 대상도 아니다 — 저장 전에 걸려야 그 공고 하나만
+        실패하고 배치가 계속된다.
+
+        ⚠️ 게이트2를 아직 안 돈 초안(`job_kind`가 빈 튜플)은 통과시킨다 — 1단계처럼 분류를
+        뽑지 않는 패스가 있고, 그건 "아직 판정 안 됨"이지 모순이 아니다.
+        """
+        if not self.job_kind:
+            if self.position or self.role is not None:
+                raise ValueError("job_kind가 없는데 position·role이 있음")
+            return
+        if (JobKind.MINISTRY in self.job_kind) != bool(self.position):
+            raise ValueError(
+                f"job_kind={[k.value for k in self.job_kind]}와 position이 어긋남 "
+                "(MINISTRY면 직분이 있어야 하고, 아니면 없어야 한다)"
+            )
+        if (JobKind.GENERAL in self.job_kind) != (self.role is not None):
+            raise ValueError(
+                f"job_kind={[k.value for k in self.job_kind]}와 role이 어긋남 "
+                "(GENERAL이면 직무가 있어야 하고, 아니면 없어야 한다)"
+            )
+
     def _check_heresy(self) -> None:
         if self.heresy_flag and (
             self.heresy_evidence is None or self.heresy_evidence.strip() == ""
         ):
-            raise ValueError("heresy_flag=True면 heresy_evidence가 있어야 함(가드레일 #5)")
+            raise ValueError("heresy_flag=True면 heresy_evidence가 있어야 함")
 
     def _check_reject_reason(self) -> None:
         """거절이면 이유가 있어야 하고, 거절이 아니면 이유가 없어야 한다."""
@@ -543,13 +600,6 @@ class ReviewData:
             raise ValueError(
                 f"review_status={self.review_status.value}인데 reject_reason이 있음"
                 f" ({self.reject_reason.value})"
-            )
-
-    def _check_description(self) -> None:
-        if self.description is not None and len(self.description) > MAX_DESCRIPTION_CHARS:
-            raise ValueError(
-                f"description은 요약이어야 함 — {MAX_DESCRIPTION_CHARS}자 초과"
-                f" ({len(self.description)}자, 가드레일 #3)"
             )
 
     @property

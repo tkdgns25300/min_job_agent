@@ -19,12 +19,13 @@ from minjob_ingest.domain import (
     Denomination,
     DenominationSource,
     IsChurchRecruitment,
+    JobKind,
+    Position,
     RejectReason,
     ReviewStatus,
     SourceHealthStatus,
 )
 from minjob_ingest.models import (
-    MAX_DESCRIPTION_CHARS,
     MAX_STRUCTURE_ATTEMPTS,
     REVIEW_STATE_FIELDS,
     Attachment,
@@ -356,7 +357,7 @@ def test_operator_resolution_is_readable_back() -> None:
 
 
 def test_heresy_flag_requires_evidence() -> None:
-    # 근거 없는 이단 플래그는 명예훼손 위험 — 판단은 사람이 한다(가드레일 #5).
+    # 근거 없는 이단 플래그는 명예훼손 위험 — 판단은 사람이 한다.
     with pytest.raises(ValueError, match="heresy_evidence"):
         replace(_review_data(), heresy_flag=True)
 
@@ -781,18 +782,7 @@ def test_advance_rejects_error_on_success() -> None:
         )
 
 
-# ── description 상한(가드레일 #3) ────────────────────────────────
-
-
-def test_rejects_description_longer_than_summary_cap() -> None:
-    # 원문 통째 복사를 레코드 차원에서 막는다.
-    with pytest.raises(ValueError, match="요약"):
-        replace(_review_data(), description="가" * (MAX_DESCRIPTION_CHARS + 1))
-
-
-def test_accepts_description_at_cap() -> None:
-    record = replace(_review_data(), description="가" * MAX_DESCRIPTION_CHARS)
-    assert record.description is not None
+# ── description 상한 ────────────────────────────────
 
 
 def test_source_data_requires_a_title() -> None:
@@ -927,7 +917,7 @@ def test_a_posting_with_nothing_is_empty() -> None:
 
 
 def test_a_review_draft_cannot_exist_without_its_source_link() -> None:
-    """⚠️ **`jobs.source_url`은 가드레일 #3의 핵심 필드다**(원문 재게시 금지 · 출처 표기).
+    """⚠️ **`jobs.source_url`은의 핵심 필드다**(원문 재게시 금지 · 출처 표기).
 
     승격 코드가 `source_data`와의 JOIN을 잊으면 출처 없이 공개된다. 정규화상 중복이지만
     **빠지면 법적 문제가 되는 필드**라 우연에 맡기지 않고 타입으로 강제한다.
@@ -973,3 +963,106 @@ def test_each_rejection_reason_is_accepted() -> None:
 def test_the_reason_survives_restructuring() -> None:
     """재구조화 upsert가 검수 상태를 덮으면 안 된다 — 이유도 상태의 일부다."""
     assert "reject_reason" in REVIEW_STATE_FIELDS
+
+
+# ── 여러 값을 담는 분류 칸 (2026-08-11) ──────────────────────────
+
+
+def _review(**overrides: object) -> ReviewData:
+    base: dict[str, object] = {
+        "source_data_id": new_id(),
+        "run_id": new_id(),
+        "source_url": "https://example.kr/1",
+        "is_church_recruitment": IsChurchRecruitment.YES,
+        "confidence": Confidence.LOW,
+        "denomination_source": DenominationSource.UNKNOWN,
+    }
+    base.update(overrides)
+    return ReviewData(**base)  # type: ignore[arg-type]
+
+
+def test_duplicate_positions_collapse_to_one() -> None:
+    """⚠️ `전임목사`·`교육목사`가 둘 다 `ASSOCIATE_PASTOR`로 겹치는 일이 흔하다.
+
+    그대로 두면 같은 공고가 실행마다 다른 값을 갖고 `dedup_key`가 흔들린다(키에 이 칸이
+    들어간다 · SPEC §4.1).
+    """
+    draft = _review(
+        job_kind=(JobKind.MINISTRY,),
+        position=(Position.ASSOCIATE_PASTOR, Position.ASSOCIATE_PASTOR, Position.EVANGELIST),
+    )
+
+    assert draft.position == (Position.ASSOCIATE_PASTOR, Position.EVANGELIST)
+
+
+def test_position_order_is_fixed_regardless_of_input_order() -> None:
+    """순서가 흔들리면 같은 공고가 다른 `dedup_key`를 갖는다."""
+    forward = _review(
+        job_kind=(JobKind.MINISTRY,), position=(Position.EVANGELIST, Position.SENIOR_PASTOR)
+    )
+    backward = _review(
+        job_kind=(JobKind.MINISTRY,), position=(Position.SENIOR_PASTOR, Position.EVANGELIST)
+    )
+
+    assert forward.position == backward.position
+
+
+def test_a_bare_string_is_not_a_position_list() -> None:
+    """문자열도 순회 가능해서 그냥 통과시키면 글자 단위로 쪼개진다."""
+    with pytest.raises(ValueError, match="목록이어야 함"):
+        _review(job_kind=(JobKind.MINISTRY,), position="ASSOCIATE_PASTOR")
+
+
+def test_a_mixed_posting_can_hold_both_a_position_and_a_role() -> None:
+    """⚠️ `② 교육전도사 2명 ③ 관리직원 1명` 같은 공고는 이게 없으면 절반을 버려야 한다."""
+    draft = _review(
+        job_kind=(JobKind.MINISTRY, JobKind.GENERAL),
+        position=(Position.EVANGELIST,),
+        role="시설관리",
+    )
+
+    assert draft.job_kind == (JobKind.MINISTRY, JobKind.GENERAL)
+    assert draft.role == "시설관리"
+
+
+@pytest.mark.parametrize(
+    ("job_kind", "position", "role", "reason"),
+    [
+        ((JobKind.MINISTRY,), (), None, "position이 어긋남"),
+        ((JobKind.GENERAL,), (Position.EVANGELIST,), "음향", "position이 어긋남"),
+        ((JobKind.MINISTRY,), (Position.EVANGELIST,), "음향", "role이 어긋남"),
+        ((JobKind.GENERAL,), (), None, "role이 어긋남"),
+    ],
+    ids=[
+        "사역직인데 직분 없음",
+        "일반직인데 직분 박힘",
+        "사역직인데 직무 있음",
+        "일반직인데 직무 없음",
+    ],
+)
+def test_job_kind_must_agree_with_position_and_role(
+    job_kind: tuple[JobKind, ...],
+    position: tuple[Position, ...],
+    role: str | None,
+    reason: str,
+) -> None:
+    """⚠️ 여기서 안 막으면 min_job DB만 막아 어긋난 초안이 **승격 시점에야** 터진다.
+
+    그때는 판정이 이미 기록돼 재구조화 대상도 아니다 — 저장 전에 걸려야 그 공고 하나만
+    실패하고 배치가 계속된다(min_job DATA.md §3 CHECK와 같은 규칙).
+    """
+    with pytest.raises(ValueError, match=reason):
+        _review(job_kind=job_kind, position=position, role=role)
+
+
+def test_an_unclassified_draft_is_allowed() -> None:
+    """게이트2를 아직 안 돈 초안(1단계)은 모순이 아니라 "아직 판정 안 됨"이다."""
+    draft = _review()
+
+    assert draft.job_kind == ()
+    assert draft.position == ()
+
+
+def test_a_draft_without_a_kind_cannot_carry_a_position() -> None:
+    with pytest.raises(ValueError, match="job_kind가 없는데"):
+        _review(position=(Position.EVANGELIST,))

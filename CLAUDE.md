@@ -1,6 +1,6 @@
 # CLAUDE.md — min_job_agent
 
-> **이 파일은 HOW** — 아키텍처·레이어 책임·코드 컨벤션·가드레일. **운영자가 타이핑하는 명령은 [`docs/RUNBOOK.md`](./docs/RUNBOOK.md)**. 파이프라인 동작·판정 규칙·스키마는 [`docs/SPEC.md`](./docs/SPEC.md), 크롤 대상 소스는 [`docs/SOURCES.md`](./docs/SOURCES.md), 출력 계약·교단 정규화는 [`docs/CONTRACT.md`](./docs/CONTRACT.md), 작업 단위는 [`docs/ROADMAP.md`](./docs/ROADMAP.md), 시점 핸드오프는 [`docs/SNAPSHOT.md`](./docs/SNAPSHOT.md).
+> **이 파일은 HOW** — 아키텍처·레이어 책임·코드 컨벤션. **운영자가 타이핑하는 명령은 [`docs/RUNBOOK.md`](./docs/RUNBOOK.md)**. 파이프라인 동작·판정 규칙·스키마는 [`docs/SPEC.md`](./docs/SPEC.md), 크롤 대상 소스는 [`docs/SOURCES.md`](./docs/SOURCES.md), 출력 계약·교단 정규화는 [`docs/CONTRACT.md`](./docs/CONTRACT.md), 작업 단위는 [`docs/ROADMAP.md`](./docs/ROADMAP.md), 시점 핸드오프는 [`docs/SNAPSHOT.md`](./docs/SNAPSHOT.md).
 >
 > **문서 책임 분리** — 같은 사실을 두 곳에 쓰지 않는다. **여기는 "코드를 어떻게 쓰는가"만** 담고, 정책·판정 규칙·소스 목록·스키마 필드는 위 문서를 **가리킨다**(복사하지 않는다).
 >
@@ -10,7 +10,7 @@
 
 형제 리포 `../min_job`(개교회 채용 플랫폼)을 위한 **공고 수집 크롤러**. 공개 청빙 게시판(확정 목록 = SOURCES §7)에서 공고를 수집 → AI로 구조화 → **리뷰 큐(`review_data`)** 에 적재한다. 운영자가 min_job admin에서 검수·승격하면 공개된다. min_job 파이프라인에서 **fetch 한 단계만 자동화하는 델타**다.
 
-**별도 리포인 이유**: min_job은 **in-repo 크롤러 코드를 두지 않는다**(min_job `CLAUDE.md` Ingest 레이어 규칙). 자동 수집 자체는 허용되며(min_job 가드레일 #1 — 공개 공식 게시판 한정·운영자 검수 전제·법률 검토 완료 2026-07-28), 그 구현체가 이 리포다.
+**별도 리포인 이유**: min_job은 **in-repo 크롤러 코드를 두지 않는다**(min_job `CLAUDE.md` Ingest 레이어 규칙). 자동 수집 자체는 min_job 쪽에서 허용된 것이며(공개 공식 게시판 한정·운영자 검수 전제·법률 검토 완료 2026-07-28), 그 구현체가 이 리포다.
 
 **Stack**: Python 3.12+ · `httpx` + `beautifulsoup4`/`lxml` · `google-genai`(Vertex AI Gemini) · JSON 파일 저장(Phase 1) → Supabase · GitHub Actions(스케줄)
 
@@ -18,7 +18,7 @@
 >
 > ✅ **TS 뼈대 이식 완료(2026-07-29, 0-1c).** `src/*.ts`·`package.json`·`tsconfig.json`은 삭제했다 — 되짚어야 하면 git 이력을 본다. 재취득 불가 자산이던 31곳 검증값(특히 `fetch_note`)은 `config/sources.json`으로 **문자 그대로** 이관됐다.
 >
-> ⚠️ **`google-genai` SDK·Gemini 모델 ID는 학습 데이터와 다를 수 있다.** 구조화 코드 작성 전 공식 문서를 확인할 것. 모델 ID는 **`VERTEX_MODEL` env에서 읽고 하드코딩하지 않는다**(운영자가 최신 Flash로 교체함). 인증은 서비스계정 4개 env(`VERTEX_AI_PROJECT_ID`·`_LOCATION`·`_CLIENT_EMAIL`·`_PRIVATE_KEY`) — `.env.example` 참조.
+> ⚠️ **`google-genai` SDK·Gemini 모델 ID는 학습 데이터와 다를 수 있다.** 구조화 코드 작성 전 공식 문서를 확인할 것. 모델 ID는 **env에서 읽고 하드코딩하지 않는다**(운영자가 최신 Flash로 교체함) — 기본은 **`VERTEX_MODEL`**, `--lite`일 때만 **`VERTEX_MODEL_LITE`**. ⚠️ `--lite`인데 후자가 비면 **비싼 모델로 대체하지 않고 멈춘다**(비용 사고 방지). 인증은 서비스계정 4개 env(`VERTEX_AI_PROJECT_ID`·`_LOCATION`·`_CLIENT_EMAIL`·`_PRIVATE_KEY`) — `.env.example` 참조.
 
 ## Architecture Overview
 
@@ -36,7 +36,7 @@
 [저장소]  source_data → review_data ──(운영자 승격)──▶ min_job jobs
 ```
 
-> ⚠️ **순서 제약(필수)**: **JsonStore(로컬 파일) 단계에서 GitHub Actions를 붙이지 않는다.** ephemeral 러너에선 JSON 원장이 매 실행 사라져 → 31곳 전량 재크롤(가드레일 #7 위반) + 전량 재구조화(비용) + 산출물 유실. `crawl.yml`은 **SupabaseStore 전환(ROADMAP 1-6) 이후**에 만든다. 그전까지 실행은 운영자 로컬.
+> ⚠️ **순서 제약(필수)**: **JsonStore(로컬 파일) 단계에서 GitHub Actions를 붙이지 않는다.** ephemeral 러너에선 JSON 원장이 매 실행 사라져 → 31곳 전량 재크롤 + 전량 재구조화(비용) + 산출물 유실. `crawl.yml`은 **SupabaseStore 전환(ROADMAP 1-6) 이후**에 만든다. 그전까지 실행은 운영자 로컬.
 
 ### 파이프라인
 
@@ -90,7 +90,8 @@ minjob_ingest/                 ★ 패키지 (= import 이름)
 ├── store/{base.py, serde.py, json_store.py}   Store 프로토콜 · 행 변환 · JSON 구현
 │                                              (+ supabase_store.py 예정 = 1-6)
 ├── lib/gemini.py             Vertex 클라이언트 (재시도는 SDK 설정)
-└── pipeline/ 예정            run·collect·structure·denomination·dedup
+└── pipeline/                collect·structure·extraction(프롬프트·스키마)·normalize(변환)·
+                            media(그림·PDF 바이트) (+ run·denomination·dedup 예정)
 config/
 ├── sources.json              ★ 소스 레지스트리 (전송 정본 · 라이브 검증값)
 └── heresy-ref.json           이단 참고 목록 (사람이 관리 · git 이력 = 감사)
@@ -101,7 +102,7 @@ data/                         로컬 저장소 (gitignored)
 
 > ⚠️ 위 트리에서 `sources/adapters`·`fetch`·`pipeline`·`store`·`lib`는 **아직 없는 목표 구조**다. 드리프트할 수 있으니 "계약"으로 신뢰하지 말 것.
 >
-> **커밋하지 않는 것**: `.venv/`·`__pycache__/`·`minjob_ingest.egg-info/`·`.mypy_cache/`·`.ruff_cache/`·`.pytest_cache/`·`data/` (자동생성물 — 지워도 도구가 다시 만든다) + **`tests/fixtures/`**(게시판 HTML 원본 · 가드레일 #11 · `snapshot`으로 다시 받는다). 전부 `.gitignore`에 있다.
+> **커밋하지 않는 것**: `.venv/`·`__pycache__/`·`minjob_ingest.egg-info/`·`.mypy_cache/`·`.ruff_cache/`·`.pytest_cache/`·`data/` (자동생성물 — 지워도 도구가 다시 만든다) + **`tests/fixtures/`**(게시판 HTML 원본 · `snapshot`으로 다시 받는다). 전부 `.gitignore`에 있다.
 >
 
 ## Commands
@@ -124,7 +125,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/minjob-ingest check-gemini         # Vertex 인증·연결 (유료 API 실호출 1회)
 .venv/bin/minjob-ingest snapshot [--source K]  # fixture용 HTML 확보 (게시판 요청)
 .venv/bin/minjob-ingest collect --months 3     # 공고 수집 (게시판 요청 · 무료)
-.venv/bin/minjob-ingest structure --limit 20   # AI 구조화 (⚠️ 유료 · 범위 필수)
+.venv/bin/minjob-ingest structure --limit 20   # AI 구조화 (⚠️ 유료 · 범위 필수 · `--lite`로 값싼 모델)
 ```
 ⚠️ **`structure`는 `--limit N` 또는 `--all`이 없으면 실행을 거부한다** — 유료 호출이 옵션 없이 전량으로 도는 경로를 두지 않는다. 확인용은 `--dry-run`(호출은 하되 저장 안 함).
 아직 없는 명령(Phase 1): `dedup`·`daily`·`backfill`·`status`.
@@ -164,7 +165,11 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 - **EUC-KR 선언 소스는 `cp949`로 디코드**한다(EUC-KR 순정 코덱은 확장 한글에서 예외 → 한 글자로 페이지 전체를 잃는다).
 
 ### Structure (`pipeline/structure.py`) — AI는 추출·추정만
-- raw_text(+이미지 바이트)를 Gemini에 넣어 SPEC §5의 필드를 산출한다. **출력은 스키마로 강제**하고, enum 밖 값은 방어적으로 정규화한다.
+- raw_text(+이미지·PDF 바이트)를 Gemini에 넣어 SPEC §5의 필드를 산출한다. **출력은 스키마로 강제**하고, enum 밖 값은 방어적으로 정규화한다.
+- ⚠️ **모델에게 뽑기와 변환을 함께 시키지 않는다**(2026-08-12 실측). 맥락이 필요한 것만 모델이 하고, 맥락 없이 글자만 보면 되는 변환은 **`pipeline/normalize.py`** 가 한다.
+  - **모델**: 게이트·`job_kind`·`position`·`department`·`employment_type`·`qualification`·요약. 직분은 "그 말이 뽑는 자리를 가리키나"를 판단해야 한다 — 키워드표로 하면 18건 중 8건이 틀리고 그중 6건이 **담임목사 오검출**(연락처의 담임목사 이름을 모집 직분으로 읽음)이다.
+  - **코드**: 지역(`location` → `region`+`city` · 730건 100%) · 사례비 환산(`pay_amount` → 만원) · 마감 여부(게시판 상태 필드·제목) · 마감일. 같은 변환을 모델에 맡겼더니 **`연봉 3,200이상`이 Flash 3200 / Flash-Lite 267**로 갈렸다.
+  - 얻는 것: 값이 실행마다 흔들리지 않고, **유료 호출 없이 테스트된다**.
 - **AI에게 최종 확정을 위임하지 않는다**: 교단은 명시·명부는 규칙이 확정하고 근거가 없을 때만 AI 추정(`ai_guess` 표시 · 확정은 운영자), 이단 판단은 사람, 공개 여부는 운영자 검수. 규칙은 SPEC §5.3·§5.4.
 - **구조화 시도 후에는 반드시 `source_data.structured_at`을 기록한다** — 게이트1 탈락(review_data 미생성)도 포함. 이게 없으면 "제외된 공고"와 "구조화 실패"를 구분할 수 없어 **매 실행 재호출되는 비용 루프**가 된다(SPEC §4).
 - 실패(429·파싱오류)는 삼키지 않는다 — `structured_at`을 남기지 않고 다음 run이 재구조화한다. 단 **재시도 상한**을 둬 영구 실패가 무한 재호출되지 않게 한다.
@@ -172,7 +177,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 
 ### Store (`store/*.py`) — 저장 단일 창구
 - 파이프라인은 `Store` 프로토콜만 안다. **파일 경로·SQL·Supabase 클라이언트가 파이프라인에 새지 않는다.**
-- `source_data`는 **write-once**(원문 증거). 일반 경로에서 갱신하지 않는다 — 수정 감지는 리비전 행 추가(Phase 3). **예외: 운영자 opt-out·법적 삭제 요청은 삭제/마스킹이 가능해야 한다**(가드레일 #4).
+- `source_data`는 **write-once**(원문 증거). 일반 경로에서 갱신하지 않는다 — 수정 감지는 리비전 행 추가(Phase 3). **예외: 운영자 opt-out·법적 삭제 요청은 삭제/마스킹이 가능해야 한다**.
 - 원장은 `source_data`의 `(source_key, external_id)` 유일성이 담당한다. 별도 원장 테이블을 만들지 않는다. **판정 기준은 이 두 컬럼뿐**이고, 함께 돌려주는 `title`·`posted_on`은 "그 번호가 다른 글로 바뀌었는지" 보는 경보다(둘 다 다르면 소스 실패 · SPEC §4).
 - 프로토콜에 **읽기도 포함**해야 한다: 원장 조회(가능하면 **bulk** — 페이지당 1회), `source_health` 조회(연속 실패 누적·마지막 성공 보존에 필요), 미구조화 목록(상한 있는 배치).
 - **JSON 구현 주의**: 쓰기는 **원자적**(임시파일 → rename)이어야 하고, 병렬 실행 시 **락 또는 append-only(JSONL)** 를 쓴다. 전체 배열 read-modify-write는 레코드 유실·파일 손상을 만든다.
@@ -184,27 +189,11 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 
 ## 저장소·비밀 규칙
 
-- **staging 4테이블(`source_data`·`review_data`·`source_health`·`crawl_run`)은 이 리포가 소유·마이그레이션**한다(SPEC §8). 물리적으로 min_job Supabase 프로젝트에 함께 두되, **min_job 리포의 파일을 이 작업으로 수정하지 않는다**(가드레일 #9).
+- **staging 4테이블(`source_data`·`review_data`·`source_health`·`crawl_run`)은 이 리포가 소유·마이그레이션**한다(SPEC §8). 물리적으로 min_job Supabase 프로젝트에 함께 두되, **min_job 리포의 파일을 이 작업으로 수정하지 않는다**.
 - **RLS: 운영자 전용**(public 노출 없음). 크롤러는 **service-role 키로 staging에만** 쓴다. `churches`/`jobs` write 권한을 크롤러에 주지 않는다.
 - 비밀은 **환경변수만**(`.env` 로컬 · GH Secrets CI). 코드·config·데이터·로그에 키를 남기지 않는다. `.env.example`만 커밋.
 - **DB는 저장 전용** — trigger·custom function을 만들지 않는다(min_job DB 정책 승계). 로직은 파이프라인 코드에.
 - env는 **`settings.py` 한 곳**에서 읽는다. import 시점에 캡처하지 말고(dotenv 로드보다 먼저 실행됨), 빈 문자열은 미설정으로 취급한다.
-
-## 가드레일 (절대 위반 금지)
-
-min_job 가드레일을 승계·구체화한다. 근거는 SPEC·CONTRACT·min_job `CLAUDE.md`.
-
-1. **공개 게시판만 수집.** 확정 목록(SOURCES §7) 외를 임의로 늘리지 않는다. **로그인이 필요한 소스는 범위 밖** — 인증 크롤은 변호사 게이트 후 별도 단계이고 **크롤러가 가입·로그인을 자동화하지 않는다**(계정은 운영자 제공). 공개인 줄 알았던 소스가 회원벽으로 확인되면 **우회하지 말고 비활성화 + 운영자 보고**. 영리 청빙사이트는 출처로 삼지 않는다.
-2. **자동 공개 절대 금지.** 종착지는 `review_data`(PENDING). `churches`/`jobs`에 직접 쓰지 않는다. 승격은 **`jobs` 한 테이블**이고 `church_id=NULL`·`source=OPERATOR`로 들어간다 — ⚠️ **`churches`에는 쓰지 않는다**(교회 자동 매칭 금지 · 교회가 claim하면 채워진다). 규칙은 SPEC §6 승격 목적지.
-3. **원문 재게시 금지 · 출처 표기.** `description`은 요약, 원문은 `source_url` 링크로. raw는 staging에만 두고 공개 필드로 흘리지 않는다.
-4. **개인정보 최소 + opt-out.** 지원용으로 명시 공개된 연락처만 `contact`로 추출한다(SPEC §5.5). 제3자 개인정보는 추출하지 않고, 게시판이 가려둔 번호를 복원하지 않는다. ⚠️ **"추출하지 않는다"는 저장·공개를 말한다 — 구조화 AI에 맥락으로 넘기는 것은 여기 해당하지 않는다**(운영자 결정 2026-08-10). 게시판이 준 값(글쓴이·담임목사 이름 등)은 프롬프트에 그대로 넣는다 — 맥락이 적을수록 오추출이 늘어난다. **막는 자리는 출력 계약**이다: 출력 스키마에 사람 이름을 담을 칸을 만들지 않고, 그 칸이 없으면 저장될 수도 공개될 수도 없다. (이 문구가 없어 에이전트가 "AI에 보내지 말라"로 읽고 맥락을 깎은 일이 있다.) **교회가 요청하면 해당 교회·공고를 수집 대상에서 제외(opt-out)하고 기존 수집분도 삭제할 수 있어야 한다** — write-once 원칙보다 우선한다. ⚠️ 약관·개인정보처리방침 정식 검토는 진행 중(min_job).
-5. **이단은 공개하지 않되 낙인찍지 않는다.** 목록(`config/heresy-ref.json`) **정확 일치** 시 `review_status=REJECTED` + `heresy_evidence`(근거) — **자동 거부**다(운영자 결정 2026-08-06 · 앞선 "플래그만"에서 변경). ⚠️ 여전히 금지: **자동 삭제 · 공개 이단 낙인**(명예훼손·오판 회피). 공개를 안 하는 것과 "이단이다"라고 표시하는 것은 다르다 — 레코드와 근거는 남긴다. ⚠️ **부분 문자열 매칭 금지**(실측 48건 중 대부분이 이름만 겹친 다른 교회). ⚠️ **목록 파일은 커밋하지 않는다**(공개 리포 · 실명 122건 · `.gitignore`).
-6. **교단은 공고에서 확정.** 게시판 교단은 힌트일 뿐이다. 근거 없으면 `UNKNOWN` — 추측으로 찍지 않는다(SPEC §5.3). ⚠️ **"승격 전 10키로 해소" 규칙은 철회됐다**(2026-08-06) — min_job이 `churches.denomination`을 nullable로 바꿨고 실측 교단 명시가 2.8%뿐이라 1,006곳을 사람이 채우는 것은 비현실적이다. **미상은 미상으로 둔다.**
-7. **예의 있는 크롤.** 위 fetch 기본값(간격·타임아웃)과 **한 호스트 1요청** 원칙을 지킨다. ⚠️ **robots `Disallow`는 따르지 않는다** — 운영자 판단(2026-07-30 · 문제없음 확인). 대신 **`Crawl-delay`는 따르고**(서버 용량 신고이므로 · 2026-08-04) `Retry-After`도 준수한다. 부하 보호의 본체는 **요청 간격·호스트당 1요청·타임아웃·페이지 상한**이다. `RESPECT_ROBOTS_DISALLOW` 스위치는 살려둔다 — 게시판 한 곳이 요청하면 되돌릴 수 있어야 한다. 원장으로 증분해 **같은 글을 다시 긁지 않는다**. 개발 중 반복 실행으로 사이트를 두드리지 않는다 — **테스트는 fixture로, 네트워크를 타지 않는다**.
-8. **재공고는 보존, 끌어올림은 합친다.** 같은 자리라도 **3개월 넘게 지난 뒤의 공고는 별개**로 남긴다(min_job 차별점). 그 안의 반복(끌어올림·교차게시)은 `dedup_key`로 **자동 병합**한다 — 대표 1건 + `posted_at` 최신(SPEC §4.1 · 실측 42%가 같은 글의 반복). ⚠️ **키 요소(교회명·지역·직분·부서)가 하나라도 없으면 병합하지 않는다** — 중복이 남는 것보다 다른 교회를 합치는 것이 훨씬 나쁘다(되돌릴 수 없다).
-9. **경계를 넘지 않는다.** 이 리포에서 **`../min_job`의 파일을 수정하지 않는다**(연동 요구는 문서로 전달). min_job은 staging 마이그레이션을 만들지 않는다.
-10. **프로덕션 수집·유료 호출은 운영자가 실행한다.** 에이전트(Claude)는 코드·config·문서를 만들고, **개발·검증 목적의 게시판 요청은 fetch 정책(#7: 간격·호스트당 1요청·타임아웃)을 지키는 한 자유롭게** 한다 — fixture 확보·셀렉터 검증에 필요하다(운영자 허가 2026-08-04 · 이전의 "보드당 1~2건" 제한은 개발에 과했다). **단 유료 API 호출(Gemini)과 전량 실제 수집·백필은 운영자가 CLI로 한다** — 비용과 산출물에 책임이 있는 쪽이 실행한다.
-11. **커밋 위생.** 수집 산출물(`data/`)·`.env`를 커밋하지 않는다. ⚠️ **fixture(`tests/fixtures/`)도 커밋하지 않는다**(2026-08-04 변경 · 이 리포는 **공개**다). 원본 HTML엔 실제 연락처·실명이 있다. 전에는 "마스킹 후 커밋"이었는데 마스킹 패턴의 구멍 2개(구분자 없는 번호·잘린 도메인)로 3건이 공개 이력에 올라갔고 **검사 코드가 같은 구멍을 공유해 통과했다** → 이력 재작성으로 제거. **올리지 않으면 놓칠 것도 없다.** `.gitignore` + `tests/test_fixture_hygiene.py`가 지킨다. `heresy-ref.json`은 민감 자료 — 공개 리포이므로 커밋 전 반드시 재검토.
 
 ## Clean Code Principles
 
@@ -252,5 +241,5 @@ min_job 가드레일을 승계·구체화한다. 근거는 SPEC·CONTRACT·min_j
 4. **저장**: `Store` 경유(직접 파일·DB X) · 필드명 = SPEC §6 snake_case · `source_data` write-once(opt-out 예외) · JSON 쓰기는 원자적
 5. **증분**: 원장(`source_key`+`external_id`)으로 판정 · "이미 본 글에서 중단" 로직 없음 · 공지행 제외
 6. **AI**: 출력 스키마 강제 + enum 정규화 · **`structured_at` 기록**(게이트1 탈락 포함) · 빈 응답은 실패 처리 · 모델 ID는 env
-7. **가드레일 준수**: 공개 소스만 · `review_data`까지만 · 요약+출처 링크 · 지원용 연락처만·opt-out 가능 · 이단 정확일치 시 자동 거부(근거 기록·낙인 금지) · 교단 근거 없으면 `UNKNOWN`(미상 유지) · rate limit · **min_job 파일 미수정** · 프로덕션 수집은 운영자
+7. **경계**: 종착지는 `review_data`까지 · `churches`/`jobs` 직접 쓰기 없음 · **`../min_job` 파일 미수정** · 유료 호출·전량 수집은 운영자
 8. **커밋 전**: `data/`·`.env` 미포함 · fixture 개인정보 마스킹 · Actions는 Supabase 전환 후에만

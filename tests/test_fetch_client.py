@@ -1,6 +1,6 @@
 """fetch 층 테스트 — 전송 정책이 실제로 적용되는지.
 
-**네트워크를 타지 않는다**(가드레일 #7·#10) — `httpx.MockTransport`로 응답을 만들고,
+**네트워크를 타지 않는다** — `httpx.MockTransport`로 응답을 만들고,
 `sleep`·`monotonic`을 주입해 실제로 기다리지 않는다(간격·백오프도 검증 대상이다).
 """
 
@@ -257,7 +257,7 @@ def test_source_without_the_flag_makes_no_session_request(
 
 
 def test_every_request_after_the_first_waits(sources: tuple[SourceConfig, ...]) -> None:
-    """한 게시판을 몰아치지 않는다(가드레일 #7). 첫 요청은 기다리지 않는다."""
+    """한 게시판을 몰아치지 않는다. 첫 요청은 기다리지 않는다."""
     client, recorder = _client(sources, "YTUS", _ok)
     client.get("/a")
     client.get("/b")
@@ -486,3 +486,96 @@ def test_context_manager_closes_the_connection(sources: tuple[SourceConfig, ...]
         client.get("/a")
     with pytest.raises(RuntimeError):  # 닫힌 클라이언트는 재사용되지 않는다
         client.get("/b")
+
+
+# ── 바이트 받기 (이미지·첨부) ────────────────────────────────────
+
+
+def _png(_request: httpx.Request) -> httpx.Response:
+    return httpx.Response(
+        200, content=b"\x89PNG\r\n" + b"x" * 100, headers={"content-type": "image/png"}
+    )
+
+
+def test_bytes_come_back_undecoded(sources: tuple[SourceConfig, ...]) -> None:
+    """디코드하면 그림이 망가진다 — 텍스트 경로와 달라야 한다."""
+    client, _ = _client(sources, "YTUS", _png)
+
+    received = client.get_bytes("/upload/poster.png")
+
+    assert received.data.startswith(b"\x89PNG")
+    assert received.media_type == "image/png"
+
+
+def test_a_short_image_is_not_rejected_as_a_stub(sources: tuple[SourceConfig, ...]) -> None:
+    """⚠️ 본문 길이 하한(200자)은 HTML 용이다 — 작은 그림에 적용하면 정상 파일이 막힌다."""
+
+    def tiny(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=b"\x89PNG" + b"x" * 20, headers={"content-type": "image/png"}
+        )
+
+    client, _ = _client(sources, "YTUS", tiny)
+
+    assert len(client.get_bytes("/i.png").data) == 24
+
+
+def test_an_html_page_instead_of_a_file_is_a_failure(sources: tuple[SourceConfig, ...]) -> None:
+    """⚠️ 그누보드는 세션 없는 첨부 요청에 `잘못된 접근입니다` 페이지를 200으로 준다.
+
+    그대로 통과시키면 그 HTML 이 그림인 척 Gemini 에 실린다.
+    """
+
+    def error_page(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content="잘못된 접근입니다".encode(),
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+
+    client, _ = _client(sources, "YTUS", error_page)
+
+    with pytest.raises(FetchError, match="파일 대신"):
+        client.get_bytes("/bbs/download.php?no=1")
+
+
+def test_a_missing_file_fails_instead_of_returning_the_error_body(
+    sources: tuple[SourceConfig, ...],
+) -> None:
+    """404 본문을 그림으로 넘기면 조용히 쓰레기가 섞인다."""
+    client, _ = _client(sources, "YTUS", lambda _r: httpx.Response(404, content=b"nope"))
+
+    with pytest.raises(FetchError, match="404"):
+        client.get_bytes("/gone.png")
+
+
+def test_a_path_with_spaces_and_hangul_is_encoded(sources: tuple[SourceConfig, ...]) -> None:
+    """⚠️ 첨부 URL 에 공백이 있고 한글이 NFD 로 분해된 게시판이 있다(KAICAM 실측)."""
+    client, recorder = _client(sources, "YTUS", _png)
+
+    client.get_bytes("/file/서식1. 이력서.hwp")
+
+    asked = recorder.requests[-1]
+    assert " " not in str(asked.url)
+    assert "%20" in str(asked.url)
+
+
+def test_an_already_encoded_path_is_not_double_encoded(
+    sources: tuple[SourceConfig, ...],
+) -> None:
+    """두 번 구우면 `%20`이 `%2520`이 되어 404가 된다."""
+    client, recorder = _client(sources, "YTUS", _png)
+
+    client.get_bytes("/file/a%20b.png")
+
+    assert "%2520" not in str(recorder.requests[-1].url)
+
+
+def test_image_requests_wait_their_turn(sources: tuple[SourceConfig, ...]) -> None:
+    """⚠️ 그림도 같은 게시판이다 — 간격을 안 지키면 한 공고가 5연속 요청을 쏜다."""
+    client, recorder = _client(sources, "YTUS", _png)
+
+    client.get_bytes("/1.png")
+    client.get_bytes("/2.png")
+
+    assert recorder.slept, "두 번째 요청은 간격만큼 기다려야 한다"

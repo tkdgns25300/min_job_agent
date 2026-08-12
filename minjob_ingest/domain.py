@@ -171,6 +171,10 @@ class RejectReason(StrEnum):
 
     #: `dedup_key`가 같은 대표 행이 따로 있다(SPEC §4.1). 자동.
     DUPLICATE = "DUPLICATE"
+    #: 공고가 스스로 끝났다고 말한다(`청빙완료`·`마감`). 이미 채워진 자리를 공개하지 않는다.
+    #: ⚠️ **게시판 상태 필드와 제목에 명시된 것만**이다 — 본문의 `채용 완료 후 서류 폐기`는
+    #: 안내 문구이지 마감이 아니다(실측 370건 중 대부분이 그것 · 2026-08-11).
+    CLOSED = "CLOSED"
     #: `config/heresy-ref.json` 정확 일치(SPEC §5.4). 자동 · 근거는 `heresy_evidence`.
     HERESY = "HERESY"
     #: 운영자가 검수에서 거절.

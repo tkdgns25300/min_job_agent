@@ -1,4 +1,4 @@
-"""CLI 진입점 — 운영자가 크롤을 실행하는 창구(CLAUDE.md 가드레일 #10).
+"""CLI 진입점 — 운영자가 크롤을 실행하는 창구(CLAUDE.md).
 
 현재 명령: `list-sources`(등록 소스 확인) · `check-gemini`(Vertex 인증 실호출 1회) ·
 `snapshot`(fixture용 HTML 확보) · `collect`(게시판에서 공고 수집) · `structure`(AI 구조화).
@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from collections.abc import Iterator, Mapping, Sequence
@@ -26,7 +27,13 @@ from minjob_ingest.console import Console, ProgressLine
 from minjob_ingest.domain import CrawlMode
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.lib.gemini import GeminiClient, GeminiError
-from minjob_ingest.models import REVIEW_STATE_FIELDS, CrawlRun, ReviewData, SourceHealth
+from minjob_ingest.models import (
+    REVIEW_STATE_FIELDS,
+    CrawlRun,
+    JsonValue,
+    ReviewData,
+    SourceHealth,
+)
 from minjob_ingest.paths import PROJECT_ROOT
 from minjob_ingest.pipeline.collect import (
     DEFAULT_MONTHS,
@@ -46,6 +53,7 @@ from minjob_ingest.pipeline.health import (
     record_failure,
     record_success,
 )
+from minjob_ingest.pipeline.media import board_media
 from minjob_ingest.pipeline.snapshot import (
     SnapshotResult,
     fixture_dir,
@@ -60,7 +68,12 @@ from minjob_ingest.pipeline.structure import (
     Verdict,
     structure_pending,
 )
-from minjob_ingest.settings import Settings, VertexConfigError
+from minjob_ingest.settings import (
+    ENV_VERTEX_MODEL,
+    ENV_VERTEX_MODEL_LITE,
+    Settings,
+    VertexConfigError,
+)
 from minjob_ingest.sources.adapters.base import ParseError
 from minjob_ingest.sources.adapters.registry import AdapterMissing, find_adapter, implemented_keys
 from minjob_ingest.sources.registry import (
@@ -72,6 +85,7 @@ from minjob_ingest.sources.registry import (
 )
 from minjob_ingest.store.base import StoreError
 from minjob_ingest.store.json_store import JsonStore
+from minjob_ingest.store.serde import to_row
 
 _PROGRAM = "minjob-ingest"
 _LIST_SOURCES = "list-sources"
@@ -127,7 +141,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             key=str(key_value) if key_value is not None else None,
         )
     if command == _CHECK_GEMINI:
-        return _run_check_gemini()
+        return _run_check_gemini(lite=bool(args.lite))
     if command == _SNAPSHOT:
         config_value = args.config
         return _run_snapshot(
@@ -155,6 +169,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             source_key=str(args.source) if args.source is not None else None,
             dry_run=bool(args.dry_run),
             verbose=bool(args.verbose),
+            out=Path(str(args.out)) if args.out is not None else None,
+            lite=bool(args.lite),
         )
     # argparse가 이미 미등록 명령을 걸러내므로, 여기 오는 건 "서브파서는 추가했는데 연결을
     # 잊은" 경우다 — 조용히 성공(0)하는 대신 크래시로 알린다.
@@ -320,7 +336,7 @@ def _print_snapshot_summary(console: Console, total: int, failures: Mapping[str,
     else:
         console.ok("전부 저장했습니다")
     console.line()
-    console.field("저장 위치", "tests/fixtures/<KEY>/", note="커밋되지 않습니다(가드레일 #11)")
+    console.field("저장 위치", "tests/fixtures/<KEY>/", note="커밋되지 않습니다")
 
 
 def _collect_one(
@@ -581,31 +597,118 @@ def _alert_sentence(alert: Alert, *, today: date) -> str:
 
 
 def _run_structure(
-    *, limit: int | None, source_key: str | None, dry_run: bool, verbose: bool
+    *,
+    limit: int | None,
+    source_key: str | None,
+    dry_run: bool,
+    verbose: bool,
+    out: Path | None,
+    lite: bool,
 ) -> int:
     """수집한 원자료를 AI로 구조화해 검수 초안(`review_data`)을 만든다.
 
-    ⚠️ **유료 호출이다**(가드레일 #10 — 운영자가 실행한다). 범위는 `--limit N` 또는 `--all`이
+    ⚠️ **유료 호출이다**. 범위는 `--limit N` 또는 `--all`이
     반드시 정한다: 기본값으로 도는 경로를 두면 실수 한 번이 남은 전량을 호출한다.
     """
     options = StructureOptions(limit=limit, source_key=_registered_key(source_key), dry_run=dry_run)
     console = Console()
     settings = Settings.load()
     store = JsonStore(settings.data_dir)
-    extractor = GeminiExtractor(GeminiClient(settings.require_vertex()))
+    client = GeminiClient(settings.require_vertex(lite=lite))
+    extractor = GeminiExtractor(client)
 
     console.heading("구조화 미리보기" if dry_run else "구조화", note=_structure_scope(options))
+    # ⚠️ 모델 이름을 **실행마다 찍는다** — 두 모델을 견주는 실행에서 어느 쪽 결과인지
+    #    화면으로 확인할 수 없으면 `--out` 파일이 뒤바뀐 것을 알아낼 방법이 없다.
+    console.field("모델", client.model, note="--lite" if lite else ENV_VERTEX_MODEL)
     line = console.progress()
-    with _console_logging(console, verbose=verbose):
+    preview = None if out is None else _PreviewFile(out, model=client.model)
+    sinks: list[ResultSink] = [_structure_renderer(console, line, dry_run=dry_run)]
+    if preview is not None:
+        sinks.append(preview.add)
+    with _console_logging(console, verbose=verbose), board_media(_open_source_client) as images:
         report = structure_pending(
-            store,
-            extractor,
-            options,
-            on_result=_structure_renderer(console, line, dry_run=dry_run),
+            store, extractor, options, on_result=_fan_out(sinks), images=images
         )
     line.clear()
+    if preview is not None:
+        preview.write()
+        console.field("미리보기 파일", str(out), note=f"{preview.count}건")
     _print_structure_report(console, report, dry_run=dry_run)
     return 1 if report.failed else 0
+
+
+def _open_source_client(source_key: str) -> SourceClient:
+    """그림을 받아올 클라이언트. 게시판 설정(UA·인코딩·TLS·세션)을 그대로 쓴다.
+
+    ⚠️ 소스별로 하나씩만 만들어야 요청 간격과 세션이 유지된다 — 재사용은 `BoardMediaSource`가
+    한다(SPEC §3 한 호스트에 요청 1개).
+    """
+    return SourceClient(_require_source(load_sources(None), source_key))
+
+
+def _fan_out(sinks: Sequence[ResultSink]) -> ResultSink:
+    def deliver(result: StructureResult, progress: StructureReport) -> None:
+        for sink in sinks:
+            sink(result, progress)
+
+    return deliver
+
+
+class _PreviewFile:
+    """구조화 결과를 파일로 모은다 — **프롬프트를 비교하는 도구**다.
+
+    ⚠️ 20건에 34필드면 터미널로 볼 수 없다. 프롬프트를 고치고 무엇이 달라졌는지 알려면 두
+    실행의 결과를 **diff** 할 수 있어야 한다. 그래서 사람이 읽는 출력이 아니라 **줄 단위로
+    비교되는 형식**(들여쓴 JSON · 키 정렬)으로 쓴다.
+
+    ⚠️ **`id`·`created_at`은 뺀다.** 실행마다 새로 생기므로 그대로 두면 값이 하나도 안
+    바뀌었는데 **전 레코드가 달라진 것처럼** 보여 diff가 무용지물이 된다.
+    """
+
+    #: 실행마다 달라져 비교를 방해하는 칸.
+    _VOLATILE: Final = ("id", "created_at")
+
+    def __init__(self, path: Path, *, model: str) -> None:
+        self._path = path
+        self._model = model
+        self._rows: list[dict[str, JsonValue]] = []
+
+    @property
+    def count(self) -> int:
+        return len(self._rows)
+
+    def add(self, result: StructureResult, _progress: StructureReport) -> None:
+        row: dict[str, JsonValue] = {
+            "posting": result.record.label,
+            "source_url": result.record.source_url,
+            # ⚠️ **어느 모델이 답했나를 파일에 적는다.** 두 모델을 견주는 실행에서 파일 이름만
+            #    믿으면 뒤바뀐 것을 알아낼 방법이 없다 — 결론이 조용히 반대가 된다.
+            "model": self._model,
+            "verdict": result.verdict.value,
+        }
+        if result.error is not None:
+            row["error"] = result.error
+        if result.media_note is not None:
+            row["media_note"] = result.media_note
+        if result.draft is not None:
+            row["draft"] = {
+                key: value
+                for key, value in sorted(to_row(result.draft).items())
+                if key not in self._VOLATILE
+            }
+        self._rows.append(row)
+
+    def write(self) -> None:
+        """마지막에 한 번 쓴다.
+
+        ⚠️ 도중에 죽으면 파일이 남지 않는다 — 이건 검수 도구이고 표본은 작다. 전량 실행의
+        기록이 필요해지면 그때 줄 단위로 흘려 쓴다(ROADMAP 1-2 3단계).
+        """
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(
+            json.dumps(self._rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
 
 
 def _registered_key(source_key: str | None) -> str | None:
@@ -674,7 +777,7 @@ def _verdict_label(verdict: Verdict) -> str:
         case Verdict.EMPTY:
             return "빈 공고"
         case Verdict.DEFERRED:
-            return "2단계 대기"
+            return "그림 대기"
         case Verdict.FAILED:
             return "실패"
 
@@ -702,6 +805,8 @@ def _print_preview(console: Console, result: StructureResult) -> None:
         )
         console.field("원문 링크", draft.source_url)
         _note_unfilled_columns(console, draft)
+    if result.media_note is not None:
+        console.warn(result.media_note)
     if result.error is not None:
         console.warn(result.error)
 
@@ -724,7 +829,7 @@ def _verdict_reason(verdict: Verdict) -> str:
         case Verdict.EMPTY:
             return "본문·이미지·첨부가 없어 호출하지 않음"
         case Verdict.DEFERRED:
-            return "내용이 이미지에 있음 — 2단계(멀티모달) 대기"
+            return "그림을 가져올 수단 없이 실행됨"
         case Verdict.FAILED:
             return "실패 — 다음 실행이 다시 시도"
         case Verdict.DRAFTED:
@@ -770,10 +875,12 @@ def _print_structure_report(console: Console, report: StructureReport, *, dry_ru
     if report.empty:
         console.field("빈 공고", f"{report.empty}건", note="내용이 없어 호출하지 않음")
     if report.deferred:
-        console.field(
-            "2단계 대기",
-            f"{report.deferred}건",
-            note="내용이 이미지에 있음 — 멀티모달이 붙을 때까지 손대지 않음",
+        console.field("그림 대기", f"{report.deferred}건", note="그림을 가져올 수단 없이 실행됨")
+    if report.text_only:
+        console.warn(
+            f"그림을 못 읽고 텍스트만으로 판정한 공고 {report.text_only}건"
+            " — 포스터 공고면 내용을 못 본 채 판정된 것입니다.",
+            *(f"{item.posting}: {item.reason}" for item in report.media_failures),
         )
     if report.failed:
         console.warn(
@@ -805,7 +912,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="sources.json 경로 (기본: 리포의 config/sources.json)",
     )
 
-    subcommands.add_parser(_CHECK_GEMINI, help="Vertex 인증·연결 확인 (실호출 1회)")
+    check_gemini = subcommands.add_parser(_CHECK_GEMINI, help="Vertex 인증·연결 확인 (실호출 1회)")
+    check_gemini.add_argument(
+        "--lite",
+        action="store_true",
+        help=f"{ENV_VERTEX_MODEL_LITE} 모델로 (기본은 {ENV_VERTEX_MODEL})",
+    )
 
     snapshot = subcommands.add_parser(
         _SNAPSHOT, help="fixture용 HTML 확보 (게시판에 요청함 · 어댑터 없어도 동작)"
@@ -862,17 +974,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="호출은 하되 저장 안 함 (프롬프트 확인용)"
     )
     structure.add_argument("--verbose", action="store_true", help="호출 로그까지 표시")
+    structure.add_argument(
+        "--out",
+        default=None,
+        help="결과를 JSON 파일로 (프롬프트 비교용 · ⚠️ 연락처가 담긴다 — data/ 아래로)",
+    )
+    structure.add_argument(
+        "--lite",
+        action="store_true",
+        help=f"{ENV_VERTEX_MODEL_LITE} 모델로 (기본은 {ENV_VERTEX_MODEL})",
+    )
     return parser
 
 
-def _run_check_gemini() -> int:
+def _run_check_gemini(*, lite: bool) -> int:
     """서비스계정 인증이 실제로 통하는지 실호출 1번으로 검증한다(셋업 함정 조기 제거).
 
     ⚠️ 유일하게 **외부 유료 API를 직접 호출**하는 명령이다(토큰 소량). 게시판은 건드리지 않는다.
     """
     logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
     settings = Settings.load()
-    client = GeminiClient(settings.require_vertex())
+    client = GeminiClient(settings.require_vertex(lite=lite))
     print(f"[{_CHECK_GEMINI}] 모델={client.model} 연결 시도…")
     answer = client.generate_smoke_text(_SMOKE_PROMPT)
     print(f"[{_CHECK_GEMINI}] ✅ 응답: {answer.strip()!r}")

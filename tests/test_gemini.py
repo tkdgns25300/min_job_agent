@@ -1,4 +1,4 @@
-"""Gemini 래퍼 테스트 — 네트워크·실호출 없음(가드레일 #10).
+"""Gemini 래퍼 테스트 — 네트워크·실호출 없음.
 
 SDK 클라이언트 생성(`build_client`)을 가짜로 바꿔 호출 경로를 검증한다. 실제 인증·연결은
 운영자가 `minjob-ingest check-gemini`로 확인한다.
@@ -6,7 +6,7 @@ SDK 클라이언트 생성(`build_client`)을 가짜로 바꿔 호출 경로를 
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 import pytest
 from google.genai import types
@@ -63,6 +63,13 @@ class _FakeClient:
         self.models = _FakeModels(result, self.calls)
 
 
+def _sent_text(call: dict[str, object]) -> str:
+    """호출에 실린 텍스트 파트. 그림이 붙으면서 `contents`가 파트 목록이 됐다."""
+    parts = call["contents"]
+    assert isinstance(parts, list)
+    return str(parts[0].text)
+
+
 def _client_with(
     monkeypatch: pytest.MonkeyPatch, result: types.GenerateContentResponse | Exception
 ) -> tuple[GeminiClient, _FakeClient]:
@@ -117,7 +124,7 @@ def test_generate_smoke_text_uses_the_configured_model(monkeypatch: pytest.Monke
     client, fake = _client_with(monkeypatch, _response("OK"))
     assert client.generate_smoke_text("연결 확인") == "OK"
     assert fake.calls[0]["model"] == "gemini-2.5-flash"
-    assert fake.calls[0]["contents"] == "연결 확인"
+    assert _sent_text(fake.calls[0]) == "연결 확인"
 
 
 # ── 실패 처리 ────────────────────────────────────────────────────
@@ -231,7 +238,7 @@ def test_generate_structured_json_returns_the_raw_text(monkeypatch: pytest.Monke
     schema = types.Schema(type=types.Type.OBJECT, properties={})
 
     assert client.generate_structured_json("공고", schema=schema) == '{"a": 1}'
-    assert fake.calls[0]["contents"] == "공고"
+    assert _sent_text(fake.calls[0]) == "공고"
 
 
 def test_a_truncated_structured_answer_is_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -241,3 +248,26 @@ def test_a_truncated_structured_answer_is_a_failure(monkeypatch: pytest.MonkeyPa
     )
     with pytest.raises(GeminiError, match="온전히 끝나지 않음"):
         client.generate_structured_json("공고", schema=types.Schema(type=types.Type.OBJECT))
+
+
+def test_images_ride_after_the_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⚠️ 그림을 앞에 두면 모델이 지시를 읽기 전에 그림부터 보고 묘사를 시작한다."""
+    client, fake = _client_with(monkeypatch, _response("{}"))
+
+    client.generate_structured_json(
+        "공고",
+        schema=types.Schema(type=types.Type.OBJECT),
+        images=[_FakeImage("image/png", b"bytes")],
+    )
+
+    parts = fake.calls[0]["contents"]
+    assert isinstance(parts, list)
+    assert parts[0].text == "공고"
+    assert parts[1].inline_data is not None
+    assert parts[1].inline_data.mime_type == "image/png"
+
+
+@dataclass(frozen=True)
+class _FakeImage:
+    media_type: str
+    data: bytes

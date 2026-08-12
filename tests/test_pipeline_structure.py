@@ -1,31 +1,46 @@
 """구조화 패스 테스트 — 판정·저장 순서·실패 처리.
 
-AI는 가짜(`_FakeExtractor`)로 바꾼다. **네트워크도 유료 호출도 없다**(가드레일 #7·#10) —
+AI는 가짜(`_FakeExtractor`)로 바꾼다. **네트워크도 유료 호출도 없다** —
 `Extractor` 프로토콜이 있는 이유가 이것이다.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
-from datetime import datetime
+from collections.abc import Sequence
+from dataclasses import dataclass, field, fields, replace
+from datetime import date, datetime
 from pathlib import Path
 from typing import Final
 
 import pytest
 
 from minjob_ingest.clock import KST
-from minjob_ingest.domain import Confidence, DenominationSource, IsChurchRecruitment, ReviewStatus
+from minjob_ingest.domain import (
+    Confidence,
+    DenominationSource,
+    Department,
+    EmploymentType,
+    IsChurchRecruitment,
+    JobKind,
+    Position,
+    Qualification,
+    Region,
+    RejectReason,
+    ReviewStatus,
+    StipendPeriod,
+)
 from minjob_ingest.lib.gemini import GeminiError
 from minjob_ingest.models import (
-    MAX_DESCRIPTION_CHARS,
     MAX_STRUCTURE_ATTEMPTS,
     Attachment,
     ReviewData,
     SourceData,
     new_id,
 )
+from minjob_ingest.pipeline import structure
 from minjob_ingest.pipeline.extraction import Extraction, ExtractionError
+from minjob_ingest.pipeline.media import BoardMediaSource, Media, MediaSet
 from minjob_ingest.pipeline.structure import (
     StructureOptions,
     Verdict,
@@ -101,9 +116,11 @@ class _FakeExtractor:
 
     result: Extraction | Exception = field(default_factory=_extraction)
     calls: list[str] = field(default_factory=list)
+    image_counts: list[int] = field(default_factory=list)
 
-    def extract(self, record: SourceData) -> Extraction:
+    def extract(self, record: SourceData, images: Sequence[Media] = ()) -> Extraction:
         self.calls.append(record.external_id)
+        self.image_counts.append(len(images))
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
@@ -359,14 +376,16 @@ class _SelectiveExtractor:
     failing: set[str]
     calls: list[str] = field(default_factory=list)
 
-    def extract(self, record: SourceData) -> Extraction:
+    def extract(self, record: SourceData, _images: Sequence[Media] = ()) -> Extraction:
         self.calls.append(record.external_id)
         if record.external_id in self.failing:
             raise GeminiError("이 글만 실패")
         return _extraction()
 
 
-def test_dry_run_still_assembles_the_draft(store: JsonStore) -> None:
+def test_dry_run_still_assembles_the_draft(
+    store: JsonStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """⚠️ 미리보기가 조립을 건너뛰면 **리허설은 통과하고 본 실행만 터진다**.
 
     저장할 수 없는 값(요약 상한 초과)을 미리보기에서도 실패로 봐야 한다 — 아니면 사장님이
@@ -374,27 +393,33 @@ def test_dry_run_still_assembles_the_draft(store: JsonStore) -> None:
     """
     record = _source_data()
     store.save_source_data(record)
-    too_long = Extraction(
-        is_church_recruitment=IsChurchRecruitment.YES,
-        description="가" * (MAX_DESCRIPTION_CHARS + 1),
-    )
+    monkeypatch.setattr(structure, "build_draft", _refuses_to_build)
 
-    result = structure_one(record, store, _FakeExtractor(too_long), dry_run=True)
+    result = structure_one(record, store, _FakeExtractor(), dry_run=True)
 
-    assert result.verdict is Verdict.FAILED
+    assert result.verdict is Verdict.FAILED, "미리보기가 조립을 건너뛰면 여기서 안 걸린다"
     assert len(store.list_unstructured(10)) == 1, "미리보기는 시도 횟수도 남기지 않는다"
 
 
-def test_a_draft_that_cannot_be_stored_is_a_failure(store: JsonStore) -> None:
-    """레코드 불변식과 어긋난 모델 값은 크래시가 아니라 그 공고 하나의 실패다."""
+def _refuses_to_build(_record: SourceData, _extraction: Extraction) -> ReviewData:
+    """레코드 불변식이 거부하는 상황의 대역.
+
+    ⚠️ 지금은 모델 답 때문에 조립이 실패하지 않는다(`classify`·`_pay_range`가 다 맞춘다) —
+    그래도 **격리 자체는 고정한다**: 나중에 불변식이 늘면 크래시가 아니라 그 공고 하나의
+    실패여야 한다.
+    """
+    raise ValueError("불변식 위반")
+
+
+def test_a_draft_that_cannot_be_stored_is_a_failure(
+    store: JsonStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """레코드 불변식과 어긋난 값은 크래시가 아니라 그 공고 하나의 실패다."""
     record = _source_data()
     store.save_source_data(record)
-    too_long = Extraction(
-        is_church_recruitment=IsChurchRecruitment.YES,
-        description="가" * (MAX_DESCRIPTION_CHARS + 1),
-    )
+    monkeypatch.setattr(structure, "build_draft", _refuses_to_build)
 
-    result = structure_one(record, store, _FakeExtractor(too_long))
+    result = structure_one(record, store, _FakeExtractor())
 
     assert result.verdict is Verdict.FAILED
     assert len(store.list_unstructured(10)) == 1
@@ -428,7 +453,7 @@ def test_a_posting_with_images_is_left_untouched(
     store.save_source_data(record)
     extractor = _FakeExtractor()
 
-    result = structure_one(record, store, extractor)
+    result = structure_one(record, store, extractor)  # 그림 소스 없이
 
     assert result.verdict is Verdict.DEFERRED
     assert extractor.calls == [], "이미지를 못 보내면서 돈을 쓸 이유가 없다"
@@ -596,3 +621,326 @@ def test_limit_stops_as_soon_as_it_is_reached(store: JsonStore) -> None:
 
     assert report.drafted == 2
     assert len(extractor.calls) == 2, "상한을 넘겨 호출하면 그만큼 돈이 나간다"
+
+
+# ── 그림 (2-c) ───────────────────────────────────────────────────
+
+
+@dataclass
+class _FakeImages:
+    """정해둔 결과를 돌려주는 그림 소스. 게시판에 요청하지 않는다."""
+
+    result: MediaSet = field(default_factory=MediaSet)
+    asked: list[str] = field(default_factory=list)
+
+    def media_for(self, record: SourceData) -> MediaSet:
+        self.asked.append(record.external_id)
+        return self.result
+
+
+def test_a_poster_posting_is_judged_once_images_can_be_fetched(store: JsonStore) -> None:
+    """⚠️ 그림 소스가 붙으면 `DEFERRED`가 저절로 사라져야 한다 — 따로 켜는 스위치가 없다."""
+    record = _source_data(raw_text="", image_urls=("https://e.kr/poster.png",))
+    store.save_source_data(record)
+    extractor = _FakeExtractor()
+    images = _FakeImages(MediaSet(items=(Media(media_type="image/png", data=b"x" * 5_000),)))
+
+    result = structure_one(record, store, extractor, images=images)
+
+    assert result.verdict is Verdict.DRAFTED
+    assert extractor.image_counts == [1], "그림이 모델에 실제로 넘어가야 한다"
+    assert images.asked == [record.external_id]
+
+
+def test_a_text_posting_never_asks_for_images(store: JsonStore) -> None:
+    """그림이 없는 공고에 요청을 보내면 게시판을 헛되이 두드린다."""
+    record = _source_data()
+    store.save_source_data(record)
+    images = _FakeImages()
+
+    structure_one(record, store, _FakeExtractor(), images=images)
+
+    assert images.asked == []
+
+
+def test_a_posting_still_gets_judged_when_its_images_cannot_be_read(store: JsonStore) -> None:
+    """⚠️ 그림 실패로 공고를 통째 실패시키면 텍스트만으로 충분한 것까지 재시도에 걸린다."""
+    record = _source_data(image_urls=("https://e.kr/p.png",))
+    store.save_source_data(record)
+    extractor = _FakeExtractor()
+    images = _FakeImages(MediaSet(failures=("p.png: HTTP 404",)))
+
+    result = structure_one(record, store, extractor, images=images)
+
+    assert result.verdict is Verdict.DRAFTED
+    assert extractor.image_counts == [0]
+    assert result.media_note is not None and "못 읽음" in result.media_note
+
+
+def test_a_ministry_posting_with_no_recognised_position_becomes_etc() -> None:
+    """⚠️ 이게 없으면 `교역자 청빙` 같은 공고가 **3번 과금된 뒤 조용히 사라진다**.
+
+    모델이 허용값 밖 문자열(`교역자`)을 주면 파서가 버려 빈 배열이 되고, 레코드 불변식에
+    걸려 매번 실패하다 재시도 상한을 넘긴다. 값이 없는 것은 사실이므로 "그 밖"으로 둔다.
+    """
+    draft = build_draft(
+        _source_data(),
+        Extraction(
+            is_church_recruitment=IsChurchRecruitment.YES,
+            job_kind=(JobKind.MINISTRY,),
+            position=(),
+        ),
+    )
+
+    assert draft.position == (Position.ETC,)
+
+
+def test_a_general_posting_keeps_its_empty_position() -> None:
+    draft = build_draft(
+        _source_data(),
+        Extraction(
+            is_church_recruitment=IsChurchRecruitment.YES,
+            job_kind=(JobKind.GENERAL,),
+            role="시설관리",
+        ),
+    )
+
+    assert draft.position == ()
+
+
+def test_every_extracted_value_reaches_the_draft() -> None:
+    """⚠️ `build_draft`는 34칸을 손으로 옮긴다 — 한 줄을 빼먹어도 mypy는 통과하고 값만 사라진다.
+
+    이름이 1:1이므로 전 칸을 순회해 확인한다(serde 왕복 테스트와 같은 해법).
+    """
+    filled = Extraction(
+        is_church_recruitment=IsChurchRecruitment.YES,
+        job_kind=(JobKind.MINISTRY, JobKind.GENERAL),
+        role="음향",
+        title="청빙",
+        position=(Position.EVANGELIST,),
+        department=Department.YOUTH,
+        employment_type=EmploymentType.FULL_TIME,
+        qualification=Qualification.ORDAINED,
+        headcount="1명",
+        start_timing="즉시",
+        housing_provided=True,
+        housing_note="사택",
+        pay_min=250,
+        pay_max=300,
+        pay_note="내규",
+        pay_period=StipendPeriod.MONTH,
+        benefit_note="4대보험",
+        work_days="주 5일",
+        requirements=("자격",),
+        preferred=("우대",),
+        required_docs=("이력서",),
+        optional_docs=("추천서",),
+        process_steps=("서류",),
+        description="요약",
+        deadline=date(2026, 8, 31),
+        church_name="점촌제일교회",
+        region=Region.GYEONGBUK,
+        city="문경시",
+        raw_denomination="예장통합",
+        contact_email="a@b.kr",
+        contact_tel="054-000-0000",
+        contact_link="https://e.kr/apply",
+        contact_post="경북 문경시",
+    )
+
+    draft = build_draft(_source_data(), filled)
+
+    for info in fields(Extraction):
+        assert getattr(draft, info.name) == getattr(filled, info.name), f"{info.name}이 안 옮겨졌다"
+    assert draft.posted_at == _source_data().posted_on, "게시일은 수집이 파싱한 값을 쓴다"
+
+
+@pytest.mark.parametrize(
+    ("kinds", "position", "role"),
+    [
+        ((JobKind.MINISTRY,), (), None),
+        ((JobKind.MINISTRY,), (), "음향"),
+        ((JobKind.GENERAL,), (Position.EVANGELIST,), None),
+        ((JobKind.GENERAL,), (), None),
+        ((JobKind.MINISTRY, JobKind.GENERAL), (Position.EVANGELIST,), None),
+        ((JobKind.MINISTRY, JobKind.GENERAL), (), "음향"),
+    ],
+    ids=[
+        "사역직인데 직분 없음",
+        "사역직인데 직무가 붙음",
+        "일반직인데 직분이 붙음",
+        "일반직인데 직무 없음",
+        "혼합인데 직무 없음",
+        "혼합인데 직분 없음",
+    ],
+)
+def test_every_contradictory_classification_is_reconciled(
+    store: JsonStore,
+    kinds: tuple[JobKind, ...],
+    position: tuple[Position, ...],
+    role: str | None,
+) -> None:
+    """⚠️ 규칙이 양방향이라 어긋나는 조합이 넷이다 — 하나라도 실패로 두면 그 공고가
+    **3번 과금된 뒤 재시도 상한을 넘겨 조용히 사라진다**.
+
+    스키마로는 "GENERAL일 때만 role"을 표현할 수 없어 모델 답이 어긋나는 것은 정상 범위다.
+    """
+    record = _source_data()
+    store.save_source_data(record)
+    answer = Extraction(
+        is_church_recruitment=IsChurchRecruitment.YES,
+        job_kind=kinds,
+        position=position,
+        role=role,
+    )
+
+    result = structure_one(record, store, _FakeExtractor(answer))
+
+    assert result.verdict is Verdict.DRAFTED, "맞춰서 저장해야 한다 — 실패시키면 공고를 잃는다"
+    draft = result.draft
+    assert draft is not None
+    assert (JobKind.MINISTRY in draft.job_kind) == bool(draft.position)
+    assert (JobKind.GENERAL in draft.job_kind) == (draft.role is not None)
+
+
+def test_a_reversed_pay_range_is_corrected_not_failed() -> None:
+    """⚠️ 뒤집힌 답을 실패로 두면 그 공고가 3번 과금된 뒤 사라진다 — 범위는 바로잡으면 된다."""
+    draft = build_draft(
+        _source_data(),
+        Extraction(
+            is_church_recruitment=IsChurchRecruitment.YES,
+            job_kind=(JobKind.MINISTRY,),
+            position=(Position.EVANGELIST,),
+            pay_min=300,
+            pay_max=250,
+        ),
+    )
+
+    assert (draft.pay_min, draft.pay_max) == (250, 300)
+
+
+def test_a_failed_posting_still_reports_its_unread_images(store: JsonStore) -> None:
+    """⚠️ 포스터를 못 읽었는데 호출까지 실패하면, 사유가 없으면 원인을 영영 모른다."""
+    record = _source_data(image_urls=("https://e.kr/p.png",))
+    store.save_source_data(record)
+    images = _FakeImages(MediaSet(failures=("p.png: HTTP 404",)))
+
+    result = structure_one(record, store, _FakeExtractor(GeminiError("429")), images=images)
+
+    assert result.verdict is Verdict.FAILED
+    assert result.media_note is not None and "못 읽음" in result.media_note
+
+
+def test_the_report_counts_and_samples_unread_images(store: JsonStore) -> None:
+    """⚠️ 아무도 안 읽는 값은 없는 값이다 — 집계에 올라와야 CLI가 경고할 수 있다."""
+    store.save_source_data(_source_data("1", image_urls=("https://e.kr/p.png",)))
+    images = _FakeImages(MediaSet(failures=("p.png: HTTP 404",)))
+
+    report = structure_pending(store, _FakeExtractor(), StructureOptions(limit=5), images=images)
+
+    assert report.text_only == 1
+    assert report.media_failures[0].posting == "DAESHIN/1"
+
+
+def test_an_excluded_posting_keeps_its_image_reason(store: JsonStore) -> None:
+    """⚠️ **그림을 못 읽어 게이트1 NO가 난 경우**가 가장 알아야 할 상황이다.
+
+    그런데 그때 판정이 기록돼 되돌릴 수 없다.
+    """
+    record = _source_data(image_urls=("https://e.kr/p.png",))
+    store.save_source_data(record)
+    images = _FakeImages(MediaSet(failures=("p.png: HTTP 404",)))
+
+    result = structure_one(
+        record, store, _FakeExtractor(_extraction(IsChurchRecruitment.NO)), images=images
+    )
+
+    assert result.verdict is Verdict.EXCLUDED
+    assert result.media_note is not None
+
+
+def test_a_local_file_url_is_never_requested(store: JsonStore) -> None:
+    """⚠️ 본문에 `file:///C:\\...`가 섞인 공고가 있다(실측 8건 — HWP에서 붙여넣은 흔적).
+
+    요청하면 전송 층이 죽고 **그 실행 내내 그 게시판의 `Crawl-delay`를 못 읽는다**.
+    """
+    record = _source_data(image_urls=(r"file:///C:\\Users\\church\\poster.jpg",))
+    store.save_source_data(record)
+    client = _RecordingClient()
+
+    def open_client(_key: str) -> _RecordingClient:
+        return client
+
+    BoardMediaSource(open_client=open_client).media_for(record)  # type: ignore[arg-type]
+
+    assert client.got == []
+
+
+@dataclass
+class _RecordingClient:
+    got: list[str] = field(default_factory=list)
+
+    def get_bytes(self, url: str) -> object:
+        self.got.append(url)
+        raise AssertionError("요청하면 안 된다")
+
+    def get(self, url: str) -> object:
+        return url
+
+    def close(self) -> None:
+        return None
+
+
+def test_a_closed_posting_is_rejected_on_creation(store: JsonStore, data_dir: Path) -> None:
+    """⚠️ 그대로 두면 `jobs.status` 기본값이 `OPEN`이라 **이미 채워진 자리가 공개된다**.
+
+    이단과 같은 방식으로 만들면서 거절한다 — 레코드와 근거는 남는다(SPEC §5.4).
+
+    ⚠️ 마감은 **모델이 아니라 게시판 표시**가 정한다 — 아래 제목의 `청빙완료`가 근거다.
+    """
+    record = replace(_source_data(), title="성원교회 부교역자 청빙 (청빙완료)")
+    store.save_source_data(record)
+    extraction = Extraction(
+        is_church_recruitment=IsChurchRecruitment.YES,
+        job_kind=(JobKind.MINISTRY,),
+        position=(Position.EVANGELIST,),
+        description="부교역자를 청빙합니다.",
+    )
+
+    result = structure_one(record, store, _FakeExtractor(extraction))
+
+    assert result.verdict is Verdict.DRAFTED, "레코드는 남긴다 — 없애는 게 아니다"
+    draft = _drafts(data_dir)[0]
+    assert draft.review_status is ReviewStatus.REJECTED
+    assert draft.reject_reason is RejectReason.CLOSED
+
+
+def test_a_body_that_merely_mentions_completion_is_not_closed(
+    store: JsonStore, data_dir: Path
+) -> None:
+    """⚠️ 실측 370건이 본문에 `채용 완료 후 폐기합니다`류를 담는다 — 대부분 진행 중이다.
+
+    게시판 표시만 보므로 본문에 `완료`가 있어도 거절되지 않는다.
+    """
+    record = replace(
+        _source_data(), title="성원교회 부교역자 청빙", raw_text="서류는 채용 완료 후 폐기합니다."
+    )
+    store.save_source_data(record)
+    extraction = Extraction(
+        is_church_recruitment=IsChurchRecruitment.YES,
+        job_kind=(JobKind.MINISTRY,),
+        position=(Position.EVANGELIST,),
+        description="부교역자를 청빙합니다.",
+    )
+
+    structure_one(record, store, _FakeExtractor(extraction))
+
+    assert _drafts(data_dir)[0].review_status is ReviewStatus.PENDING
+
+
+def test_an_open_posting_stays_pending() -> None:
+    draft = build_draft(_source_data(), _extraction())
+
+    assert draft.review_status is ReviewStatus.PENDING
+    assert draft.reject_reason is None

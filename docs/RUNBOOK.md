@@ -33,9 +33,11 @@ minjob-ingest snapshot --source KEY                         🌐    fixture용 H
 ```
 ⚠(경보)는 손을 써야 하고, ·(정보)는 참고다. **신규 0건은 경보가 아니다** — 원장이 이미 본 글을 걸러낸 정상 결과다.
 
-## 구조화 (AI) — 💰 유료 · 게시판에는 요청하지 않는다
+## 구조화 (AI) — 💰 유료 · 🌐 그림이 있는 공고는 게시판에 요청한다
 
 수집해 둔 `source_data`를 Gemini로 읽어 검수 초안(`review_data`)을 만든다.
+
+⚠️ **텍스트 공고는 게시판에 요청하지 않지만, 그림이 있는 공고는 요청한다** — 포스터 바이트를 받아 모델에 함께 보낸다(실측 237건 · 7.4%). 첨부 그림은 상세 페이지를 먼저 한 번 더 부른다(그누보드 4곳이 세션을 확인한다). 간격·재시도는 수집과 같은 정책이다.
 
 ```bash
 minjob-ingest structure --dry-run --limit 1 --source DAESHIN   💰  1건만 화면으로 확인 (저장 안 함)
@@ -46,9 +48,36 @@ minjob-ingest structure --all                                 💰  전량 (약 
 
 ⚠️ **`--limit N` 또는 `--all` 이 없으면 실행을 거부한다.** 유료 호출이 옵션 없이 전량으로 도는 경로를 두지 않았다.
 
-`structure` 옵션 — **`--limit N`**(판정할 건수 = 유료 호출 상한) · **`--all`**(남은 전부) · **`--dry-run`**(호출은 하되 저장 안 함) · `--source KEY` · `--verbose`(호출 로그)
+`structure` 옵션 — **`--limit N`**(판정할 건수 = 유료 호출 상한) · **`--all`**(남은 전부) · **`--dry-run`**(호출은 하되 저장 안 함) · `--source KEY` · `--verbose`(호출 로그) · **`--out FILE`**(결과를 JSON으로 — 모델 비교용) · **`--lite`**(값싼 모델로)
 
-**`--limit`은 "판정한 건수"를 센다** — 훑은 건수가 아니다. Gemini를 부르지 않는 공고(빈 공고·이미지 대기)는 세지 않으므로 `--limit 20`은 항상 **호출 20회 이하**다. 리포트의 `훑음`이 `--limit`보다 큰 것은 정상이다.
+⚠️ **`--out`은 연락처가 담긴다.** 커밋되지 않는 `data/` 아래에 쓴다(`--out data/preview.json`).
+
+### 모델 두 개 — 기본과 `--lite`
+
+```
+옵션 없음    VERTEX_MODEL        기본. 품질이 필요한 실제 적재는 이쪽.
+--lite       VERTEX_MODEL_LITE   값싼 대안. 입력 1/5 · 출력 1/3.6 가격.
+```
+
+⚠️ **`--lite`인데 `VERTEX_MODEL_LITE`가 비어 있으면 실행이 멈춘다.** 비싼 모델로 조용히 도는 것보다 낫다 — 20건이면 4배 차이다.
+
+실행할 때마다 **어느 모델로 도는지 화면에 찍히고 `--out` 파일에도 `model`로 남는다.** 두 파일을 견줄 때 이름만 믿지 않아도 된다.
+
+### 두 모델 견주기
+
+```bash
+# 같은 공고를 두 번 — ⚠️ --dry-run 이라 판정이 안 남아 두 실행이 같은 10건을 본다
+minjob-ingest structure --source DAESHIN --limit 10 --dry-run --lite --out data/lite-daeshin.json
+minjob-ingest structure --source DAESHIN --limit 10 --dry-run        --out data/flash-daeshin.json
+
+.venv/bin/python scripts/compare_models.py data/lite-daeshin.json data/flash-daeshin.json
+```
+
+칸별로 **몇 번 갈렸는지**가 먼저 나온다. 어느 쪽이 맞는지는 말하지 않는다 — 갈린 공고만 원문과 대조하면 된다.
+
+💡 **게시판을 섞는다.** 게시판마다 형식이 달라 한 곳만 보면 다른 곳에서 깨지는 것을 못 본다(`DAESHIN`은 본문형, `CSU`는 게시판 필드형, PDF 첨부는 `PUTS`·`UHS`에 있다).
+
+**`--limit`은 "판정한 건수"를 센다** — 훑은 건수가 아니다. Gemini를 부르지 않는 공고(빈 공고 등)는 세지 않으므로 `--limit 20`은 항상 **호출 20회 이하**다. 리포트의 `훑음`이 `--limit`보다 큰 것은 정상이다.
 
 💡 **프롬프트를 다듬는 중이면 반드시 `--dry-run`.** 저장하면 그 공고에 판정이 찍혀 **다시 나오지 않으므로**, 프롬프트를 고쳐도 같은 표본으로 비교할 수 없다. `--dry-run`은 아무것도 저장하지 않아 같은 20건을 계속 볼 수 있다.
 
@@ -56,18 +85,21 @@ minjob-ingest structure --all                                 💰  전량 (약 
 
 리포트는 이렇게 나온다:
 ```
-  훑음         63건
+  훑음         22건
   초안         20건   검수 대기(PENDING)
-  제외          0건   개교회 채용이 아님 — 초안 없음
-  2단계 대기   43건   내용이 이미지에 있음 — 멀티모달이 붙을 때까지 손대지 않음
+  제외          2건   개교회 채용이 아님 — 초안 없음
+  ⚠ 그림을 못 읽고 텍스트만으로 판정한 공고 1건 — 포스터 공고면 내용을 못 본 채 판정된 것입니다.
+      DAESHIN/1234: 그림 1/1장을 못 읽음: poster.png: HTTP 404
 ```
 | 줄 | 뜻 |
 |---|---|
 | **초안** | `review_data`에 PENDING으로 들어갔다 |
 | **제외** | 개교회 채용이 아니라고 판정했다(초안 없음). **실패가 아니다** |
 | **빈 공고** | 본문·이미지·첨부가 전부 없어 호출하지 않았다 |
-| **2단계 대기** | 내용이 이미지에 있다. 지금 프롬프트는 텍스트만 보내므로 **판정을 남기지 않고 그대로 둔다** |
+| **그림 대기** | 그림을 가져올 수단 없이 실행됐다(프로그램 경로 전용 · CLI에서는 나오지 않는다) |
 | **실패** | 판정을 남기지 않았다 → 다음 실행이 다시 시도한다(상한 3회) |
+
+⚠️ **`그림을 못 읽고 텍스트만으로 판정한 공고 N건`** 경고가 뜨면 눈여겨본다 — 포스터 공고면 내용을 못 본 채 판정된 것이고, 판정은 되돌릴 수 없다.
 
 ⚠️ **한 번 판정된 공고는 되돌릴 수 없다**(`structured_at`은 앞으로만 간다). 전량(`--all`)을 돌리기 전에 되돌리기 스크립트를 만든다 — [ROADMAP](./ROADMAP.md) 1-2 3단계.
 
@@ -76,7 +108,7 @@ minjob-ingest structure --all                                 💰  전량 (약 
 게시판 1곳 = 파일 1개(`minjob_ingest/sources/adapters/<key 소문자>.py`). **파일을 놓으면 자동 등록**된다.
 현재 **30곳 구현 = 활성 전부**. `HANSEI`는 게시판 소멸로 제외(31곳 등록 중 30곳 활성).
 
-fixture(`tests/fixtures/<KEY>/`)는 **커밋되지 않는다**(가드레일 #11). 새 컴퓨터에서 어댑터 테스트를 돌리려면 먼저 받아야 한다:
+fixture(`tests/fixtures/<KEY>/`)는 **커밋되지 않는다**. 새 컴퓨터에서 어댑터 테스트를 돌리려면 먼저 받아야 한다:
 ```bash
 minjob-ingest snapshot                     🌐  활성 전부 (게시판당 최대 2요청)
 minjob-ingest snapshot --source YTUS       🌐  한 곳만
@@ -95,7 +127,8 @@ minjob-ingest snapshot --source YTUS       🌐  한 곳만
 ```bash
 python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 cp .env.example .env         # Vertex 서비스계정 값 입력 (PRIVATE_KEY 개행은 \n)
-minjob-ingest check-gemini   # 💰 인증 확인
+minjob-ingest check-gemini          # 💰 인증 확인 (VERTEX_MODEL)
+minjob-ingest check-gemini --lite   # 💰 VERTEX_MODEL_LITE 도 실제로 부를 수 있나
 ```
 
 ## 주의
@@ -112,6 +145,6 @@ minjob-ingest check-gemini   # 💰 인증 확인
 | 구조화가 `처리할 공고가 없습니다` | 전부 판정됐거나 · 시도 상한(3) 초과 · `--source`에 남은 것 없음 |
 | `command not found: minjob-ingest` | venv 활성화 · 또는 `pip install -e ".[dev]"` 재실행 |
 | Vertex 설정·PRIVATE_KEY 오류 | `.env` 값과 개행(`\n`) — 메시지가 빠진 변수명을 알려준다 |
-| 한 게시판만 0건·실패 | 셀렉터 깨짐 또는 로그인벽. **우회 금지** — 비활성화 후 보고(가드레일 #1) |
+| 한 게시판만 0건·실패 | 셀렉터 깨짐 또는 로그인벽. **우회 금지** — 비활성화 후 보고 |
 
 > 저장 위치·필드 = [SPEC](./SPEC.md) §6 · 게시판 설정 = `config/sources.json`

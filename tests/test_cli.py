@@ -148,7 +148,7 @@ def test_check_gemini_reports_missing_config_without_calling_the_api(
 
 
 class _NoClient:
-    """전송 층 대역. 이 테스트는 게시판을 만지지 않는다(가드레일 #7)."""
+    """전송 층 대역. 이 테스트는 게시판을 만지지 않는다."""
 
     def __init__(self, source: object) -> None:
         pass
@@ -428,6 +428,28 @@ def test_structure_rejects_an_unknown_source_before_spending_anything(
     assert "알 수 없는 source_key" in capsys.readouterr().err
 
 
+class _FakeGemini:
+    """`GeminiClient` 대역. 화면·`--out`에 찍히는 모델 이름만 필요하다."""
+
+    model = "gemini-테스트-모델"
+
+
+def _stub_gemini(monkeypatch: pytest.MonkeyPatch, *, asked: list[bool] | None = None) -> None:
+    """Vertex를 통째로 대역으로 바꾼다 — 이 테스트들은 유료 호출을 하지 않는다.
+
+    `asked`를 주면 `--lite`가 설정 층까지 실제로 닿았는지 기록한다.
+    """
+
+    def require_vertex(_self: Settings, *, lite: bool = False) -> object:
+        if asked is not None:
+            asked.append(lite)
+        return object()
+
+    monkeypatch.setattr(cli, "GeminiClient", lambda _settings: _FakeGemini())
+    monkeypatch.setattr(cli, "GeminiExtractor", lambda _client: object())
+    monkeypatch.setattr(Settings, "require_vertex", require_vertex)
+
+
 def test_structure_options_reach_the_pipeline_intact(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -445,9 +467,7 @@ def test_structure_options_reach_the_pipeline_intact(
 
     monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path))
     monkeypatch.setattr(cli, "structure_pending", fake_pipeline)
-    monkeypatch.setattr(cli, "GeminiClient", lambda _settings: object())
-    monkeypatch.setattr(cli, "GeminiExtractor", lambda _client: object())
-    monkeypatch.setattr(Settings, "require_vertex", lambda _self: object())
+    _stub_gemini(monkeypatch)
 
     assert main(["structure", "--limit", "20", "--source", "ytus"]) == 0
     assert main(["structure", "--all", "--dry-run"]) == 0
@@ -456,6 +476,39 @@ def test_structure_options_reach_the_pipeline_intact(
     assert (bounded.limit, bounded.source_key, bounded.dry_run) == (20, "YTUS", False)
     assert (everything.limit, everything.source_key, everything.dry_run) == (None, None, True)
     capsys.readouterr()
+
+
+def test_the_lite_flag_picks_the_other_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ `--lite`가 조용히 무시되면 4배 비싼 모델이 돈다 — 화면으로는 구분되지 않는다.
+
+    두 모델을 견주는 실행에서 이게 어긋나면 **결론이 반대**가 된다.
+    """
+    asked: list[bool] = []
+
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path))
+    monkeypatch.setattr(cli, "structure_pending", lambda *_a, **_k: StructureReport())
+    _stub_gemini(monkeypatch, asked=asked)
+
+    assert main(["structure", "--limit", "1", "--dry-run"]) == 0
+    assert main(["structure", "--limit", "1", "--dry-run", "--lite"]) == 0
+
+    assert asked == [False, True], "기본은 VERTEX_MODEL, --lite 일 때만 VERTEX_MODEL_LITE"
+    capsys.readouterr()
+
+
+def test_the_model_name_is_printed_every_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 어느 모델로 돌았는지 화면에 없으면 `--out` 파일이 뒤바뀐 것을 알 수 없다."""
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path))
+    monkeypatch.setattr(cli, "structure_pending", lambda *_a, **_k: StructureReport())
+    _stub_gemini(monkeypatch)
+
+    assert main(["structure", "--limit", "1", "--dry-run"]) == 0
+
+    assert _FakeGemini.model in capsys.readouterr().out
 
 
 def test_the_preview_shows_the_record_that_would_be_stored(
@@ -515,4 +568,71 @@ def test_the_preview_says_why_no_draft_was_made(capsys: pytest.CaptureFixture[st
     )
 
     shown = capsys.readouterr().out
-    assert "2단계" in shown and "만들지 않음" in shown
+    assert "그림 대기" in shown and "만들지 않음" in shown
+
+
+def test_the_preview_file_is_diffable_between_runs(tmp_path: Path) -> None:
+    """⚠️ 프롬프트를 고치고 무엇이 달라졌는지 보려면 두 실행을 **diff** 할 수 있어야 한다.
+
+    `id`·`created_at`은 실행마다 새로 생기므로 그대로 두면 값이 하나도 안 바뀌었는데
+    **전 레코드가 달라진 것처럼** 보여 도구가 무용지물이 된다.
+    """
+    record = SourceData(
+        source_key="DAESHIN",
+        external_id="37",
+        source_url="https://daeshin.ac.kr/board/37",
+        title="성원교회 청빙",
+        run_id=new_id(),
+        fetched_at=kst_now(),
+        raw_text="본문",
+    )
+    extraction = Extraction(
+        is_church_recruitment=IsChurchRecruitment.YES,
+        church_name="성원교회",
+        title="주일학교 사역자 모집",
+        description="요약",
+    )
+
+    def run_once(path: Path) -> str:
+        preview = cli._PreviewFile(path, model=_FakeGemini.model)
+        # 같은 입력이라도 초안은 매번 새 id·created_at 을 갖는다
+        result = StructureResult(
+            record=record, verdict=Verdict.DRAFTED, draft=build_draft(record, extraction)
+        )
+        preview.add(result, StructureReport())
+        preview.write()
+        return path.read_text(encoding="utf-8")
+
+    first = run_once(tmp_path / "a.json")
+    second = run_once(tmp_path / "b.json")
+
+    assert first == second, "값이 같은데 파일이 달라지면 diff 로 비교할 수 없다"
+    assert "성원교회" in first
+    assert '"verdict": "DRAFTED"' in first
+    assert '"id"' not in first and '"created_at"' not in first
+
+
+def test_the_preview_file_records_why_a_posting_was_skipped(tmp_path: Path) -> None:
+    """초안이 없는 판정도 파일에 남아야 한다 — 왜 빠졌는지가 검수의 절반이다."""
+    record = SourceData(
+        source_key="CALVIN",
+        external_id="9",
+        source_url="https://e.kr/9",
+        title="포스터",
+        run_id=new_id(),
+        fetched_at=kst_now(),
+        raw_text="",
+        image_urls=("https://e.kr/p.png",),
+    )
+    path = tmp_path / "p.json"
+    preview = cli._PreviewFile(path, model=_FakeGemini.model)
+
+    preview.add(StructureResult(record=record, verdict=Verdict.DEFERRED), StructureReport())
+    preview.write()
+
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written[0]["verdict"] == "DEFERRED"
+    assert written[0]["posting"] == "CALVIN/9"
+    assert "draft" not in written[0]
+    # ⚠️ 두 모델을 견줄 때 파일 이름만 믿으면 뒤바뀐 것을 알 수 없다 — 파일이 스스로 밝힌다.
+    assert written[0]["model"] == _FakeGemini.model
