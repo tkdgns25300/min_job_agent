@@ -74,7 +74,7 @@ class JsonStore:
         self, source_key: str, external_ids: Sequence[str]
     ) -> Mapping[str, LedgerEntry]:
         # 저장 시엔 모델이 정규화하므로 조회도 같은 정규화를 거쳐야 원장이 빗나가지 않는다.
-        # (빗나가면 이미 수집한 글의 상세를 매 실행 다시 요청한다 —.)
+        # (빗나가면 이미 수집한 글의 상세를 매 실행 다시 요청한다.)
         wanted = {external_id.strip(): external_id for external_id in external_ids}
         if not wanted:
             return {}

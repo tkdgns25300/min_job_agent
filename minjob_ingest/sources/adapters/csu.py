@@ -234,7 +234,7 @@ def _public_properties(row: dict[str, object]) -> dict[str, JsonValue]:
     """공고 필드만 화이트리스트로 옮긴다.
 
     ⚠️ `properties`를 통째로 넣으면 `cert_data`(작성자 본인인증 정보)가 그대로 저장된다 —
-    공고 내용이 아니라 **신원 정보**이고 위반이다.
+    공고 내용이 아니라 **신원 정보**라 저장하지 않는다.
     """
     properties = row.get("properties")
     if not isinstance(properties, dict):

@@ -122,7 +122,7 @@ _POINTER_VALUES: Final = frozenset(
 )
 
 #: 한 줄이어야 하는 필드(교회명·제목 등)의 상한. ⚠️ `description`만 막으면 원문이 `title`로
-#: 흘러 공개된다 — "한 줄로 쓰라"는 지시는 지켜지지 않을 수 있다.
+#: 흘러 그대로 공개된다 — "한 줄로 쓰라"는 지시는 지켜지지 않을 수 있다.
 MAX_SHORT_TEXT_CHARS: Final = 200
 
 #: 목록 칸(`requirements`·`required_docs` 등) 한 항목의 상한. 같은 이유로 막는다 —
@@ -231,7 +231,8 @@ _PROMPT_TEMPLATE: Final = """\
 
 ## 그대로 옮긴다
 - 표현을 고치지 않는다. 아래 대문자 값 넷과 description만 예외다.
-- 사람 이름은 어느 칸에도 넣지 않는다.
+- contact_* 는 담당자 이름이 붙어 있어도 **떼지 않는다**(`010-1234-5678 (김목사)`).
+  그 밖의 칸에는 사람 이름을 넣지 않는다 — 공고를 낸 교회가 아니라 사람이 담기게 된다.
 - 한 공고가 여러 자리를 뽑고 값이 자리마다 다르면 — job_kind·position은 전부 담고,
   department·employment_type·qualification은 null로 둔다. 값이 하나면 그 값을 넣는다.
 

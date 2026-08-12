@@ -367,7 +367,7 @@ class ReviewData:
     #: 공고 원문 링크. **필수다** — `source_data.source_url`을 그대로 복사한다.
     #:
     #: ⚠️ 정규화상으로는 `source_data_id`로 JOIN하면 되니 중복이다. 그래도 복사하는 이유:
-    #: min_job `jobs.source_url`은 **(원문 재게시 금지·출처 표기)의 핵심 필드**이고,
+    #: min_job `jobs.source_url`은 **원문 재게시 금지·출처 표기의 핵심 필드**이고,
     #: 승격 코드가 JOIN을 잊으면 출처 없이 공개된다. 승격이 이 테이블 하나만 보고 끝나게 한다.
     source_url: str
     id: UUID = field(default_factory=new_id)
@@ -434,7 +434,7 @@ class ReviewData:
     denomination_evidence: str | None = None
     raw_denomination: str | None = None
 
-    # 지원 연락처 — 지원용으로 **공개된 것만**.
+    # 지원 연락처 — 지원용으로 **공개된 것만**(원문 대조는 structure 층).
     #
     # ⚠️ 대표 문자열 하나가 아니라 **방법별 컬럼 4개**다(min_job DATA.md 2026-08-05).
     # `APPLY_METHODS`가 `ETC` 없는 닫힌 4키라 컬럼이 1:1로 대응하고, 승격이 파싱 없이 그대로

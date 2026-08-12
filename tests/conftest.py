@@ -29,7 +29,7 @@ def _block_the_operator_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("minjob_ingest.settings.load_dotenv", guarded)
 
 
-#: 어댑터 fixture가 놓이는 곳. 커밋되지 않는다.
+#: 어댑터 fixture가 놓이는 곳. 커밋되지 않는다(`tests/fixtures/README.md`).
 _FIXTURE_ROOT = Path(__file__).parent / "fixtures"
 
 

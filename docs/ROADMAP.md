@@ -137,7 +137,7 @@
   - **지금 나누면 안 되는 이유**: 크롤러의 종착지는 `review_data`이고 `jobs` 승격은 Phase 2라 **나눠도 갈 곳이 없다**. 그리고 나누는 순간 `UNIQUE(source_data_id)`(재구조화가 idempotent upsert인 근거)·`dedup_key`가 깨지고, 판정이 단조 증가라 **잘못 나눈 것을 되돌릴 코드 경로가 없다**. 애매한 93건은 신호가 둘 다 잡혀 AI도 못 가른다.
   - ✅ **선택지는 닫히지 않는다** — 원문은 `source_data`에, 자리 구성은 `headcount`·`description`에 남는다.
 - [ ] **직분은 여러 개 붙인다**(운영자 결정 2026-08-11) — 실측 **634건(19.9%)** 이 한 공고에 직분을 여러 개 적는다. 두 경우 모두 **행을 쪼개지 않고 직분만 여러 개** 단다: ⓐ 한 자리인데 자격이 여러 직분(`전임사역자(전도사, 강도사, 목사)`) ⓑ 여러 자리(`1.부목사 2.교육목사 3.여전도사`). 대표 1개만 넣으면 나머지 직분으로 검색한 지원자에게 **안 보인다**. 행 분리는 `UNIQUE(source_data_id)`를 깨고 검수를 4배로 만든다
-  - ⚠️ **min_job 스키마 변경이 선행돼야 공개된다**: `jobs.position` `text`→`text[]` · 목록 필터 인덱스를 GIN으로 · 필터 쿼리 `= 'X'`→`@> ARRAY['X']` · ⚠️ `ChurchVerification.applicant.position`은 **개인 직분이라 배열화 대상이 아니다** · `role`(일반직)은 자유 텍스트라 단일 유지 · 목록 카드는 축약 필요(`부목사 외 2 · 유초등부`)
+  - ⚠️ **min_job 스키마 변경이 선행돼야 공개된다**(운영자 작업 — 이 리포는 min_job 파일을 고치지 않는다): `jobs.position` `text`→`text[]` · 목록 필터 인덱스를 GIN으로 · 필터 쿼리 `= 'X'`→`@> ARRAY['X']` · ⚠️ `ChurchVerification.applicant.position`은 **개인 직분이라 배열화 대상이 아니다** · `role`(일반직)은 자유 텍스트라 단일 유지 · 목록 카드는 축약 필요(`부목사 외 2 · 유초등부`)
   - ⚠️⚠️ **XOR CHECK는 `COALESCE(cardinality(...))`로 써야 한다**(2026-08-11 실 Postgres 검증). `array_length(position,1) > 0`은 **빈 배열과 NULL을 둘 다 통과시킨다** — `array_length('{}',1)`이 `0`이 아니라 **`NULL`**을 돌려주고, Postgres CHECK는 결과가 `TRUE` **또는 `NULL`**이면 통과하기 때문이다(`FALSE`일 때만 거부). 그대로 두면 **사역직 공고가 직분 없이 공개된다**.
     ```sql
     CHECK ( (job_kind='MINISTRY' AND COALESCE(cardinality(position),0) > 0 AND role IS NULL)

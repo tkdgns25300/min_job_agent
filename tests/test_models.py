@@ -782,7 +782,7 @@ def test_advance_rejects_error_on_success() -> None:
         )
 
 
-# ── description 상한 ────────────────────────────────
+# ── SourceData 불변식 ───────────────────────────────
 
 
 def test_source_data_requires_a_title() -> None:
@@ -917,7 +917,7 @@ def test_a_posting_with_nothing_is_empty() -> None:
 
 
 def test_a_review_draft_cannot_exist_without_its_source_link() -> None:
-    """⚠️ **`jobs.source_url`은의 핵심 필드다**(원문 재게시 금지 · 출처 표기).
+    """⚠️ **`jobs.source_url`은 출처 표기의 핵심 필드다**(원문 재게시 금지 · 출처 표기).
 
     승격 코드가 `source_data`와의 JOIN을 잊으면 출처 없이 공개된다. 정규화상 중복이지만
     **빠지면 법적 문제가 되는 필드**라 우연에 맡기지 않고 타입으로 강제한다.

@@ -299,8 +299,8 @@ def test_a_long_summary_is_not_a_failure() -> None:
 def test_board_fields_reach_the_model_including_names() -> None:
     """맥락은 다 준다(운영자 결정 2026-08-10).
 
-    "제3자 개인정보를 추출하지 않는다"는 **저장·공개**를 말하는 것이지 모델에 맥락으로 주지
-    말라는 뜻이 아니다 — 맥락이 적을수록 오추출이 늘어난다. 저장·공개는 출력 필드가 막는다.
+    담임목사 이름을 알아야 그게 **모집 직분이 아님**을 안다 — 맥락을 깎으면 오추출이 는다.
+    무엇이 저장되는지는 프롬프트가 아니라 출력 스키마가 정한다.
     """
     prompt = build_prompt(
         _source_data(
@@ -314,8 +314,20 @@ def test_board_fields_reach_the_model_including_names() -> None:
     assert "창원왕성교회" in prompt
 
 
+def test_a_contact_keeps_the_name_the_church_published_with_it() -> None:
+    """⚠️ 교회가 지원용으로 공개한 연락처는 담당자 이름까지 원문대로 둔다(운영자 결정).
+
+    실측: 게시판이 `010-9982-9361 (김영욱 부목사 / 문자문의)`를 주는데 모델이 번호만
+    남겼다. 누구에게 거는 번호인지가 떨어져 나가면 지원자가 쓰기 어려워진다.
+    """
+    prompt = build_prompt(_source_data())
+
+    assert "담당자 이름이 붙어 있어도 **떼지 않는다**" in prompt
+    assert "그 밖의 칸에는 사람 이름을 넣지 않는다" in prompt
+
+
 def test_the_output_contract_is_exactly_these_columns() -> None:
-    """⚠️를 지키는 자리는 **출력 계약**이다 — 사람 이름을 담을 칸이 없어야 한다.
+    """저장될 수 있는 것은 이 목록이 전부다 — 칸이 없으면 저장될 수도 공개될 수도 없다.
 
     부분 문자열로 검사하면 `contact_person`·`manager` 같은 칸이 생겨도 통과한다. 칸을
     늘리려면 이 목록을 고치게 두는 것이 게이트다.
@@ -552,7 +564,7 @@ def test_blank_list_items_are_dropped() -> None:
         "⚠️ 계산하지 않는다",  # pay — 환산은 normalize.py
         "이야기가 없으면 null",  # housing_provided
         "한글로 쓴 숫자는 되돌린다",  # 가린 연락처
-        "사람 이름은 어느 칸에도 넣지 않는다",
+        "담당자 이름이 붙어 있어도 **떼지 않는다**",  # contact_*
         "**반드시 채운다**",  # description
         "숫자만 남기지 않는다",  # headcount
         "게시판 제목 그대로",  # title

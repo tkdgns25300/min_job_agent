@@ -547,7 +547,7 @@ ValueError: Invalid IPv6 URL      ← 30곳 중 1곳의 1개 글이 나머지 29
 ## 1. 프로젝트 정체 (왜 별도 리포인가)
 
 - `../min_job` 본체는 **in-repo 크롤러 코드를 두지 않는다**(min_job CLAUDE.md Ingest 레이어 규칙). 자동 수집 자체는 min_job 쪽에서 **허용**(공개 공식 게시판 한정·운영자 검수 전제·법률 검토 완료 2026-07-28)되며, 그 구현체를 **별도 리포로 분리**한 것이 이 리포다.
-- 이 크롤러는 min_job 기존 파이프라인("사람 수집 → AI 구조화 → 운영자 검토")에서 **fetch 한 단계만 자동화**하는 델타다. 나머지 가드레일(개인정보 금지·정통 화이트리스트·운영자 리뷰 게이트)은 승계.
+- 이 크롤러는 min_job 기존 파이프라인("사람 수집 → AI 구조화 → 운영자 검토")에서 **fetch 한 단계만 자동화**하는 델타다. 나머지 방침(개인정보 최소·정통 화이트리스트·운영자 리뷰 게이트)은 승계.
 - **스키마 정본**: 최종 공개(`churches`/`jobs`) = `../min_job/docs/DATA.md`. **크롤러 staging(`source_data`·`review_data`·`source_health`·`crawl_run`)은 이 리포 소유·마이그레이션**(SPEC §6·§8). 파이프라인 동작 정본 = `SPEC.md`.
 
 ---
@@ -603,7 +603,7 @@ ValueError: Invalid IPv6 URL      ← 30곳 중 1곳의 1개 글이 나머지 29
 | `docs/SNAPSHOT.md` | 이 파일 (시점 핸드오프) | ✅ |
 | `docs/SOURCES.md` | 소스 카탈로그(교단별 URL·접근·활동성·판정) — 3차 실측 + Fable 감사 반영 | ✅ 재작성본 |
 | `docs/CONTRACT.md` | 크롤러 출력 계약 — 교단 enum·정규화 맵·소스별 default 교단+모드+기술요건·스테이징 필드·dedup·로그인 법률게이트 | ✅ 초안 |
-| `CLAUDE.md` | 아키텍처·레이어 책임·가드레일·컨벤션 | ✅ 작성 + 3렌즈 검수(일반 2 + Fable) 반영 |
+| `CLAUDE.md` | 아키텍처·레이어 책임·컨벤션 | ✅ 작성 + 3렌즈 검수(일반 2 + Fable) 반영 |
 | `docs/SPEC.md` | 파이프라인 명세(스코프·게이트·staging 4테이블·정책·배포) | ✅ 작성 + 3렌즈 냉정검수·재검증 |
 | `docs/ROADMAP.md` | Phase별 작업 단위(0~3) | ✅ 작성(min_job 스타일) |
 | `docs/RUNBOOK.md` | **운영자 실행 매뉴얼**(명령·저장위치·장애대응) | ✅ 작성 — 명령 추가 시 갱신 의무 |
@@ -670,7 +670,7 @@ ValueError: Invalid IPv6 URL      ← 30곳 중 1곳의 1개 글이 나머지 29
 **대기:**
 - [x] **Python 이식 완료(2026-07-30)** — `config/sources.json`(31곳 문자 그대로) · 도메인/레코드/시각/설정 · Store(프로토콜+JSON) · Gemini 래퍼 · TS 잔재 제거 · 패키지명 `minjob_ingest`. (§3-13)
 - [ ] **크롤 로직 구현** ⭐ — **1-1 진행 중**(fetch 층 ✅ / 어댑터·원장확장·`collect`·관통 남음 → **§10**). 이후 교단 확정(1-3)·31곳 확장(1-4)·Supabase(1-6)·GH Actions(1-7).
-- [~] **min_job 연동**(별도 리포 · SPEC §8) — 2026-07-29 확인: ✅ `job_kind`·`role`·`contact` 타입 반영 · ✅ `KIJANG` 제거(**10키 완료**) · ✅ 재정의 + **법률 검토 완료(2026-07-28)** · ✅ min_job ROADMAP 1-10 트랙 생성. **남은 것**: 마이그레이션 SQL · 목록 UI 필터 · `review_data` 검수 브릿지(전부 min_job 소관).
+- [~] **min_job 연동**(별도 리포 · SPEC §8) — 2026-07-29 확인: ✅ `job_kind`·`role`·`contact` 타입 반영 · ✅ `KIJANG` 제거(**10키 완료**) · ✅ 수집 방침 재정의 + **법률 검토 완료(2026-07-28)** · ✅ min_job ROADMAP 1-10 트랙 생성. **남은 것**: 마이그레이션 SQL · 목록 UI 필터 · `review_data` 검수 브릿지(전부 min_job 소관).
 - [ ] **순복음·ETC 물량 보강 검토** — 순복음 공개 물량 얇음 → `agkdc` 확인, PROK 사망분 대체.
 - [ ] **로그인 소스 법률 게이트** — KMC·AGK·기독신문 인증 크롤 전 변호사 확인 + 계정.
 - [ ] **커버리지/상업 CROSS**(청빙넷·cjob·갓피플·WGST) — 법적 검토 후 재결정.

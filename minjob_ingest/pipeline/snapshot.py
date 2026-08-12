@@ -5,7 +5,7 @@
 config의 `list_url`·`detail_pattern`만 쓴다.
 
 받은 HTML은 `tests/fixtures/<KEY>/`에 **그대로**(마스킹 없이) 둔다 — 그 디렉터리는
-커밋되지 않는다.
+커밋되지 않는다(`tests/fixtures/README.md`).
 """
 
 from __future__ import annotations
