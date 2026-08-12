@@ -1,6 +1,6 @@
 """YTUS 어댑터 테스트 — 실제 게시판 HTML(fixture)로, 네트워크 없이.
 
-fixture는 2026-08-04 실측본이며 개인정보를 마스킹했다(가드레일 #11). 사이트가 개편되면
+fixture는 2026-08-04 실측본이며 개인정보를 마스킹했다. 사이트가 개편되면
 이 테스트가 먼저 깨지는 것이 목적이다 — 조용히 0건이 되는 것보다 낫다.
 """
 
@@ -452,7 +452,7 @@ def test_missing_body_container_is_an_error(refs: tuple[PostingRef, ...]) -> Non
         ytus.parse_detail("<html><body>개편 중</body></html>", refs[0])
 
 
-# ── fixture 위생 (가드레일 #11) ──────────────────────────────────
+# ── fixture 위생 ──────────────────────────────────
 
 
 #: fixture별 "담임목사 :" 라벨 **실측 개수**. `all(...)`은 0건 매치에서도 통과하므로

@@ -3,7 +3,7 @@
 구조적 검사(조용한 0건·페이징·id 유일·상세 증거)는 `test_adapter_conformance.py`가 31곳 전부에
 적용한다. 여기 중복해서 쓰지 않는다.
 
-fixture는 2026-08-04 실측본이고 커밋되지 않는다(가드레일 #11) —
+fixture는 2026-08-04 실측본이고 커밋되지 않는다 —
 `minjob-ingest snapshot --source WGST` 으로 받는다. 첨부가 달린 상세 표본 `detail_file.html`은
 `--url ".../boardview.asp?key=6131&seq=670" --name detail_file.html`로 받는다(최근 60건에는
 첨부가 없다 — 120페이지에서 3건 나왔다 · 어댑터 docstring).

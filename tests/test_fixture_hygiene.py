@@ -1,4 +1,4 @@
-"""fixture가 실수로 커밋되지 않는지 지킨다(가드레일 #11).
+"""fixture가 실수로 커밋되지 않는지 지킨다.
 
 게시판 HTML 원본에는 **실제 전화번호·이메일·실명**이 있고 이 리포는 공개다.
 
@@ -42,7 +42,7 @@ def test_no_fixture_is_tracked_by_git() -> None:
     """⚠️ 하나라도 추적되면 그 안의 실제 연락처가 **공개 리포 이력에 영구히** 남는다.
 
     git 이력은 지울 수 없다 — 파일을 나중에 삭제해도 과거 커밋에서 그대로 꺼내볼 수 있고,
-    교회가 삭제를 요청해도 이행할 수 없게 된다(가드레일 #4).
+    교회가 삭제를 요청해도 이행할 수 없게 된다.
     """
     leaked = [path for path in _tracked_fixture_paths() if Path(path).name not in _ALLOWED]
     assert not leaked, (

@@ -515,7 +515,7 @@ def test_health_roundtrip_and_upsert_replaces(store: JsonStore, data_dir: Path) 
 def test_corrupt_row_is_skipped_not_fatal(
     lenient_store: JsonStore, corruption_log: list[str], data_dir: Path
 ) -> None:
-    # 한 행이 깨졌다고 전체 로드를 실패시키면 원장을 잃고 31곳을 다시 긁는다(가드레일 #7).
+    # 한 행이 깨졌다고 전체 로드를 실패시키면 원장을 잃고 31곳을 다시 긁는다.
     good = to_row(_source_data("1"))
     _write_raw(data_dir, "source_data.json", [good, {"broken": True}])
 

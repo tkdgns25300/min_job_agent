@@ -3,7 +3,7 @@
 구조적 검사(조용한 0건·페이징·id 유일·상세 증거)는 `test_adapter_conformance.py`가 31곳 전부에
 적용한다. 여기 중복해서 쓰지 않는다.
 
-fixture는 2026-08-04 실측본이고 커밋되지 않는다(가드레일 #11) —
+fixture는 2026-08-04 실측본이고 커밋되지 않는다 —
 `minjob-ingest snapshot --source NAZARENE` 으로 받는다.
 """
 
@@ -106,7 +106,7 @@ def test_page_two_links_drop_the_page_parameter(source: SourceConfig) -> None:
 
 
 def test_member_only_rows_are_skipped_not_unlocked(source: SourceConfig) -> None:
-    """⚠️ 잠긴 글(`.fa-lock`)은 **건너뛴다** — 우회하지 않는다(가드레일 #1).
+    """⚠️ 잠긴 글(`.fa-lock`)은 **건너뛴다** — 우회하지 않는다.
 
     실측 1·2페이지에는 잠긴 글이 없어 합성 HTML로 검증한다.
     """

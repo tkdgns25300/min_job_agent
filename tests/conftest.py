@@ -2,7 +2,7 @@
 
 가장 큰 사고는 **테스트가 운영자의 실제 `.env`를 읽는 것**이다. 그 파일에는 Vertex 서비스계정
 비밀키가 있고, 그 값이 `os.environ`에 들어오면 `check-gemini` 경로를 지나는 테스트가
-**유료 API를 실제로 호출**한다(가드레일 #10 위반). 규율로 막지 않고 여기서 차단한다.
+**유료 API를 실제로 호출**한다. 규율로 막지 않고 여기서 차단한다.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ def _block_the_operator_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("minjob_ingest.settings.load_dotenv", guarded)
 
 
-#: 어댑터 fixture가 놓이는 곳. 커밋되지 않는다(가드레일 #11 · `tests/fixtures/README.md`).
+#: 어댑터 fixture가 놓이는 곳. 커밋되지 않는다.
 _FIXTURE_ROOT = Path(__file__).parent / "fixtures"
 
 
@@ -52,7 +52,7 @@ def adapter_fixture_coverage() -> tuple[tuple[str, ...], tuple[str, ...]]:
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
     """어댑터 fixture 커버리지를 요약에 찍는다.
 
-    ⚠️ fixture는 커밋되지 않으므로(가드레일 #11) 없으면 적합성 검사가 **조용히 skip**된다.
+    ⚠️ fixture는 커밋되지 않으므로 없으면 적합성 검사가 **조용히 skip**된다.
     숫자를 항상 눈에 보이게 두면 "초록불인데 검증 0건"을 알아챌 수 있다.
     """
     have, missing = _adapter_fixture_coverage()

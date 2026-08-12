@@ -67,7 +67,7 @@ def test_env_str_returns_none_when_missing() -> None:
 
 
 def test_defaults_are_repo_anchored() -> None:
-    # CWD 기준 상대경로면 실행 위치마다 저장소가 갈라져 원장을 잃는다(가드레일 #7·#11).
+    # CWD 기준 상대경로면 실행 위치마다 저장소가 갈라져 원장을 잃는다.
     settings = _load()
     assert settings.data_dir == DEFAULT_DATA_DIR
     assert settings.sources_path == DEFAULT_SOURCES_PATH
@@ -189,7 +189,7 @@ def test_require_vertex_restores_pem_newlines(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_vertex_repr_masks_the_private_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """트레이스백·디버그 로그에 비밀키 전문이 찍히면 안 된다(가드레일)."""
+    """트레이스백·디버그 로그에 비밀키 전문이 찍히면 안 된다."""
     _set_vertex(monkeypatch)
     vertex = _load().require_vertex()
     assert "AAA" not in repr(vertex)

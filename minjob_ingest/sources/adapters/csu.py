@@ -21,7 +21,7 @@ board_id  하드코딩하지 않아도 된다: POST /api/website/getMenu {id:111
 
 ⚠️⚠️ **개인정보**: 목록 응답에는 공고와 무관한 **작성자 신원**이 섞여 있다 —
 `properties.cert_data`(본인인증 `CI`(주민번호 파생 연계정보)·생년월일·성별·휴대폰·실명),
-`registered_from_ip_address`, `registered_by_user_id/idx`. **전부 버린다**(가드레일 #4).
+`registered_from_ip_address`, `registered_by_user_id/idx`. **전부 버린다**.
 남기는 것은 교회가 공고에 스스로 적은 필드뿐이다.
 
 교단이 `properties.order_name`에 명시돼 있어 이 게시판은 구조화에서 `stated`로 확정된다
@@ -234,7 +234,7 @@ def _public_properties(row: dict[str, object]) -> dict[str, JsonValue]:
     """공고 필드만 화이트리스트로 옮긴다.
 
     ⚠️ `properties`를 통째로 넣으면 `cert_data`(작성자 본인인증 정보)가 그대로 저장된다 —
-    공고 내용이 아니라 **신원 정보**이고 가드레일 #4 위반이다.
+    공고 내용이 아니라 **신원 정보**이고 위반이다.
     """
     properties = row.get("properties")
     if not isinstance(properties, dict):

@@ -1,6 +1,6 @@
 """수집 판단 테스트 — 컷오프·페이지 종료·번호 충돌.
 
-결정이 순수 함수라 네트워크·저장 없이 검증한다(가드레일 #7·#10).
+결정이 순수 함수라 네트워크·저장 없이 검증한다.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def test_empty_ledger_makes_every_row_fresh() -> None:
 
 
 def test_known_ids_are_skipped_without_a_detail_request() -> None:
-    """원장에 있으면 상세를 요청하지 않는다 — 이게 증분의 전부다(가드레일 #7)."""
+    """원장에 있으면 상세를 요청하지 않는다 — 이게 증분의 전부다."""
     known, new = _ref("1"), _ref("2")
     plan = plan_page((known, new), {known.external_id: _entry(known)}, cutoff=None)
     assert plan.fresh == (new,)
@@ -315,7 +315,7 @@ def test_first_run_collects_every_posting(board_html: tuple[str, str], tmp_path:
 
 
 def test_second_run_requests_no_details(board_html: tuple[str, str], tmp_path: Path) -> None:
-    """증분의 전부 — 이미 본 글의 상세를 다시 요청하지 않는다(가드레일 #7)."""
+    """증분의 전부 — 이미 본 글의 상세를 다시 요청하지 않는다."""
     store = JsonStore(tmp_path / "data")
     _collect(_Board(*board_html), store, CollectOptions(max_pages=1))
     board = _Board(*board_html)

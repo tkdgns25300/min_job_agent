@@ -6,7 +6,7 @@
 소스 간 병렬(SPEC §3)로 돌릴 때는 쓰기를 한 곳으로 직렬화하거나 `SupabaseStore`로 전환한다.
 
 ⚠️ **로컬 실행 전용.** GitHub Actions 러너는 끝나면 사라져 원장이 매 실행 초기화된다 →
-31곳 전량 재크롤(가드레일 #7) + 전량 재구조화(비용) + 산출물 유실. Actions 배포는
+31곳 전량 재크롤 + 전량 재구조화(비용) + 산출물 유실. Actions 배포는
 Supabase 전환(ROADMAP 1-6) 이후에만 한다(CLAUDE.md 순서 제약).
 """
 
@@ -74,7 +74,7 @@ class JsonStore:
         self, source_key: str, external_ids: Sequence[str]
     ) -> Mapping[str, LedgerEntry]:
         # 저장 시엔 모델이 정규화하므로 조회도 같은 정규화를 거쳐야 원장이 빗나가지 않는다.
-        # (빗나가면 이미 수집한 글의 상세를 매 실행 다시 요청한다 — 가드레일 #7.)
+        # (빗나가면 이미 수집한 글의 상세를 매 실행 다시 요청한다 —.)
         wanted = {external_id.strip(): external_id for external_id in external_ids}
         if not wanted:
             return {}
@@ -273,7 +273,7 @@ class JsonStore:
 
     @staticmethod
     def _check_only_state_changed(stored: SourceData, incoming: SourceData) -> None:
-        """원문 증거는 write-once — 갱신 경로로 바뀌면 구현이 막는다(가드레일 #3)."""
+        """원문 증거는 write-once — 갱신 경로로 바뀌면 구현이 막는다."""
         changed = [
             f.name
             for f in fields(SourceData)

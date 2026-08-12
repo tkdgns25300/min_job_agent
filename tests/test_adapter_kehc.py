@@ -3,7 +3,7 @@
 구조적 검사(조용한 0건·페이징·id 유일·상세 증거)는 `test_adapter_conformance.py`가 31곳 전부에
 적용한다. 여기 중복해서 쓰지 않는다.
 
-fixture는 2026-08-04 실측본이고 커밋되지 않는다(가드레일 #11) —
+fixture는 2026-08-04 실측본이고 커밋되지 않는다 —
 `minjob-ingest snapshot --source KEHC` 로 받는다.
 """
 
@@ -108,7 +108,7 @@ def test_a_locked_row_is_dropped_with_a_loud_failure_when_it_is_the_only_one(
 ) -> None:
     """⚠️ 비밀글의 상세는 200 + 빈 페이지다(실측 27561) — 담으면 매 실행 상세 파싱이 실패한다.
 
-    비공개 글이라 우회하지 않고(가드레일 #1) 목록에서 뺀다. 전부 그렇게 되면 실패로 알린다.
+    비공개 글이라 우회하지 않고 목록에서 뺀다. 전부 그렇게 되면 실패로 알린다.
     """
     lock = '<img src="/design_skins/default/plugin_views/board/kehc_job/images/ico_lock.gif"/>'
     locked = _row(ident="27561", extra=lock)

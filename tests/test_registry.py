@@ -1,4 +1,4 @@
-"""레지스트리 로더 테스트 — 네트워크를 타지 않는다(CLAUDE.md 가드레일 #7)."""
+"""레지스트리 로더 테스트 — 네트워크를 타지 않는다(CLAUDE.md)."""
 
 from __future__ import annotations
 

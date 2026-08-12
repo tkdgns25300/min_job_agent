@@ -1,11 +1,11 @@
 """fixture 확보 — 게시판 HTML을 파일로 떠 온다.
 
 ⚠️ **어댑터 없이 동작해야 한다.** fixture는 어댑터를 *만들기 전에* 필요하므로(파싱 코드를 고칠
-때마다 게시판을 다시 두드리지 않기 위해 · 가드레일 #7), 이 모듈은 `sources/adapters/`를 모른다.
+때마다 게시판을 다시 두드리지 않기 위해), 이 모듈은 `sources/adapters/`를 모른다.
 config의 `list_url`·`detail_pattern`만 쓴다.
 
 받은 HTML은 `tests/fixtures/<KEY>/`에 **그대로**(마스킹 없이) 둔다 — 그 디렉터리는
-커밋되지 않는다(가드레일 #11 · `tests/fixtures/README.md`).
+커밋되지 않는다.
 """
 
 from __future__ import annotations

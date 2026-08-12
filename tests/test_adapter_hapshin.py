@@ -3,7 +3,7 @@
 구조적 검사(조용한 0건·페이징·id 유일·상세 증거)는 `test_adapter_conformance.py`가 31곳 전부에
 적용한다. 여기 중복해서 쓰지 않는다.
 
-fixture는 2026-08-04 실측본이고 커밋되지 않는다(가드레일 #11) —
+fixture는 2026-08-04 실측본이고 커밋되지 않는다 —
 `minjob-ingest snapshot --source HAPSHIN` 으로 받는다. 첨부가 달린 상세 `detail_file.html`은
 `--url "https://hapdong.ac.kr/bbs/board.php?bo_table=e03&wr_id=15254" --name detail_file.html`
 으로 받는다(2026-08-05 실측).

@@ -256,7 +256,7 @@ def test_at_least_one_adapter_is_verified_against_a_fixture(
 ) -> None:
     """⚠️ fixture가 전부 없으면 위 검사들이 **모두 skip되고 초록불**이 된다 — 검증 0건인데 통과다.
 
-    `tests/fixtures/`는 커밋되지 않으므로(가드레일 #11) 새 클론에서 실제로 이 상태가 된다.
+    `tests/fixtures/`는 커밋되지 않으므로 새 클론에서 실제로 이 상태가 된다.
     """
     have, missing = adapter_fixture_coverage
     assert have, (

@@ -93,7 +93,7 @@ def test_pinned_notices_are_excluded(source: SourceConfig) -> None:
 
 def test_poster_identity_is_never_carried(refs: tuple[PostingRef, ...]) -> None:
     """⚠️⚠️ 응답의 `properties.cert_data`에는 작성자의 **CI(주민번호 파생 연계정보)**·생년월일·
-    성별·휴대폰·실명이 있다. 공고 내용이 아니라 신원 정보이므로 저장하면 가드레일 #4 위반이다.
+    성별·휴대폰·실명이 있다. 공고 내용이 아니라 신원 정보이므로 저장하면 위반이다.
 
     `properties`를 통째로 옮기지 않고 **화이트리스트**로 옮기는 이유가 이것이다 — 서버가 필드를
     추가해도 새 개인정보가 자동으로 흘러들지 않는다.
