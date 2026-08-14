@@ -533,7 +533,6 @@ def test_the_preview_shows_the_record_that_would_be_stored(
         Extraction(
             is_church_recruitment=IsChurchRecruitment.YES,
             church_name="성원교회",
-            title="성원교회 주일학교 사역자 모집",
             description="대구 수성구 성원교회가 주일학교 사역자를 모집합니다.",
         ),
     )
@@ -589,7 +588,6 @@ def test_the_preview_file_is_diffable_between_runs(tmp_path: Path) -> None:
     extraction = Extraction(
         is_church_recruitment=IsChurchRecruitment.YES,
         church_name="성원교회",
-        title="주일학교 사역자 모집",
         description="요약",
     )
 

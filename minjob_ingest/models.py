@@ -234,7 +234,8 @@ class SourceData:
     source_key: str
     external_id: str
     source_url: str
-    #: 게시판 목록의 제목 **그대로**. 정리·요약한 제목은 `review_data.title`이다.
+    #: 게시판 목록의 제목 **그대로**. `review_data.title`은 여기서 머리표만 뗀 값이다
+    #: (`pipeline/normalize.clean_title` — 모델을 거치지 않는다).
     #: 별도 컬럼인 이유: `raw_meta`에 묻어두면 운영자가 원자료 표를 열었을 때 무슨 공고인지
     #: 안 보이고, 원장 대조에서 Store가 어댑터의 키 이름을 알아야 한다(계층 침범).
     title: str

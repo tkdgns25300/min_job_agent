@@ -105,7 +105,6 @@ def _extraction(gate1: IsChurchRecruitment = IsChurchRecruitment.YES) -> Extract
     return Extraction(
         is_church_recruitment=gate1,
         church_name="점촌제일교회",
-        title="전임 사역자 청빙",
         description="전임 사역자를 청빙합니다.",
     )
 
@@ -141,6 +140,29 @@ def test_a_draft_is_written_and_the_verdict_is_recorded(store: JsonStore, data_d
     assert len(drafts) == 1
     assert drafts[0].church_name == "점촌제일교회"
     assert drafts[0].review_status is ReviewStatus.PENDING
+
+
+def test_the_draft_title_comes_from_the_board_not_the_model() -> None:
+    """⚠️ **이 배선에 테스트가 없으면 아무도 못 잡는다.** `build_draft`의 `title=` 한 줄을
+    엉뚱한 값으로 바꿔도 스위트 전체가 통과하는 상태였다(변이 테스트로 확인).
+
+    모델에게 맡겼을 때 20건 중 6건이 끝의 마침표를 잃었다 — 게시판 제목이 원문이고
+    코드가 그것을 그대로 쓴다(`normalize.clean_title` · 머리표만 뗀다).
+    """
+    record = replace(_source_data(), title="(끌어올림)성원교회에서 동역자를 모십니다.")
+
+    draft = build_draft(record, _extraction())
+
+    assert draft.title == "성원교회에서 동역자를 모십니다."
+
+
+def test_the_draft_title_ignores_what_the_model_says() -> None:
+    """모델이 제목을 답할 칸 자체가 없다 — 있었다면 이 테스트가 그걸 드러낸다."""
+    record = replace(_source_data(), title="대구한일교회에서 파트 사역자를 모십니다.")
+
+    draft = build_draft(record, _extraction())
+
+    assert draft.title == record.title
 
 
 def test_the_draft_inherits_the_collect_run() -> None:
@@ -717,7 +739,6 @@ def test_every_extracted_value_reaches_the_draft() -> None:
         is_church_recruitment=IsChurchRecruitment.YES,
         job_kind=(JobKind.MINISTRY, JobKind.GENERAL),
         role="음향",
-        title="청빙",
         position=(Position.EVANGELIST,),
         department=Department.YOUTH,
         employment_type=EmploymentType.FULL_TIME,
@@ -752,6 +773,8 @@ def test_every_extracted_value_reaches_the_draft() -> None:
     draft = build_draft(_source_data(), filled)
 
     for info in fields(Extraction):
+        if info.name == "evidence":
+            continue  # 근거는 검산용이고 저장되지 않는다(`pipeline/verify.py`)
         assert getattr(draft, info.name) == getattr(filled, info.name), f"{info.name}이 안 옮겨졌다"
     assert draft.posted_at == _source_data().posted_on, "게시일은 수집이 파싱한 값을 쓴다"
 

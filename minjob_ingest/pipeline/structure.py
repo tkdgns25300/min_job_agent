@@ -27,7 +27,8 @@ source_data ──▶ 빈 공고?  ──예──▶ structured_at 만 (Gemini 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final, Protocol, assert_never
@@ -45,7 +46,8 @@ from minjob_ingest.lib.gemini import GeminiError
 from minjob_ingest.models import ReviewData, SourceData
 from minjob_ingest.pipeline.extraction import Extraction, ExtractionError
 from minjob_ingest.pipeline.media import Media, MediaSet, MediaSource, failure_note, wanted_urls
-from minjob_ingest.pipeline.normalize import closed_by_board
+from minjob_ingest.pipeline.normalize import clean_title, closed_by_board
+from minjob_ingest.pipeline.verify import VerifyReport, verify
 from minjob_ingest.store.base import Store, StoreError
 from minjob_ingest.store.serde import SerdeError
 
@@ -138,6 +140,8 @@ class StructureResult:
     draft: ReviewData | None = None
     #: 그림을 놓쳤을 때의 사유. **실패가 아니다** — 텍스트만으로 판정했다는 표시다(SPEC §3).
     media_note: str | None = None
+    #: 원문 대조 결과. 비운 칸이 있으면 리포트가 센다.
+    verified: VerifyReport = field(default_factory=VerifyReport)
     error: str | None = None
 
 
@@ -154,6 +158,16 @@ class StructureReport:
     #: 그림을 하나라도 못 읽고 텍스트만으로 판정한 공고 수. **실패가 아니지만 조용히
     #: 넘기면 안 된다** — 포스터 공고가 그렇게 판정되면 되돌릴 수 없다.
     text_only: int = 0
+    #: 원문에 없어 **비운** 칸 수와 그 칸 이름별 횟수. 프롬프트를 고쳤을 때 나아졌는지가
+    #: 이 숫자로 보인다(없으면 매번 원문과 손으로 대조해야 한다).
+    scrubbed: int = 0
+    scrubbed_fields: Mapping[str, int] = field(default_factory=dict)
+    #: 원문에서 확인 못 했지만 **비우지 않은** 값 수 — 그림·PDF 공고에서만 생긴다.
+    unverifiable: int = 0
+    #: 조립 칸에서 원문과 어긋난 값 수와 칸별 횟수. ⚠️ **실패는 아니지만 무죄도 아니다** —
+    #: 프롬프트가 이으라고 시킨 결과일 수도, 지어낸 것일 수도 있고 코드는 구분하지 못한다.
+    unchecked: int = 0
+    unchecked_fields: Mapping[str, int] = field(default_factory=dict)
     failures: tuple[StructureFailure, ...] = ()
     #: 그림 실패 사유 표본.
     media_failures: tuple[StructureFailure, ...] = ()
@@ -176,6 +190,9 @@ class _Tally:
     deferred: int = 0
     failed: int = 0
     text_only: int = 0
+    scrubbed_fields: Counter[str] = field(default_factory=Counter)
+    unverifiable: int = 0
+    unchecked_fields: Counter[str] = field(default_factory=Counter)
     failures: list[StructureFailure] = field(default_factory=list)
     media_failures: list[StructureFailure] = field(default_factory=list)
 
@@ -186,6 +203,9 @@ class _Tally:
 
     def add(self, result: StructureResult) -> None:
         self.scanned += 1
+        self.scrubbed_fields.update(result.verified.scrubbed)
+        self.unverifiable += result.verified.unverifiable
+        self.unchecked_fields.update(result.verified.unchecked_fields)
         if result.media_note is not None:
             self.text_only += 1
             if len(self.media_failures) < _FAILURE_SAMPLE_SIZE:
@@ -220,6 +240,11 @@ class _Tally:
             deferred=self.deferred,
             failed=self.failed,
             text_only=self.text_only,
+            scrubbed=sum(self.scrubbed_fields.values()),
+            scrubbed_fields=dict(self.scrubbed_fields),
+            unverifiable=self.unverifiable,
+            unchecked=sum(self.unchecked_fields.values()),
+            unchecked_fields=dict(self.unchecked_fields),
             failures=tuple(self.failures),
             media_failures=tuple(self.media_failures),
         )
@@ -303,7 +328,8 @@ def build_draft(record: SourceData, extraction: Extraction) -> ReviewData:
         denomination_source=DenominationSource.UNKNOWN,
         job_kind=classified.job_kind,
         role=classified.role,
-        title=extraction.title,
+        # ⚠️ 모델이 아니라 **게시판 제목**이다 — 원문이 이미 있는데 다시 물으면 손질만 된다.
+        title=clean_title(record.title),
         position=classified.position,
         department=extraction.department,
         employment_type=extraction.employment_type,
@@ -375,15 +401,22 @@ def _judge(
     gathered = MediaSet() if images is None or not urls else images.media_for(record)
     note = failure_note(gathered, urls)
     try:
-        extraction = extractor.extract(record, gathered.items)
+        answer = extractor.extract(record, gathered.items)
     except (GeminiError, ExtractionError) as err:
         return _note_failure(record, store, err, dry_run=dry_run, media_note=note)
+    # ⚠️ **초안을 만들기 전에 검산한다.** 모델이 고쳐 쓴 값은 여기서 비워지고, 무엇을 비웠는지는
+    #    결과에 실려 리포트로 올라간다 — 조용히 지우지 않는다.
+    extraction, verified = verify(record, answer, media_sent=bool(gathered.items))
     if extraction.is_church_recruitment is IsChurchRecruitment.NO:
         _record_verdict(record, store, dry_run=dry_run)
         # ⚠️ 사유를 여기서도 들고 나온다 — **그림을 못 읽어 게이트1 NO 가 난 경우**가
         # 가장 알아야 할 상황인데, 그때 판정이 기록돼 되돌릴 수 없다.
         return StructureResult(
-            record=record, verdict=Verdict.EXCLUDED, extraction=extraction, media_note=note
+            record=record,
+            verdict=Verdict.EXCLUDED,
+            extraction=extraction,
+            media_note=note,
+            verified=verified,
         )
     try:
         # ⚠️ `--dry-run`에서도 **만들어 본다**. 조립을 건너뛰면 리허설은 통과하고 본 실행만
@@ -408,6 +441,7 @@ def _judge(
         extraction=extraction,
         draft=draft,
         media_note=note,
+        verified=verified,
     )
 
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from enum import StrEnum
 from typing import Final
@@ -42,7 +42,7 @@ from minjob_ingest.domain import (
 from minjob_ingest.lib.gemini import GeminiClient
 from minjob_ingest.models import JsonValue, SourceData
 from minjob_ingest.pipeline.media import Media
-from minjob_ingest.pipeline.normalize import pay_of, place_of
+from minjob_ingest.pipeline.normalize import pay_of, period_of, place_of
 
 #: 본문이 비었을 때 프롬프트에 넣는 자리표시자. 빈 칸을 그냥 두면 모델이 앞 문단을 본문으로
 #: 오해한다. ⚠️ 본문이 없는 것은 실패가 아니다 — 포스터 한 장이거나 첨부에 내용이 있다.
@@ -121,7 +121,7 @@ _POINTER_VALUES: Final = frozenset(
     }
 )
 
-#: 한 줄이어야 하는 필드(교회명·제목 등)의 상한. ⚠️ `description`만 막으면 원문이 `title`로
+#: 한 줄이어야 하는 필드(교회명·근거 등)의 상한. ⚠️ `description`만 막으면 원문이 다른 칸으로
 #: 흘러 그대로 공개된다 — "한 줄로 쓰라"는 지시는 지켜지지 않을 수 있다.
 MAX_SHORT_TEXT_CHARS: Final = 200
 
@@ -184,11 +184,16 @@ _PROPERTIES: Final[Mapping[str, types.Schema]] = {
     "job_kind": _enum_values(JobKind, at_least=1),
     "role": _text(),
     # 공고
-    "title": _text(),
     "position": _enum_values(Position),
     "department": _enum_value(Department),
     "employment_type": _enum_value(EmploymentType),
     "qualification": _enum_value(Qualification),
+    #: 위 넷을 **왜 그렇게 골랐나** — 원문에서 오려낸 근거. 저장하지 않고 검산에만 쓴다
+    #: (`pipeline/verify.py`). 원문에 없으면 그 칸을 비운다.
+    "position_evidence": _text(),
+    "department_evidence": _text(),
+    "employment_type_evidence": _text(),
+    "qualification_evidence": _text(),
     "headcount": _text(),
     "start_timing": _text(),
     "housing_provided": types.Schema(type=types.Type.BOOLEAN, nullable=True),
@@ -196,7 +201,6 @@ _PROPERTIES: Final[Mapping[str, types.Schema]] = {
     #: 금액 **표현**만 받는다 — 만원 환산은 `normalize.pay_of`가 한다.
     "pay_amount": _text(),
     "pay_note": _text(),
-    "pay_period": _enum_value(StipendPeriod),
     "benefit_note": _text(),
     "work_days": _text(),
     "requirements": _text_values(),
@@ -230,39 +234,53 @@ _PROMPT_TEMPLATE: Final = """\
 칸 이름이 곧 무엇을 담는지다. 아래는 이름만으로 알 수 없는 것만 적었다.
 
 ## 그대로 옮긴다
-- 표현을 고치지 않는다. 아래 대문자 값 넷과 description만 예외다.
+- 표현을 고치지 않는다. 예외는 셋뿐 — 대문자 값을 고르는 칸 · description · contact_*.
 - contact_* 는 담당자 이름이 붙어 있어도 **떼지 않는다**(`010-1234-5678 (김목사)`).
   그 밖의 칸에는 사람 이름을 넣지 않는다 — 공고를 낸 교회가 아니라 사람이 담기게 된다.
 - 한 공고가 여러 자리를 뽑고 값이 자리마다 다르면 — job_kind·position은 전부 담고,
   department·employment_type·qualification은 null로 둔다. 값이 하나면 그 값을 넣는다.
 
 ## 대문자 값을 고르는 칸
+- is_church_recruitment: 개교회가 사람을 뽑는 공고=YES /
+  기관 채용(선교단체·학교·방송사·병원·총회 사무국)이나 채용이 아닌 글(공지·행사·부고)=NO /
+  개교회인지 애매(군종·원목·학교 교목 등)=UNCERTAIN
 - job_kind: 사역직=MINISTRY / 사무·시설·방송·운전=GENERAL. 둘 다 뽑으면 둘 다.
   직함이 아니라 하는 일로 가른다(교육간사=MINISTRY / 사무간사=GENERAL / 반주자·지휘자=MINISTRY).
-- position: **적혀 있는 직분 이름만** 담는다. 담임·위임·원로 목사=SENIOR_PASTOR /
-  부목사·전임목사·교육목사=ASSOCIATE_PASTOR / 전도사·여전도사·교육전도사=EVANGELIST /
-  강도사=LICENSED_MINISTER / 그 밖=ETC
-  ⚠️ `동역자`·`사역자`·`교역자`는 자리를 부르는 총칭이다 — 직분을 지어내지 않는다.
-  ⚠️ SENIOR_PASTOR는 **담임을 뽑는다고 적혔을 때만**이다(연락처에 적힌 담임목사 이름이 아니다).
-  이름이 하나도 없으면 ETC 하나만. MINISTRY면 비울 수 없고, MINISTRY가 없으면 [].
+- position: **뽑는다고 적힌 직분만** 담는다. 담임·위임·원로 목사=SENIOR_PASTOR /
+  부목사·전임목사·교육목사·그냥 `목사`=ASSOCIATE_PASTOR /
+  전도사·여전도사·교육전도사=EVANGELIST / 강도사=LICENSED_MINISTER / 그 밖=ETC
+  ⚠️ 공고에 나오는 직분 이름이 다 모집 직분은 아니다 — 연락처·인사말·교회 소개에 적힌
+  직분(`문의: 담임목사 김○○`)은 **뽑는 자리가 아니다**. `동역자`·`사역자`·`교역자`도
+  자리를 부르는 총칭이라 직분이 아니다.
+  MINISTRY가 있을 때만 채운다 — 적힌 직분이 없으면 ETC 하나만. MINISTRY가 없으면 [].
 - department: 유아·유치=INFANT / 유년·초등·아동=CHILDREN / 중고등·청소년=YOUTH /
   청년·대학=YOUNG_ADULT / 교구·심방=DISTRICT / 찬양·예배=WORSHIP / 행정·사무=ADMIN / 그 밖=ETC
   ⚠️ 주일학교·교육부·다음세대·유초등부처럼 여러 부서를 묶은 말은 null.
 - employment_type: 전임=FULL_TIME / 준전임·반전임=SEMI_FULL_TIME / 파트=PART_TIME.
   `전임/파트 가능`처럼 열어둔 공고는 null.
 - qualification: 신대원 재학·졸업(예정)=SEMINARIAN / 안수·목사=ORDAINED / 경력=EXPERIENCED /
-  신입=ENTRY / `무관`이라고 **적혀 있으면** ANY. 겹치면 좁은 것 하나.
+  신입=ENTRY / `무관`이라고 **적혀 있으면** ANY.
+  겹치면 앞쪽을 고른다: ORDAINED > SEMINARIAN > EXPERIENCED > ENTRY > ANY.
   ⚠️ 자격 이야기가 없거나 위 다섯에 없는 자격이면 null. 나이·출생년도는 requirements에.
-- pay_period: 월=MONTH / 연=YEAR
 
 ## 이름만으로 알 수 없는 칸
-- title: 게시판 제목 그대로. 앞뒤 끝의 괄호 묶음과 끝 말줄임만 뺀다 — 뺀 값이 다른 칸에
-  해당하면 그 칸에 넣는다. 빼서 무슨 공고인지 알 수 없어지면 그대로 둔다.
+- 제목 괄호 안의 지역·교단·직분·고용형태는 **해당 칸에 옮긴다**
+  (`대구 동성교회(수성노회)` → raw_denomination). 제목 자체는 답하지 않는다.
 - headcount: 모집 인원과 **자리 구성을 통째로**(`1.부목사(전임) 2.교육목사`). 숫자만 남기지 않는다.
 - housing_provided: 준다=true / 없다=false / **이야기가 없으면 null**
   (모르는 것을 false로 두지 않는다).
-- pay_amount: 사례비 **금액 표현만**(`연봉 3,200이상`·`월 250만원`). ⚠️ 계산하지 않는다.
+- *_evidence: 위 넷을 그렇게 고른 **근거를 원문에서 오려내** 넣는다
+  (`position_evidence: "부목사 1명(전임or 파트)"`). ⚠️ 고쳐 쓰지 말고 **글자 그대로** 옮긴다 —
+  원문에 없는 근거는 코드가 걸러내고 그 칸이 비워진다. 값이 없으면 근거도 null.
+- role: GENERAL일 때 무슨 일인지 짧게 — `방송·미디어·음향` / `행정·사무·회계` /
+  `시설·관리·운전·주방` / 그 밖은 `기타`. MINISTRY만 있으면 null.
+- deadline: 마감일을 **원문 표기 그대로**(`2026-08-31`·`2026년 8월 31일까지`).
+  ⚠️ 연도가 없으면(`8/31`) null — 어느 해인지 지어내지 않는다.
+- pay_amount: 사례비 **금액 표현만**(`연봉 3,200이상`·`월 250만원`). ⚠️ 계산하지 않고,
+  `연봉`·`월` 같은 말이 붙어 있으면 **떼지 않는다**.
 - pay_note: 금액이 아닌 사례비 표현(`교회 내규에 따름`).
+- housing_note: 사택 조건 그대로(`사택 제공`·`24평 아파트`·`전세 지원 5천만원`).
+- benefit_note: 사례비·사택 **말고** 그 밖 처우(`4대보험`·`상여금 200%`·`연차 15일`).
 - location: 지역 표기 그대로(`전북 전주시 완산구`). ⚠️ 광역으로 바꾸지 않는다.
 - raw_denomination: 교단 표기 그대로. 없고 노회·연회 이름만 있으면 그것(`경청노회`).
 - preferred: `우대`라고 적힌 것만. / optional_docs: `선택`·`해당자에 한함`이라고 적힌 것만.
@@ -309,6 +327,25 @@ class ExtractionError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class Evidence:
+    """대문자 값을 고른 **근거** — 원문에서 오려낸 글자.
+
+    ⚠️ **저장하지 않는다.** `review_data`에 담을 칸이 없고, 칸을 늘리면 min_job과 공유하는
+    스키마를 고쳐야 한다. 구조화하는 순간 `pipeline/verify.py`가 검사하는 데만 쓰고 버린다.
+    """
+
+    position: str | None = None
+    department: str | None = None
+    employment_type: str | None = None
+    qualification: str | None = None
+    #: 코드가 숫자·날짜·enum으로 바꾼 원문 조각(`normalize.py`·`_optional_date`). 저장되는
+    #: 것은 변환 결과뿐이라 여기 두지 않으면 **무엇을 보고 3200을 만들었는지** 검산할 수 없다.
+    pay_amount: str | None = None
+    location: str | None = None
+    deadline: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Extraction:
     """모델이 뽑아낸 값. **판정은 하지 않는다** — `ReviewData` 조립은 `structure.py`가 한다.
 
@@ -322,7 +359,6 @@ class Extraction:
     is_church_recruitment: IsChurchRecruitment
     job_kind: tuple[JobKind, ...] = ()
     role: str | None = None
-    title: str | None = None
     position: tuple[Position, ...] = ()
     department: Department | None = None
     employment_type: EmploymentType | None = None
@@ -352,6 +388,8 @@ class Extraction:
     contact_tel: str | None = None
     contact_link: str | None = None
     contact_post: str | None = None
+    #: 위 대문자 값 넷의 근거. ⚠️ `ReviewData`에 같은 칸이 없다 — 검산용이고 저장되지 않는다.
+    evidence: Evidence = field(default_factory=Evidence)
 
 
 class GeminiExtractor:
@@ -397,13 +435,14 @@ def parse_extraction(payload: str) -> Extraction:
     gate1 = _gate1(decoded)
     # ⚠️ 모델이 준 **표현**을 여기서 저장값으로 바꾼다(`pipeline/normalize.py`). 맥락이 필요
     #    없는 변환을 모델에 맡기면 같은 글자에서 실행마다 다른 값이 나온다.
-    region, city = place_of(_short_text(decoded, "location"))
-    pay_min, pay_max = pay_of(_short_text(decoded, "pay_amount"))
+    location = _short_text(decoded, "location")
+    pay_amount = _short_text(decoded, "pay_amount")
+    region, city = place_of(location)
+    pay_min, pay_max = pay_of(pay_amount)
     return Extraction(
         is_church_recruitment=gate1,
         job_kind=_gate2(decoded, gate1),
         role=_short_text(decoded, "role"),
-        title=_short_text(decoded, "title"),
         position=_enum_tuple(decoded, "position", Position),
         department=_optional_member(decoded, "department", Department),
         employment_type=_optional_member(decoded, "employment_type", EmploymentType),
@@ -415,7 +454,7 @@ def parse_extraction(payload: str) -> Extraction:
         pay_min=pay_min,
         pay_max=pay_max,
         pay_note=_short_text(decoded, "pay_note"),
-        pay_period=_optional_member(decoded, "pay_period", StipendPeriod),
+        pay_period=period_of(pay_amount),
         benefit_note=_short_text(decoded, "benefit_note"),
         work_days=_short_text(decoded, "work_days"),
         requirements=_text_tuple(decoded, "requirements"),
@@ -433,6 +472,15 @@ def parse_extraction(payload: str) -> Extraction:
         contact_tel=_short_text(decoded, "contact_tel"),
         contact_link=_short_text(decoded, "contact_link"),
         contact_post=_short_text(decoded, "contact_post"),
+        evidence=Evidence(
+            position=_short_text(decoded, "position_evidence"),
+            department=_short_text(decoded, "department_evidence"),
+            employment_type=_short_text(decoded, "employment_type_evidence"),
+            qualification=_short_text(decoded, "qualification_evidence"),
+            pay_amount=pay_amount,
+            location=location,
+            deadline=_short_text(decoded, "deadline"),
+        ),
     )
 
 
@@ -631,7 +679,7 @@ def _summary(decoded: Mapping[str, object]) -> str | None:
     사라진다 — 값 하나 때문에 공고를 잃는 것이 원문이 길게 들어오는 것보다 나쁘다
     (`position`에서 실제로 그런 일이 있었다).
 
-    요약을 강제하는 자리는 **프롬프트**("줄이는 것이지 옮겨 적는 것이 아니다")이고,
+    요약을 강제하는 자리는 **프롬프트**("원문을 통째로 옮기지 않는다")이고,
     원문 재게시를 막는 최종 방어선은 **운영자 검수**다.
     """
     return _optional_text(decoded, "description")

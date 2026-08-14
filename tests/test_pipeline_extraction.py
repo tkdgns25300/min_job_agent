@@ -60,18 +60,20 @@ def _answer(**overrides: object) -> str:
         "is_church_recruitment": "YES",
         "job_kind": ["MINISTRY"],
         "role": None,
-        "title": "전임 사역자 청빙",
         "position": ["ASSOCIATE_PASTOR"],
         "department": "YOUTH",
         "employment_type": "FULL_TIME",
         "qualification": "ORDAINED",
+        "position_evidence": "전임 사역자 1명",
+        "department_evidence": "중고등부",
+        "employment_type_evidence": "전임",
+        "qualification_evidence": "안수받은 목사",
         "headcount": "1명",
         "start_timing": "협의",
         "housing_provided": True,
         "housing_note": "사택 제공",
         "pay_amount": "월 250~300만원",
         "pay_note": "교회 내규에 따름",
-        "pay_period": "MONTH",
         "benefit_note": "4대보험",
         "work_days": "주 5일",
         "requirements": ["1980년 이후 출생자"],
@@ -234,10 +236,10 @@ def test_a_well_formed_answer_becomes_an_extraction() -> None:
 
 
 def test_nulls_and_blanks_both_mean_no_value() -> None:
-    extraction = parse_extraction(_answer(church_name=None, title="   "))
+    extraction = parse_extraction(_answer(church_name=None, headcount="   "))
 
     assert extraction.church_name is None
-    assert extraction.title is None
+    assert extraction.headcount is None
 
 
 def test_text_that_is_not_json_is_a_failure() -> None:
@@ -261,7 +263,7 @@ def test_a_missing_key_is_a_failure_not_a_none() -> None:
 
 def test_a_wrong_type_is_a_failure() -> None:
     with pytest.raises(ExtractionError, match="문자열이 아님"):
-        parse_extraction(_answer(title=12))
+        parse_extraction(_answer(church_name=12))
 
 
 def test_a_missing_gate1_is_a_failure() -> None:
@@ -353,17 +355,19 @@ def test_the_output_contract_is_exactly_these_columns() -> None:
             "optional_docs",
             "pay_amount",
             "pay_note",
-            "pay_period",
             "position",
             "preferred",
             "process_steps",
             "qualification",
+            "qualification_evidence",
+            "position_evidence",
+            "department_evidence",
+            "employment_type_evidence",
             "raw_denomination",
             "required_docs",
             "requirements",
             "role",
             "start_timing",
-            "title",
             "work_days",
         ]
     )
@@ -377,7 +381,15 @@ def test_the_model_is_not_asked_for_values_code_can_derive() -> None:
     """
     asked = set(RESPONSE_SCHEMA.properties or {})
 
-    assert {"region", "city", "pay_min", "pay_max", "is_closed"} & asked == set()
+    assert {
+        "region",
+        "city",
+        "pay_min",
+        "pay_max",
+        "pay_period",
+        "is_closed",
+        "title",
+    } & asked == set()
     assert {"location", "pay_amount"} <= asked
 
 
@@ -386,8 +398,13 @@ def test_every_extracted_field_has_a_home_in_the_record() -> None:
 
     ⚠️ 스키마 키와는 1:1이 아니다 — `location`·`pay_amount`가 `region`·`city`·`pay_min`·
     `pay_max`로 바뀌기 때문이다(`parse_extraction`).
+
+    ⚠️ `evidence`만 예외다 — 대문자 값을 고른 **근거**이고, 검산(`pipeline/verify.py`)에만 쓰고
+    버린다. 저장하려면 min_job과 공유하는 스키마에 칸을 늘려야 한다.
     """
-    assert {f.name for f in fields(Extraction)} <= {f.name for f in fields(ReviewData)}
+    carried = {f.name for f in fields(Extraction)} - {"evidence"}
+
+    assert carried <= {f.name for f in fields(ReviewData)}
 
 
 def test_the_board_title_is_not_sent_twice() -> None:
@@ -397,9 +414,7 @@ def test_the_board_title_is_not_sent_twice() -> None:
     assert prompt.count("점촌제일교회 전임 사역자 청빙") == 1
 
 
-@pytest.mark.parametrize(
-    "key", ["title", "church_name", "headcount"], ids=["제목", "교회명", "인원"]
-)
+@pytest.mark.parametrize("key", ["church_name", "headcount"], ids=["교회명", "인원"])
 def test_a_one_line_field_that_ran_long_is_kept_not_dropped(key: str) -> None:
     """⚠️ 길이로 막으면 그 공고가 세 번 재호출된 뒤 **조용히 사라진다**.
 
@@ -416,7 +431,7 @@ def test_the_schema_still_asks_for_one_line_fields_to_be_short() -> None:
     """파서가 안 막으니 **스키마가 유일한 안내**다 — 지워지면 모델이 본문을 통째로 넣는다."""
     properties = RESPONSE_SCHEMA.properties or {}
 
-    assert properties["title"].max_length == MAX_SHORT_TEXT_CHARS
+    assert properties["church_name"].max_length == MAX_SHORT_TEXT_CHARS
     assert properties["description"].max_length is None, "요약만 상한이 없다"
 
 
@@ -559,15 +574,14 @@ def test_blank_list_items_are_dropped() -> None:
     [
         "**적혀 있는 것만** 옮기고 없으면 null",
         "값이 하나면 그 값을 넣는다",
-        "**적혀 있는 직분 이름만**",
+        "**뽑는다고 적힌 직분만**",
         "열어둔 공고는 null",  # employment_type
-        "⚠️ 계산하지 않는다",  # pay — 환산은 normalize.py
+        "⚠️ 계산하지 않고,",  # pay_amount — 환산·주기는 normalize.py
         "이야기가 없으면 null",  # housing_provided
         "한글로 쓴 숫자는 되돌린다",  # 가린 연락처
         "담당자 이름이 붙어 있어도 **떼지 않는다**",  # contact_*
         "**반드시 채운다**",  # description
         "숫자만 남기지 않는다",  # headcount
-        "게시판 제목 그대로",  # title
     ],
     ids=lambda rule: rule[:18],
 )
@@ -576,20 +590,22 @@ def test_the_prompt_carries_every_decided_rule(rule: str) -> None:
     assert rule in build_prompt(_source_data())
 
 
-def test_the_prompt_forbids_inventing_a_position_from_a_collective_noun() -> None:
-    """⚠️ 실측(DAESHIN 경산중앙): 포스터가 `교구/청년/주일학교/찬양/미디어 사역자`라고만 했는데
-    모델이 직분 다섯 개를 전부 만들어 냈다 — **담임목사까지** 들어갔다.
+def test_the_prompt_only_takes_a_position_the_posting_recruits() -> None:
+    """직분을 지어내는 두 경로를 **한 규칙으로** 막는다.
 
-    담임 청빙과 부교역자 청빙은 전혀 다른 자리다. 총칭에서 직분을 지어내면 검수자가
-    공고를 열어보기 전까지 그 거짓이 그대로 보인다.
+    ⓐ 총칭: 포스터가 `교구/청년/주일학교/찬양/미디어 사역자`라고만 했는데 모델이 직분
+      다섯 개를 만들어 냈다(실측 DAESHIN 경산중앙 · 담임목사까지 들어갔다).
+    ⓑ 남의 직분: 연락처의 `문의: 담임목사 김○○`을 모집 직분으로 읽었다(실측 Lite 3건).
+
+    담임 청빙과 부교역자 청빙은 전혀 다른 자리다. 둘 다 "뽑는다고 적혔나"로 갈린다 —
+    직분별로 예외를 적으면 직분이 늘 때마다 프롬프트가 길어진다.
     """
     prompt = build_prompt(_source_data())
 
-    assert "자리를 부르는 총칭이다" in prompt
-    assert "직분을 지어내지 않는다" in prompt
-    assert "이름이 하나도 없으면 ETC 하나만" in prompt
-    # ⚠️ 실측(Flash·Lite 둘 다): 연락처의 `담임목사 김○○`을 모집 직분으로 읽는 일이 있다.
-    assert "담임을 뽑는다고 적혔을 때만" in prompt
+    assert "**뽑는다고 적힌 직분만**" in prompt
+    assert "연락처·인사말·교회 소개에 적힌" in prompt
+    assert "자리를 부르는 총칭이라 직분이 아니다" in prompt
+    assert "적힌 직분이 없으면 ETC 하나만" in prompt
 
 
 def test_the_prompt_makes_an_unstated_qualification_empty_not_any() -> None:
@@ -694,7 +710,9 @@ def test_the_model_is_never_asked_whether_the_posting_closed() -> None:
     prompt = build_prompt(_source_data())
 
     assert "is_closed" not in prompt
-    assert "마감" not in prompt
+    # ⚠️ `마감일`(deadline)은 다른 칸이다 — 마감 **여부**를 묻는 말이 없어야 한다.
+    assert "마감 여부" not in prompt
+    assert "청빙완료" not in prompt
 
 
 def test_the_posting_date_is_not_sent_to_the_model() -> None:

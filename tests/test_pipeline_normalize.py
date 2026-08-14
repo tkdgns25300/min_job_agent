@@ -9,9 +9,15 @@ from __future__ import annotations
 
 import pytest
 
-from minjob_ingest.domain import Region
+from minjob_ingest.domain import Region, StipendPeriod
 from minjob_ingest.models import JsonValue
-from minjob_ingest.pipeline.normalize import MAX_PAY_MANWON, closed_by_board, pay_of, place_of
+from minjob_ingest.pipeline.normalize import (
+    clean_title,
+    closed_by_board,
+    pay_of,
+    period_of,
+    place_of,
+)
 
 # ── 지역 ─────────────────────────────────────────────────────────
 
@@ -93,8 +99,52 @@ def test_a_pay_phrase_becomes_manwon(given: str | None, low: int | None, high: i
 
 
 def test_an_absurd_amount_is_dropped() -> None:
-    """⚠️ 사택 보증금·건축 헌금을 골라오면 사례비가 아니다 — 빈 칸이 낫다."""
-    assert pay_of(f"{MAX_PAY_MANWON + 1}만원") == (None, None)
+    """⚠️ 상수로 입력을 만들면 안 된다 — 상한을 10배로 바꿔도 통과하는 항진 테스트가 된다.
+
+    실제 최대 연봉이 4,100만원이라 2억은 사례비일 수 없다.
+    """
+    assert pay_of("20000만원") == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("given", "why"),
+    [
+        ("국민연금 50% 지원, 의료보험 100% 지원", "%는 비율이다"),
+        ("교회 내규에 따름(보너스 200%, 명절떡값)", "상여 비율이다"),
+        ("연차(연15일) 제공", "일은 날수다"),
+        ("4대보험, 명절상여금", "4대보험의 4는 금액이 아니다"),
+        ("최저시급 10,320원", "시급은 월 사례비가 아니다"),
+        ("(1) 사례비는 교회 내규에 따릅니다", "목록 번호다"),
+        ("월 700유로", "외화는 만원이 아니다"),
+    ],
+    ids=["%", "상여율", "일", "4대보험", "시급", "목록번호", "외화"],
+)
+def test_a_number_that_is_not_money_is_ignored(given: str, why: str) -> None:
+    """⚠️ 단위를 안 보면 아무 숫자나 사례비가 된다.
+
+    실측: `아파트(24평)` → 월 24만원 · `국민연금 50% 지원` → 연 50만원 · `연차(연15일)` →
+    연 15만원. 셋 다 원문이 금액을 **말한 적이 없는** 공고다.
+    """
+    assert pay_of(given)[0] is None, why
+
+
+def test_a_floor_area_is_skipped_and_the_real_amount_is_taken() -> None:
+    """⚠️ 실측: `교회 인근 아파트(24평)를 제공… 연봉 3,600` 이 **월 24만원**으로 저장됐다.
+
+    맨 앞 숫자를 쓰기 때문에 넓이가 사례비 자리를 차지했다 — 단위를 보면 건너뛴다.
+    """
+    assert pay_of("교회 인근 아파트(24평)를 제공해 드립니다. 연봉 3,600") == (3600, None)
+
+
+def test_a_deposit_is_not_a_stipend() -> None:
+    """⚠️ 실측 10건: `부목사 기준 320만원 + 사택 전세 지원 5천만원` — 5,000이 최대가 되면
+    화면에 `월 320~5,000만원`이 뜬다. 보증금은 사례비가 아니다."""
+    assert pay_of("부목사 기준 320만원 + 사택 전세 지원 5천만원") == (320, None)
+
+
+def test_the_upper_bound_shares_the_period_of_the_lower() -> None:
+    """월 사례비의 최대가 연봉 크기일 수는 없다."""
+    assert pay_of("월 250만원, 사택지원금 3,000만원") == (250, None)
 
 
 def test_a_lower_second_amount_is_not_a_range() -> None:
@@ -183,3 +233,220 @@ def test_spacing_does_not_hide_the_marker() -> None:
 
 def test_an_open_posting_stays_open() -> None:
     assert closed_by_board("성원교회 부교역자 청빙", _meta(status="진행중")) is False
+
+
+# ── 제목 ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("given", "want"),
+    [
+        (
+            "(끌어올림)대구 대동교회에서 전임사역자를 모십니다!",
+            "대구 대동교회에서 전임사역자를 모십니다!",
+        ),
+        ("[끌어올림] 반야월교회에서 동역자를 모십니다.", "반야월교회에서 동역자를 모십니다."),
+        ("<끌어올림> 하늘담은교회 부목사님 청빙", "하늘담은교회 부목사님 청빙"),
+        ("[답글]청빙이 완료되었습니다.", "청빙이 완료되었습니다."),
+        ("(끌어올림)[답글] 두 겹도 뗀다", "두 겹도 뗀다"),
+    ],
+    ids=["(끌어올림)", "[끌어올림]", "<끌어올림>", "[답글]", "두 겹"],
+)
+def test_a_lift_marker_is_removed(given: str, want: str) -> None:
+    """`(끌어올림)` 실측 340건 — 같은 글을 다시 올리려고 붙인 표시라 공고 내용이 아니다."""
+    assert clean_title(given) == want
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        "(대전) 대전한빛교회에서 교역자를 모십니다",
+        "[서울] 구로동광교회 교역자를 정중히 모십니다",
+        "(청빙완료) 동화중학교 학원선교사 청빙공고",
+        "(GOODTV) 방송 엔지니어 모집",
+        "(초교파) 선교단체 간사 모집",
+        "[경기도 용인시] 새로운교회 부목사 청빙",
+    ],
+    ids=["지역(대전)", "지역[서울]", "상태", "출처", "초교파", "긴 지역"],
+)
+def test_a_marker_that_is_not_a_lift_stays(given: str) -> None:
+    """⚠️ **화이트리스트다.** 괄호를 만나면 무조건 벗기는 것이 아니다 — 실측 머리표 201가지 중
+    뗄 것은 5가지뿐이고 나머지는 지역·상태·출처처럼 공고 정보다.
+
+    모델에게 "앞뒤 괄호를 뺀다"고 시켰을 때 `(수성노회)`가 통째로 사라진 적이 있다.
+    """
+    assert clean_title(given) == given
+
+
+def test_the_title_keeps_its_final_punctuation() -> None:
+    """⚠️ 이 함수가 생긴 이유다 — 모델에게 맡겼더니 20건 중 6건이 끝의 마침표를 지웠다.
+
+    지시하지 않은 손질이고, 원문을 그대로 옮기기로 한 칸에서 그러면 안 된다.
+    """
+    assert clean_title("대구한일교회에서 파트 사역자를 모십니다.").endswith("모십니다.")
+
+
+def test_a_title_that_is_only_a_marker_is_left_alone() -> None:
+    """⚠️ 빈 제목은 레코드 불변식이 거부한다 — 벗겨서 아무것도 안 남으면 그대로 둔다."""
+    assert clean_title("(끌어올림)") == "(끌어올림)"
+
+
+def test_surrounding_whitespace_is_trimmed() -> None:
+    assert clean_title("  성원교회 청빙  ") == "성원교회 청빙"
+
+
+def test_a_truncation_ellipsis_is_kept() -> None:
+    """⚠️ 프롬프트는 "끝 말줄임을 빼라"고 했는데 **실측이 그게 틀렸다고 말한다**.
+
+    말줄임으로 끝나는 56건의 앞 글자가 `니`·`고`·`감`처럼 단어 중간이다 — 게시판이 목록에서
+    자른 표시이지 장식이 아니다. 떼면 잘린 제목이 온전한 것처럼 보인다.
+    """
+    cut = "대구동성교회에서 사무간사 및 뱡송간사를 모집합니..."
+
+    assert clean_title(cut) == cut
+
+
+def test_a_lift_marker_is_removed_from_a_truncated_title() -> None:
+    """머리표를 떼는 것과 말줄임을 남기는 것은 별개다."""
+    assert clean_title("(끌어올림)대구대동교회에서 전임교역자를 모십니...") == (
+        "대구대동교회에서 전임교역자를 모십니..."
+    )
+
+
+# ── 사례비 주기 ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("given", "want"),
+    [
+        ("연봉 250만원", StipendPeriod.YEAR),
+        ("연 300만원", StipendPeriod.YEAR),
+        ("년봉 400", StipendPeriod.YEAR),
+        ("월 3,500만원", StipendPeriod.MONTH),
+        ("월급 3200", StipendPeriod.MONTH),
+        ("매월 3,600만원", StipendPeriod.MONTH),
+    ],
+    ids=["연봉", "연", "년봉", "월", "월급", "매월"],
+)
+def test_a_stated_period_wins(given: str, want: StipendPeriod) -> None:
+    """표현이 말하면 그것이다 — 크기를 따지기 전에 먼저 본다.
+
+    ⚠️ **금액을 일부러 반대쪽으로 골랐다.** `연봉 3,500만원`처럼 크기까지 같은 답을 주는 예로
+    쓰면 이 테스트는 아무것도 증명하지 못한다 — 실제로 그랬고, 낱말 검사를 통째로 지워도
+    스위트가 통과했다.
+    """
+    assert period_of(given) is want
+
+
+def test_the_word_next_to_the_amount_decides_not_the_whole_text() -> None:
+    """⚠️ 실측 8건: `월 300만원 (연봉 3,600만원)`이 **연 300만원**으로 저장됐다.
+
+    글 전체에서 낱말을 찾으면 뒤에 있는 `연봉`이 앞의 `월`을 이긴다 — 12배 오차다.
+    고른 금액 **바로 앞**의 말만 본다.
+    """
+    assert period_of("- 월 300만원 (연봉 3,600만원)") is StipendPeriod.MONTH
+    assert pay_of("- 월 300만원 (연봉 3,600만원)") == (300, None)
+
+
+def test_a_yearly_word_after_a_monthly_amount_does_not_flip_it() -> None:
+    """`월 220만원 (연 200%의 상여금 별도)` — `연 200%`는 상여금 주기이지 사례비가 아니다."""
+    assert period_of("7. 사례비: 월 220만원 (연 200%의 상여금 별도 지급)") is StipendPeriod.MONTH
+
+
+@pytest.mark.parametrize(
+    ("given", "want"),
+    [
+        ("110", StipendPeriod.MONTH),
+        ("100만원", StipendPeriod.MONTH),
+        ("400만원", StipendPeriod.MONTH),
+        ("3,500만원", StipendPeriod.YEAR),
+        ("3200", StipendPeriod.YEAR),
+    ],
+    ids=["110", "100만원", "400만원(월 최대)", "3500만원", "3200"],
+)
+def test_an_unstated_period_is_read_from_the_size(given: str, want: StipendPeriod) -> None:
+    """⚠️ 실측: 원문이 `월`이라 한 금액은 10~400만원, `연`이라 한 금액은 3,200~3,600만원 —
+    **겹치는 값이 하나도 없다.** 그래서 크기가 주기를 말해준다."""
+    assert period_of(given) is want
+
+
+@pytest.mark.parametrize(
+    "given",
+    ["700만원", "교회 내규에 따름", "", None],
+    ids=["애매한 구간", "금액 없음", "빈 값", "null"],
+)
+def test_an_ambiguous_amount_gets_no_period(given: str | None) -> None:
+    """⚠️ 500~1,000만원은 월인지 연인지 모른다(실측 0건) — 찍는 것보다 빈 칸이 낫다.
+
+    이 칸이 뒤집히면 금액이 12배 어긋난다.
+    """
+    assert period_of(given) is None
+
+
+def test_a_month_word_that_is_not_a_period_is_ignored() -> None:
+    """⚠️ `월차 12회`의 `월`은 주기가 아니다. 금액이 아닌 `12회`는 애초에 후보가 아니다."""
+    assert period_of("연봉 250만원 (월차 12회)") is StipendPeriod.YEAR
+
+
+@pytest.mark.parametrize(
+    ("given", "want"),
+    [("60만원", StipendPeriod.MONTH), ("3,500만원", StipendPeriod.YEAR)],
+    ids=["작으면 월", "크면 연"],
+)
+def test_the_size_decides_when_no_word_is_given(given: str, want: StipendPeriod) -> None:
+    """⚠️ 경계값을 상수로 쓰지 않는다 — 상수를 바꿔도 통과하는 테스트가 된다.
+
+    실측: 월 사례비 20~350만원 · 연봉 3,000~4,100만원. 겹치는 값이 없다.
+    """
+    assert period_of(given) is want
+
+
+def test_a_list_marker_is_not_an_amount() -> None:
+    """⚠️ 실측: `(1) 사례비는 교회 내규에 따릅니다`가 **1만원**으로 읽혔다.
+
+    사례비가 월 10만원 아래일 수는 없다 — 하한이 목록 번호를 걸러낸다.
+    """
+    assert pay_of("(1) 사례비는 교회 내규에 따릅니다. (2) 사택 제공됩니다") == (None, None)
+
+
+def test_a_won_suffix_is_not_manwon() -> None:
+    """⚠️ 실측: `최저시급 10,320원`이 **10,320만원**(연봉)으로 읽혔다.
+
+    `원`이 붙었으면 원 단위다 — 단위 없는 큰 수만 원으로 보던 규칙에 구멍이 있었다.
+    """
+    assert pay_of("최저시급 10,320원") == (None, None)
+    assert pay_of("월 사례 2,500,000원") == (250, None)
+
+
+@pytest.mark.parametrize(
+    ("given", "want"),
+    [("450만원", StipendPeriod.MONTH), ("1,200만원", StipendPeriod.YEAR)],
+    ids=["경계 바로 아래는 월", "경계 바로 위는 연"],
+)
+def test_the_size_boundary_holds_at_its_stated_values(given: str, want: StipendPeriod) -> None:
+    """⚠️ 경계를 좁히면 이 두 값이 죽는다 — 경계가 500·1,000임을 여기서 못 박는다.
+
+    실측 월 최대 350 · 연 최소 3,000이라 450·1,200은 안전지대 안쪽이다.
+    """
+    assert period_of(given) is want
+
+
+def test_a_value_in_the_dead_band_gets_no_period() -> None:
+    """500~1,000만원은 월인지 연인지 모른다 — 찍지 않는다."""
+    assert period_of("700만원") is None
+
+
+def test_a_bare_number_in_won_is_scaled_down() -> None:
+    """⚠️ `원` 없이 큰 수로 적는 게시판이 있다 — 250만원을 `2500000`으로 쓴다.
+
+    경계를 올리면 이 값이 250만원이 아니라 250만 **만원**이 된다.
+    """
+    assert pay_of("사례비 2500000") == (250, None)
+
+
+def test_a_mid_sized_bare_number_is_still_won() -> None:
+    """⚠️ 앞 테스트의 2,500,000은 경계를 어디에 두든 원 단위다 — 경계를 증명하지 못한다.
+
+    500,000처럼 **두 후보 경계 사이**에 있는 값이어야 100,000이 맞는 경계임을 보인다.
+    """
+    assert pay_of("사례비 500000") == (50, None)
