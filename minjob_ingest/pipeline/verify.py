@@ -66,7 +66,7 @@ _SUPPORTING_WORDS: Final[dict[StrEnum, tuple[tuple[str, ...], tuple[str, ...]]]]
     Department.INFANT: (("영아", "유아", "유치", "미취학", "infant", "preschool", "toddler"), ()),
     Department.CHILDREN: (("유년", "초등", "아동", "어린이", "children", "elementary"), ()),
     Department.YOUTH: (
-        ("중고등", "청소년", "중등", "고등", "중학", "고교", "youth", "teen"),
+        ("중고등", "청소년", "중등", "고등", "중학", "고교", "학생", "youth", "teen"),
         (),
     ),
     Department.YOUNG_ADULT: (("청년", "대학", "youngadult", "college", "campus"), ()),
@@ -131,9 +131,23 @@ _SCHEME: Final = re.compile(r"^https?://")
 #: 제목의 괄호 묶음. 담임목사 **이름**이 여기 들어간다 — 뽑는 자리와 구별해야 한다.
 _PARENTHESES: Final = re.compile("[(\\[<\uff08][^)\\]>\uff09]*[)\\]>\uff09]")
 
-#: 번호 하나로 볼 덩어리 — 숫자로 시작해 숫자·하이픈·점만 이어진 곳. 쉼표·괄호·공백·한글에서
-#: 끊긴다(그래야 번호 둘이 한 덩어리로 붙지 않는다).
-_PHONE_CHUNK: Final = re.compile(r"[0-9][0-9.\-]{5,}")
+#: 답에서 이메일 주소만 골라낼 자리. 붙어 있는 담당자 이름은 여기 안 걸린다.
+_EMAIL_TOKEN: Final = re.compile(r"[\w.+\-]+@[\w.\-]+")
+
+#: 번호 하나로 볼 덩어리. 쉼표·괄호·한글에서 끊긴다(그래야 번호 둘이 붙지 않는다).
+#: ⚠️ **공백도 번호 안에 들어간다** — `010 4678 5484`처럼 띄어 쓴 공고가 있다(실측 4건).
+#: 공백을 경계로 삼았더니 그런 번호가 통째로 지워졌다.
+_PHONE_CHUNK: Final = re.compile(r"[0-9][0-9 .\-]{4,}[0-9]")
+
+#: 스팸을 피하려 한글로 쓴 도메인(실측 4건 — `doyu78@네이버.com`). 숫자와 같은 수법이고
+#: 모델은 시킨 대로 영문으로 되돌리는데, 원문 쪽을 안 바꾸면 그 답이 늘 "없다"가 된다.
+#: ⚠️ `다음`은 넣지 않는다 — 흔한 낱말이라 아무 문장이나 도메인처럼 보이게 만든다.
+_KOREAN_DOMAINS: Final = {
+    "네이버": "naver",
+    "한메일": "hanmail",
+    "지메일": "gmail",
+    "구글": "gmail",
+}
 
 #: 스팸을 피하려 한글로 쓴 숫자(실측 16건 — `010-2720-구육구이`·`010-오18칠-칠칠오오`).
 #: ⚠️ 프롬프트가 이걸 숫자로 되돌리라 시키므로, **원문 쪽만** 같이 되돌린다. 안 하면 시킨
@@ -245,8 +259,11 @@ def verify(
     #    맞는 답이 지워지고 fallback `기타`로 떨어진다(실측 CSU/1117858).
     # ⚠️ `work_days`도 조립 칸이다 — 준전임과 파트가 근무일을 따로 적는 공고가 **54건**이고
     #    한 문자열에 담으려면 이을 수밖에 없다. 프롬프트가 이으라고 시켜놓고 벌하지 않는다.
+    # ⚠️ `start_timing`도 조립 칸이다 — 자리마다 부임 시기를 따로 적는 공고가 **244건**이고
+    #    한 칸에 담으려면 이을 수밖에 없다(`2027년 1월 / 2026년 12월` — 실측 HANIL/104524).
     for name in (
         "role",
+        "start_timing",
         "work_days",
         "headcount",
         "housing_note",
@@ -259,10 +276,9 @@ def verify(
         checker.tally_items(name, getattr(extraction, name))
     verified = replace(
         extraction,
-        start_timing=checker.text("start_timing", extraction.start_timing),
         church_name=checker.text("church_name", extraction.church_name),
         raw_denomination=checker.text("raw_denomination", extraction.raw_denomination),
-        contact_email=checker.punctuated("contact_email", extraction.contact_email),
+        contact_email=checker.email("contact_email", extraction.contact_email),
         contact_tel=checker.digits("contact_tel", extraction.contact_tel),
         contact_link=checker.punctuated("contact_link", extraction.contact_link),
         position=checker.choices("position", extraction.position, known.position_items),
@@ -360,15 +376,34 @@ class _Checker:
             return value
         return None if self._note((Dropped(name, value),)) else value
 
+    def email(self, name: str, value: str | None) -> str | None:
+        """이메일 — **주소만 하나씩** 견준다. 붙어 있는 담당자 이름은 보지 않는다.
+
+        ⚠️ 이름을 떼지 말라고 시킨 것이 프롬프트다. 그런데 원문은 담당자와 주소를 따로 적는
+        일이 많아(실측 552건) 통째로 견주면 **시킨 대로 한 답이 늘 "없다"가 된다**
+        (`minsung@lifespring.kr (김민성 전도사)` — 실측 TTGU/1107374).
+        """
+        if value is None:
+            return None
+        haystack = _alnum(_romanized(self.haystack))
+        wanted = [_alnum(token) for token in _EMAIL_TOKEN.findall(_romanized(value))]
+        if wanted and all(token in haystack for token in wanted):
+            return value
+        return None if self._note((Dropped(name, value),)) else value
+
     def punctuated(self, name: str, value: str | None) -> str | None:
-        """이메일·링크 — **글자와 숫자만** 견준다(`https://`·`.`·`,`를 지운다).
+        """링크 — **글자와 숫자만** 견준다(`https://`·`.`·`,`를 지운다).
 
         ⚠️ 실측: 원문이 `홈페이지:www,guryejungangchurch.com`(쉼표 오타)인데 모델이 점으로
         고쳤다. 그대로 견주면 **고친 답이 버려지고 깨진 URL을 그대로 옮긴 답이 살아남는다** —
         검산이 더 나쁜 답을 고르게 된다. 이메일도 같다 — 원문 `tmlee153@naver.,com`(쉼표
         오타)을 모델이 고쳤고, 글자 그대로 견주면 **고친 답이 버려진다**(실측 SJS/50075).
         """
-        if value is None or _alnum(_SCHEME.sub("", value)) in _alnum(self.haystack):
+        if value is None:
+            return None
+        # ⚠️ 괄호 주석은 떼고 본다 — `zinu8151 (카카오톡id)`처럼 모델이 무엇인지 덧붙인다.
+        bare = _SCHEME.sub("", _PARENTHESES.sub("", value))
+        if _alnum(_romanized(bare)) in _alnum(_romanized(self.haystack)):
             return value
         return None if self._note((Dropped(name, value),)) else value
 
@@ -496,8 +531,24 @@ def _alnum(text: str) -> str:
 
 
 def _phone_numbers(value: str) -> tuple[str, ...]:
-    """답에 담긴 전화번호를 하나씩. 쉼표·괄호·한글이 번호를 가른다."""
-    return tuple(_DIGITS.sub("", chunk) for chunk in _PHONE_CHUNK.findall(_ascii_forms(value)))
+    """답에 담긴 전화번호를 하나씩. 쉼표·괄호·한글이 번호를 가른다.
+
+    ⚠️ 공백 하나로만 나뉜 번호 둘은 한 덩어리가 된다. 그래도 그대로 둔다 — 실측 공고는
+    번호 사이에 쉼표·슬래시·한글을 넣고, 안 그런 경우에는 **원문에서도 두 번호가 붙어 있어**
+    그대로 찾아진다. 못 찾으면 비우는데, 그쪽이 안전한 방향이다.
+    """
+    return tuple(
+        digits
+        for chunk in _PHONE_CHUNK.findall(_ascii_forms(value))
+        if (digits := _DIGITS.sub("", chunk))
+    )
+
+
+def _romanized(text: str) -> str:
+    """한글로 쓴 도메인을 영문으로. **원문 쪽에만** 건다(`_KOREAN_DOMAINS`)."""
+    for hangul, roman in _KOREAN_DOMAINS.items():
+        text = text.replace(hangul, roman)
+    return text
 
 
 def _digits(text: str) -> str:

@@ -164,10 +164,10 @@ def test_an_aggregating_note_is_counted_not_dropped() -> None:
 
 
 def test_an_invented_text_field_becomes_empty() -> None:
-    verified, report = verify(_record(), _extraction(start_timing="주 6일 근무"))
+    verified, report = verify(_record(), _extraction(raw_denomination="원문에없는교단"))
 
-    assert verified.start_timing is None
-    assert "start_timing" in report.scrubbed
+    assert verified.raw_denomination is None
+    assert "raw_denomination" in report.scrubbed
 
 
 def test_the_posting_itself_is_never_dropped() -> None:
@@ -351,10 +351,10 @@ def test_a_posting_with_a_poster_is_never_scrubbed() -> None:
     record = _record(image_urls=("https://e.kr/poster.png",))
 
     verified, report = verify(
-        record, _extraction(start_timing="9월 첫 주", church_name="지어낸교회"), media_sent=True
+        record, _extraction(raw_denomination="예장통합", church_name="지어낸교회"), media_sent=True
     )
 
-    assert verified.start_timing == "9월 첫 주"
+    assert verified.raw_denomination == "예장통합"
     assert verified.church_name == "지어낸교회"
     assert report.scrubbed == ()
     assert report.unverifiable == 2
@@ -365,9 +365,9 @@ def test_a_posting_with_a_pdf_is_never_scrubbed() -> None:
         attachments=(Attachment(name="청빙공고문.pdf", url="https://e.kr/a.pdf"),),
     )
 
-    verified, report = verify(record, _extraction(start_timing="9월 첫 주"), media_sent=True)
+    verified, report = verify(record, _extraction(raw_denomination="예장통합"), media_sent=True)
 
-    assert verified.start_timing == "9월 첫 주"
+    assert verified.raw_denomination == "예장통합"
     assert report.unverifiable == 1
 
 
@@ -375,10 +375,10 @@ def test_a_hwp_attachment_does_not_exempt_the_posting() -> None:
     """⚠️ HWP는 모델에 보내지 않는다 — 거기서 왔을 수가 없으니 면제 사유가 아니다."""
     record = _record(attachments=(Attachment(name="이력서양식.hwp", url="https://e.kr/a.hwp"),))
 
-    verified, report = verify(record, _extraction(start_timing="9월 첫 주"))
+    verified, report = verify(record, _extraction(raw_denomination="예장통합"))
 
-    assert verified.start_timing is None
-    assert "start_timing" in report.scrubbed
+    assert verified.raw_denomination is None
+    assert "raw_denomination" in report.scrubbed
 
 
 # ── 검산하지 않는 칸 ─────────────────────────────────────────────
@@ -602,7 +602,6 @@ def test_a_real_senior_pastor_call_survives() -> None:
 
 #: 비운다 — 원문에서 한 조각을 그대로 옮기는 칸.
 _BLANKED: Final = (
-    "start_timing",
     "church_name",
     "raw_denomination",
     "contact_email",
@@ -614,6 +613,8 @@ _BLANKED: Final = (
 #: 답이 지워지고 fallback `기타`로 떨어진다(실측 CSU/1117858).
 _COUNTED: Final = (
     "role",
+    #: ⚠️ 자리마다 부임 시기를 따로 적는 공고가 244건이다 — 한 칸에 담으려면 이어야 한다.
+    "start_timing",
     #: ⚠️ 준전임·파트가 근무일을 따로 적는 공고가 54건이다 — 한 칸에 담으려면 이을 수밖에
     #: 없고, 이으라고 시킨 것도 프롬프트다.
     "work_days",
@@ -1079,3 +1080,100 @@ def test_a_part_time_english_posting_does_not_support_full_time() -> None:
 
     assert verified.employment_type is None
     assert report.scrubbed == ("employment_type",)
+
+
+def test_a_phone_number_written_with_spaces_is_matched() -> None:
+    """⚠️ `010 4678 5484`처럼 띄어 쓴 공고가 있다(실측 4건).
+
+    번호 덩어리를 숫자·하이픈으로만 잡았더니 이런 번호가 통째로 지워졌다.
+    """
+    record = _record(raw_text="문의 010 4678 5484 박찬경 목사")
+
+    verified, report = verify(record, _extraction(contact_tel="010 4678 5484 박찬경 목사"))
+
+    assert verified.contact_tel == "010 4678 5484 박찬경 목사"
+    assert report.scrubbed == ()
+
+
+def test_two_numbers_split_by_a_word_are_checked_separately() -> None:
+    """공백을 번호 안에 넣었어도 한글·쉼표는 여전히 번호를 가른다."""
+    record = _record(raw_text="사무실 02 1111 2222 · 담당 010 3333 4444")
+
+    verified, report = verify(record, _extraction(contact_tel="02 1111 2222, 담당 010 3333 4444"))
+
+    assert verified.contact_tel == "02 1111 2222, 담당 010 3333 4444"
+    assert report.scrubbed == ()
+
+
+def test_a_domain_written_in_hangul_matches_the_romanised_answer() -> None:
+    """⚠️ 숫자와 같은 수법이다 — `doyu78@네이버.com`(실측 4건). 모델이 되돌린 답을 벌하지 않는다."""
+    record = _record(raw_text="제출처 doyu78@네이버.com")
+
+    verified, report = verify(record, _extraction(contact_email="doyu78@naver.com"))
+
+    assert verified.contact_email == "doyu78@naver.com"
+    assert report.scrubbed == ()
+
+
+def test_a_student_department_is_recognised() -> None:
+    """`학생부`도 중고등부다 — 낱말이 빠져 맞는 부서가 지워졌다(실측 HAPSHIN/15259)."""
+    record = _record(raw_text="모집 내용 : 학생부 담당 교육목사")
+
+    verified, report = verify(
+        record,
+        _extraction(
+            church_name=None,
+            department=Department.YOUTH,
+            evidence=Evidence(department="학생부 담당"),
+        ),
+    )
+
+    assert verified.department is Department.YOUTH
+    assert report.scrubbed == ()
+
+
+def test_a_contact_name_beside_an_email_does_not_break_the_match() -> None:
+    """⚠️ 이름을 떼지 말라고 시킨 것이 프롬프트다 — 그런데 원문은 담당자와 주소를 따로 적는
+    일이 많아(실측 552건) 통째로 견주면 시킨 대로 한 답이 늘 지워진다."""
+    record = _record(
+        raw_text="채용 담당자: 김민성 전도사에게 제출 (재정 매니저) minsung@lifespring.kr"
+    )
+    answered = "minsung@lifespring.kr (김민성 전도사)"
+
+    verified, report = verify(record, _extraction(contact_email=answered))
+
+    assert verified.contact_email == answered
+    assert report.scrubbed == ()
+
+
+def test_two_start_dates_joined_into_one_field_are_not_blanked() -> None:
+    """⚠️ 자리마다 부임 시기를 따로 적는 공고가 244건이다(실측 HANIL/104524)."""
+    record = _record(raw_text="1) 전임 부임시기 2026년 12월\n2) 파트 부임시기 2027년 1월")
+
+    verified, report = verify(record, _extraction(start_timing="2026년 12월 / 2027년 1월"))
+
+    assert verified.start_timing == "2026년 12월 / 2027년 1월"
+    assert report.scrubbed == ()
+    assert report.unchecked_fields == {"start_timing": 1}
+
+
+def test_a_note_beside_a_link_does_not_break_the_match() -> None:
+    """`zinu8151 (카카오톡id)`처럼 무엇인지 덧붙여도 링크 자체가 원문에 있으면 남긴다."""
+    record = _record(raw_text="카톡 zinu8151 로 문의")
+
+    verified, report = verify(record, _extraction(contact_link="zinu8151 (카카오톡id)"))
+
+    assert verified.contact_link == "zinu8151 (카카오톡id)"
+    assert report.scrubbed == ()
+
+
+def test_one_real_address_does_not_carry_an_invented_one() -> None:
+    """⚠️ 주소마다 따로 보되 **전부** 있어야 한다 — 하나만 맞으면 나머지가 무임승차한다."""
+    record = _record(raw_text="제출처 real@example.kr")
+
+    verified, report = verify(
+        record, _extraction(contact_email="real@example.kr, made-up@example.kr")
+    )
+
+    assert verified.contact_email is None
+    assert report.scrubbed == ("contact_email",)

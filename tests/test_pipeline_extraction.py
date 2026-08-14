@@ -97,12 +97,22 @@ def _answer(**overrides: object) -> str:
 # ── 프롬프트 ─────────────────────────────────────────────────────
 
 
-def test_the_prompt_carries_the_board_title_and_body() -> None:
+def test_the_prompt_carries_the_title_and_body() -> None:
     prompt = build_prompt(_source_data())
 
-    assert "CSU" in prompt
     assert "점촌제일교회 전임 사역자 청빙" in prompt
     assert "전임 사역자를 청빙합니다." in prompt
+
+
+def test_the_prompt_never_names_the_board() -> None:
+    """⚠️ 보여주면 교단 칸에 그대로 들어간다 — 실측 268건 중 11건이 `DAESHIN`·`KAICAM` 이었다.
+
+    "넣지 마라"고 적어두는 것으로는 막히지 않았다. 쓸모도 없다 — 게시판 키는 우리 내부
+    코드라 모델이 판단에 쓸 정보가 없다. **보여주지 않는 편이 낫다.**
+    """
+    prompt = build_prompt(_source_data())
+
+    assert "CSU" not in prompt
 
 
 def test_an_empty_body_is_marked_not_left_blank() -> None:
