@@ -14,15 +14,19 @@ from datetime import date
 from typing import Final
 
 import pytest
+from bs4 import BeautifulSoup, Tag
 
 from minjob_ingest.models import Attachment
 from minjob_ingest.sources.adapters.base import (
+    HTML_PARSER,
     ParseError,
     PostingRef,
     absolute_url,
     attachments_in,
+    decode_cf_email,
     external_id_from_query,
     image_urls_in,
+    normalized_text,
     page_query_request,
     parse_html,
     require_attachment_evidence,
@@ -360,3 +364,46 @@ def test_no_document_wrapper_is_added() -> None:
     kept = _structural("<div><p>본문</p></div>")
     assert not kept.startswith("<html>")
     assert kept.startswith("<div>")
+
+
+# ── 가려진 이메일 ────────────────────────────────────────────────
+
+_MASKED_EMAIL: Final = (
+    '<div>6. 제출 및 문의<br/>- <a href="/cdn-cgi/l/email-protection" class="__cf_email__"'
+    ' data-cfemail="d1a8a2a8a4bfa5b991b9b0bfbcb0b8bdffbfb4a5">[email&#160;protected]</a></div>'
+)
+
+
+def _element(html: str) -> Tag:
+    found = BeautifulSoup(html, HTML_PARSER).div
+    assert found is not None
+    return found
+
+
+def test_a_masked_email_comes_back_in_the_body() -> None:
+    """⚠️ 게시판이 스팸을 피해 이메일을 가린다(실측 `KEHC` 83건 · `KAICAM` 32건).
+
+    되돌리지 않으면 지원 주소가 통째로 사라지고, 빈자리를 모델이 작성자 이름으로 지어낸다
+    (`임관혁` → `limkh81@naver.com` · 2026-08-14).
+    """
+    assert "ysyunth@hanmail.net" in normalized_text(_element(_MASKED_EMAIL))
+    assert "[email" not in normalized_text(_element(_MASKED_EMAIL))
+
+
+def test_a_masked_email_comes_back_in_the_stored_evidence() -> None:
+    """⚠️ `raw_html`에도 되돌려 둔다 — 속성 화이트리스트가 암호값을 지워서, 안 되돌리면
+    나중에 증거를 다시 읽어도 주소를 살릴 수 없다(실측 115건이 그렇게 됐다)."""
+    assert "ysyunth@hanmail.net" in structural_html(_element(_MASKED_EMAIL))
+
+
+@pytest.mark.parametrize(
+    "encoded", ["", "zz", "d1", "not-hex"], ids=["빈값", "한바이트", "열쇠만", "16진수아님"]
+)
+def test_an_unreadable_mask_is_left_alone(encoded: str) -> None:
+    """풀 수 없으면 원문을 그대로 둔다 — 조용히 빈 문자열로 바꾸지 않는다."""
+    assert decode_cf_email(encoded) is None
+
+
+def test_a_mask_that_decodes_to_nonsense_is_rejected() -> None:
+    """⚠️ `@`가 없으면 이메일이 아니다 — 아무 16진수나 주소로 만들지 않는다."""
+    assert decode_cf_email("00616263") is None

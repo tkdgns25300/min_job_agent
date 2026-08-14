@@ -184,6 +184,40 @@ def cell_text(row: Tag, selector: str) -> str:
     return "" if found is None else found.get_text(" ", strip=True).strip()
 
 
+#: Cloudflare가 이메일을 가릴 때 남기는 표시. 보이는 자리에는 `[email protected]`만 찍히고
+#: 진짜 주소는 이 속성에 16진수로 들어 있다 — **첫 바이트가 열쇠**이고 나머지를 XOR하면 나온다.
+_CF_EMAIL_ATTR: Final = "data-cfemail"
+
+
+def unmask_emails(element: Tag) -> None:
+    """가려진 이메일을 제자리에 되돌린다. **본문을 읽기 전에** 부른다.
+
+    ⚠️ 안 하면 지원 주소가 통째로 사라진다(실측 2026-08-14 · `KEHC` 83건 · `KAICAM` 32건 —
+    두 곳 다 지원 방법이 이메일뿐이다). 그리고 빈자리를 모델이 **작성자 이름으로 지어냈다**
+    (`임관혁` → `limkh81@naver.com`). 검산이 잡아 지웠지만 값은 여전히 없다.
+    """
+    for tag in element.select(f"[{_CF_EMAIL_ATTR}]"):
+        encoded = tag.get(_CF_EMAIL_ATTR)
+        if not isinstance(encoded, str):
+            continue
+        address = decode_cf_email(encoded)
+        if address is not None:
+            tag.replace_with(NavigableString(address))
+
+
+def decode_cf_email(encoded: str) -> str | None:
+    """`data-cfemail` 16진수를 주소로. 풀 수 없으면 `None`(원문을 그대로 둔다)."""
+    try:
+        raw = bytes.fromhex(encoded)
+    except ValueError:
+        return None
+    if len(raw) < 2:
+        return None
+    key = raw[0]
+    address = "".join(chr(byte ^ key) for byte in raw[1:])
+    return address if "@" in address else None
+
+
 def normalized_text(element: Tag) -> str:
     """블록 경계를 줄바꿈으로 살린 텍스트.
 
@@ -193,6 +227,7 @@ def normalized_text(element: Tag) -> str:
     (실측). 원문의 공백을 그대로 쓰는 편이 정확하다.
     """
     working = BeautifulSoup(str(element), HTML_PARSER)
+    unmask_emails(working)
     for tag in working(["script", "style"]):
         tag.decompose()
     for tag in working.find_all(_BLOCK_TAGS):
@@ -217,6 +252,9 @@ def structural_html(element: Tag) -> str:
     `attachments_in`도 부른다. 여기서 태그를 지우면 호출 순서에 따라 결과가 달라진다.
     """
     working = BeautifulSoup(str(element), HTML_PARSER)
+    # ⚠️ 증거에도 되돌려 둔다 — 속성 화이트리스트가 `data-cfemail`을 지워서, 안 되돌리면
+    #    나중에 `raw_html`을 다시 읽어도 주소를 살릴 방법이 없다(실측 115건이 그렇게 됐다).
+    unmask_emails(working)
     for comment in working.find_all(string=lambda node: isinstance(node, Comment)):
         comment.extract()
     for tag in working(_DROPPED_TAGS):
