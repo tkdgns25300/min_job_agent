@@ -224,9 +224,12 @@ class GeminiClient:
         return self._generate(parts, structure_config(schema))
 
     def _generate(self, parts: Sequence[types.Part], config: types.GenerateContentConfig) -> str:
+        # ⚠️ SDK가 받는 것은 여러 형식의 합집합 리스트다. `list[Part]`로 넘기면 리스트가
+        #    불변(invariant)이라 타입이 안 맞는다 — 값은 그대로고 선언만 넓힌다.
+        contents: list[types.PartUnionDict] = list(parts)
         try:
             response = self._client.models.generate_content(
-                model=self._model, contents=list(parts), config=config
+                model=self._model, contents=contents, config=config
             )
         except Exception as err:  # SDK 예외 계층이 넓다 → 파이프라인이 다룰 한 종류로 좁힌다.
             raise GeminiError(f"Gemini 호출 실패: {err}") from err

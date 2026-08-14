@@ -2,8 +2,12 @@
 
 레코드 모양이 SPEC §6과 같으므로(serde) Supabase 전환은 이 파일만 갈아끼우면 된다.
 
-⚠️ **직렬 실행 전제.** 파일 단위 read-modify-write라 **동시 쓰기는 레코드를 유실**한다.
-소스 간 병렬(SPEC §3)로 돌릴 때는 쓰기를 한 곳으로 직렬화하거나 `SupabaseStore`로 전환한다.
+⚠️ **쓰기는 한 줄로 세운다.** 파일 단위 read-modify-write라 동시에 쓰면 나중 것이 앞의 것을
+덮어 **레코드가 조용히 사라진다** — 잃는 것이 `structured_at`이면 Gemini 재과금이고 초안이면
+탐지 불가능한 유실이다. 소스 간 병렬(SPEC §3)에서 공유되는 자원은 이 파일들뿐이므로,
+**갱신 메서드를 락 하나로 감싸는 것으로 충분**하다. 읽기는 잠그지 않는다 — `_write_rows`가
+임시파일 → rename이라 읽는 쪽은 항상 교체 전이나 후의 온전한 파일을 본다.
+한 건에 0.14초라 3,188건을 전부 직렬화해도 병렬 이득을 먹지 않는다(2026-08-14 실측).
 
 ⚠️ **로컬 실행 전용.** GitHub Actions 러너는 끝나면 사라져 원장이 매 실행 초기화된다 →
 31곳 전량 재크롤 + 전량 재구조화(비용) + 산출물 유실. Actions 배포는
@@ -15,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import fields
 from pathlib import Path
@@ -67,6 +72,9 @@ class JsonStore:
     ) -> None:
         self._dir = data_dir
         self._on_corrupt_row = on_corrupt_row
+        # 게시판 간 병렬 실행에서 갱신을 한 줄로 세운다(모듈 docstring). 재진입 가능한 락을
+        # 쓰는 것은 갱신 메서드가 서로를 부를 여지를 남겨두기 위해서다.
+        self._write_lock = threading.RLock()
 
     # ── 원장·수집 ────────────────────────────────────────────────
 
@@ -99,12 +107,13 @@ class JsonStore:
         return seen
 
     def save_source_data(self, record: SourceData) -> bool:
-        rows = self._read_rows(_SOURCE_DATA_FILE)
-        if any(self._ledger_key_or_none(row) == record.ledger_key for row in rows):
-            return False  # ON CONFLICT DO NOTHING
-        rows.append(to_row(record))
-        self._write_rows(_SOURCE_DATA_FILE, rows)
-        return True
+        with self._write_lock:
+            rows = self._read_rows(_SOURCE_DATA_FILE)
+            if any(self._ledger_key_or_none(row) == record.ledger_key for row in rows):
+                return False  # ON CONFLICT DO NOTHING
+            rows.append(to_row(record))
+            self._write_rows(_SOURCE_DATA_FILE, rows)
+            return True
 
     # ── 구조화 ──────────────────────────────────────────────────
 
@@ -123,53 +132,57 @@ class JsonStore:
         return tuple(pending[:limit])
 
     def update_structure_state(self, record: SourceData) -> None:
-        rows = self._read_rows(_SOURCE_DATA_FILE)
-        index = self._index_of(rows, "id", str(record.id))
-        if index is None:
-            raise StoreError(f"source_data {record.id} 없음 — 상태를 갱신할 대상이 없다")
-        stored = row_to_source_data(rows[index])
-        self._check_only_state_changed(stored, record)
-        self._check_state_moves_forward(stored, record)
-        rows[index] = to_row(record)
-        self._write_rows(_SOURCE_DATA_FILE, rows)
+        with self._write_lock:
+            rows = self._read_rows(_SOURCE_DATA_FILE)
+            index = self._index_of(rows, "id", str(record.id))
+            if index is None:
+                raise StoreError(f"source_data {record.id} 없음 — 상태를 갱신할 대상이 없다")
+            stored = row_to_source_data(rows[index])
+            self._check_only_state_changed(stored, record)
+            self._check_state_moves_forward(stored, record)
+            rows[index] = to_row(record)
+            self._write_rows(_SOURCE_DATA_FILE, rows)
 
     def upsert_review_data(self, record: ReviewData) -> bool:
-        rows = self._read_rows(_REVIEW_DATA_FILE)
-        index = self._index_of(rows, "source_data_id", str(record.source_data_id))
-        if index is None:
-            rows.append(to_row(record))
+        with self._write_lock:
+            rows = self._read_rows(_REVIEW_DATA_FILE)
+            index = self._index_of(rows, "source_data_id", str(record.source_data_id))
+            if index is None:
+                rows.append(to_row(record))
+                self._write_rows(_REVIEW_DATA_FILE, rows)
+                return True
+
+            # 기존 행이 깨졌으면 조용히 덮어쓰지 않는다 — 운영자 승인 상태를 날릴 수 있다.
+            existing = row_to_review_data(rows[index])
+            if existing.review_status is not ReviewStatus.PENDING or existing.is_operator_touched:
+                _LOG.info(
+                    "운영자가 손댄 초안이라 재구조화 결과를 버림 (source_data_id=%s, status=%s)",
+                    record.source_data_id,
+                    existing.review_status.value,
+                )
+                return False
+            rows[index] = to_row(record.carrying_review_state_of(existing))
             self._write_rows(_REVIEW_DATA_FILE, rows)
             return True
-
-        # 기존 행이 깨졌으면 조용히 덮어쓰지 않는다 — 운영자 승인 상태를 날릴 수 있다.
-        existing = row_to_review_data(rows[index])
-        if existing.review_status is not ReviewStatus.PENDING or existing.is_operator_touched:
-            _LOG.info(
-                "운영자가 손댄 초안이라 재구조화 결과를 버림 (source_data_id=%s, status=%s)",
-                record.source_data_id,
-                existing.review_status.value,
-            )
-            return False
-        rows[index] = to_row(record.carrying_review_state_of(existing))
-        self._write_rows(_REVIEW_DATA_FILE, rows)
-        return True
 
     # ── 실행·상태 ───────────────────────────────────────────────
 
     def start_run(self, mode: CrawlMode) -> CrawlRun:
-        run = CrawlRun(mode=mode, started_at=kst_now())
-        rows = self._read_rows(_CRAWL_RUN_FILE)
-        rows.append(to_row(run))
-        self._write_rows(_CRAWL_RUN_FILE, rows)
-        return run
+        with self._write_lock:
+            run = CrawlRun(mode=mode, started_at=kst_now())
+            rows = self._read_rows(_CRAWL_RUN_FILE)
+            rows.append(to_row(run))
+            self._write_rows(_CRAWL_RUN_FILE, rows)
+            return run
 
     def finish_run(self, record: CrawlRun) -> None:
-        rows = self._read_rows(_CRAWL_RUN_FILE)
-        index = self._index_of(rows, "id", str(record.id))
-        if index is None:
-            raise StoreError(f"crawl_run {record.id} 없음 — 시작 기록 없이 종료할 수 없다")
-        rows[index] = to_row(record)
-        self._write_rows(_CRAWL_RUN_FILE, rows)
+        with self._write_lock:
+            rows = self._read_rows(_CRAWL_RUN_FILE)
+            index = self._index_of(rows, "id", str(record.id))
+            if index is None:
+                raise StoreError(f"crawl_run {record.id} 없음 — 시작 기록 없이 종료할 수 없다")
+            rows[index] = to_row(record)
+            self._write_rows(_CRAWL_RUN_FILE, rows)
 
     def get_health(self, source_key: str) -> SourceHealth | None:
         rows = self._read_rows(_SOURCE_HEALTH_FILE)
@@ -180,13 +193,14 @@ class JsonStore:
         return None if index is None else row_to_source_health(rows[index])
 
     def upsert_health(self, record: SourceHealth) -> None:
-        rows = self._read_rows(_SOURCE_HEALTH_FILE)
-        index = self._index_of(rows, "source_key", record.source_key)
-        if index is None:
-            rows.append(to_row(record))
-        else:
-            rows[index] = to_row(record)
-        self._write_rows(_SOURCE_HEALTH_FILE, rows)
+        with self._write_lock:
+            rows = self._read_rows(_SOURCE_HEALTH_FILE)
+            index = self._index_of(rows, "source_key", record.source_key)
+            if index is None:
+                rows.append(to_row(record))
+            else:
+                rows[index] = to_row(record)
+            self._write_rows(_SOURCE_HEALTH_FILE, rows)
 
     # ── 파일 I/O ────────────────────────────────────────────────
 

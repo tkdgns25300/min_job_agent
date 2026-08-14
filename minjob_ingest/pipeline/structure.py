@@ -19,16 +19,18 @@ source_data ──▶ 빈 공고?  ──예──▶ structured_at 만 (Gemini 
 ⚠️ **`run_id`는 `source_data.run_id`를 승계**하고 이 패스는 `crawl_run`을 만들지 않는다
 (SPEC §2 · 집계가 전부 게시판 단위라 공고 단위 작업이 들어갈 칸이 없다).
 
-⚠️ **소스 간에도 순차**다. JsonStore가 파일 전체를 다시 쓰는 구조라 동시 갱신이 서로를
-덮어쓴다 — 잃는 것이 `structured_at`이면 Gemini 재과금이고 초안이면 조용한 유실이다.
-병렬은 Supabase 전환(ROADMAP 1-6) 이후.
+⚠️ **게시판 간 병렬 · 게시판 안은 순차**(SPEC §3). 게시판 하나를 스레드 하나가 통째로 맡는다 —
+그래서 그 게시판의 접속 클라이언트(요청 간격·세션 쿠키)를 아무도 같이 건드리지 않고, fetch
+층에 잠금이 필요 없다. 스레드가 공유하는 것은 저장과 집계 둘뿐이고 각각 락 하나로 세운다.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final, Protocol, assert_never
@@ -57,6 +59,11 @@ _LOG = logging.getLogger(__name__)
 #: (`collect.py`가 같은 이유로 3건만 남긴다).
 _FAILURE_SAMPLE_SIZE: Final = 5
 
+#: 동시에 돌릴 **게시판 수**. 자원 보호용 상한이라 정책이 아니라 실행 옵션이다(CLAUDE.md
+#: fetch 층) — CLI의 `--workers`가 덮어쓴다. 올리기 전에 Vertex 분당 요청 한도를 확인한다:
+#: 넘기면 429가 오고 SDK가 기다렸다 다시 걸어 **결국 한도만큼만 나간다**.
+DEFAULT_WORKERS: Final = 4
+
 #: 일반직인데 무슨 일인지 안 적힌 공고의 `role`. min_job DATA.md §3이 정한 fallback이다
 #: ("못 맞추면 기타") — 비워두면 레코드 불변식에 걸려 그 공고가 사라진다.
 _GENERAL_ROLE_FALLBACK: Final = "기타"
@@ -81,6 +88,11 @@ class Verdict(StrEnum):
     DEFERRED = "DEFERRED"
     #: 호출·응답·저장이 실패했다. `structured_at`을 남기지 않아 다음 실행이 재시도한다.
     FAILED = "FAILED"
+
+
+#: Gemini를 부르지 않은 판정 — 유료 상한(`_Budget`)을 먹지 않는다. `_Tally.judged`가 세는
+#: 것의 여집합이라 **둘이 갈라지면 상한이 틀어진다**(적합성은 테스트가 지킨다).
+_FREE_VERDICTS: Final = frozenset({Verdict.EMPTY, Verdict.DEFERRED})
 
 
 class Extractor(Protocol):
@@ -250,6 +262,50 @@ class _Tally:
         )
 
 
+class _Budget:
+    """유료 호출 상한을 게시판들이 나눠 쓴다. `None`이면 상한 없음(`--all`).
+
+    ⚠️ **부르기 전에 자리를 잡는다.** 부르고 나서 세면 동시에 돌던 게시판들이 각자 한 건씩
+    더 보내 **상한을 워커 수만큼 넘긴다** — `--limit 20`이 24건 청구되는 경로를 만들지 않는다.
+
+    ⚠️ **Gemini를 부르지 않은 판정은 자리를 돌려준다**(빈 공고·그림 대기). 안 돌려주면 미판정
+    목록 앞머리에 쌓인 대기 공고가 상한을 다 먹어 뒤의 공고에 영원히 도달하지 못한다
+    (`StructureOptions.limit` 참조 — 실측: 그림 대기 237건 때문에 `--limit 20`이 7번 만에 굶었다).
+    """
+
+    def __init__(self, limit: int | None) -> None:
+        self._left = limit
+        self._lock = threading.Lock()
+
+    def take(self) -> bool:
+        with self._lock:
+            if self._left is None:
+                return True
+            if self._left <= 0:
+                return False
+            self._left -= 1
+            return True
+
+    def give_back(self) -> None:
+        with self._lock:
+            if self._left is not None:
+                self._left += 1
+
+
+def group_by_source(pending: Sequence[SourceData]) -> tuple[tuple[SourceData, ...], ...]:
+    """게시판별로 묶는다 — **큰 게시판이 먼저 출발**하고, 게시판 안은 수집 시각 순 그대로.
+
+    ⚠️ 전체 실행 시간은 **가장 큰 게시판 하나**가 정한다(CSU 731건). 작은 것부터 내보내면
+    큰 게시판이 마지막에 혼자 남아 병렬이 무의미해진다 — 워커를 늘려도 줄지 않는 하한이라
+    큰 게시판은 `--source`로 따로 돌리는 편이 낫다(RUNBOOK).
+    """
+    boards: dict[str, list[SourceData]] = {}
+    for record in pending:
+        boards.setdefault(record.source_key, []).append(record)
+    ordered = sorted(boards.values(), key=len, reverse=True)
+    return tuple(tuple(records) for records in ordered)
+
+
 def structure_pending(
     store: Store,
     extractor: Extractor,
@@ -257,25 +313,45 @@ def structure_pending(
     *,
     on_result: ResultSink | None = None,
     images: MediaSource | None = None,
+    workers: int = DEFAULT_WORKERS,
 ) -> StructureReport:
-    """미판정 원자료를 오래된 것부터 처리한다.
+    """미판정 원자료를 게시판별로 나눠 처리한다 — 게시판 간 병렬 · 게시판 안은 오래된 것부터.
 
     ⚠️ **한 건의 실패가 나머지를 멈추지 않는다**(CLAUDE.md "에러는 경계에서만"). 실패는
     세어서 리포트로 돌리고 다음 공고로 간다 — 3,188건짜리 실행이 350번째에서 죽으면
     나머지에 영원히 도달하지 못한다.
+
+    ⚠️ **집계와 진행 표시는 락 안에서 한 스레드씩** 한다. `_Tally`도 `on_result`가 쓰는
+    화면·파일도 동시 접근을 견디지 않는다 — 여기서 세우면 받는 쪽은 병렬을 몰라도 된다.
     """
+    if workers < 1:
+        raise ValueError(f"workers는 1 이상이어야 함 ({workers})")
     pending = store.list_unstructured(_ALL_LIMIT, source_key=options.source_key)
     if len(pending) == _ALL_LIMIT:
         # 조용한 부분 성공을 만들지 않는다 — 리포트만 보면 전량을 끝낸 것처럼 보인다.
         _LOG.warning("조회 상한 %d건에 걸렸다 — 남은 공고가 더 있다", _ALL_LIMIT)
+    boards = group_by_source(pending)
+    budget = _Budget(options.limit)
     tally = _Tally()
-    for record in pending:
-        result = structure_one(record, store, extractor, dry_run=options.dry_run, images=images)
-        tally.add(result)
-        if on_result is not None:
-            on_result(result, tally.report())
-        if options.limit is not None and tally.judged >= options.limit:
-            break
+    tally_lock = threading.Lock()
+
+    def run_board(records: Sequence[SourceData]) -> None:
+        for record in records:
+            if not budget.take():
+                return
+            result = structure_one(record, store, extractor, dry_run=options.dry_run, images=images)
+            if result.verdict in _FREE_VERDICTS:
+                budget.give_back()
+            with tally_lock:
+                tally.add(result)
+                if on_result is not None:
+                    on_result(result, tally.report())
+
+    if boards:
+        with ThreadPoolExecutor(max_workers=min(workers, len(boards))) as pool:
+            # `list`가 있어야 게시판 하나가 던진 예외가 여기서 다시 오른다 — 삼키면
+            # 리포트만 보고 "그 게시판은 처리할 게 없었다"로 읽힌다.
+            list(pool.map(run_board, boards))
     return tally.report()
 
 

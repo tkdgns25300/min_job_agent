@@ -23,6 +23,7 @@ from minjob_ingest.pipeline.collect import CollectReport
 from minjob_ingest.pipeline.extraction import Extraction
 from minjob_ingest.pipeline.health import EMPTY_RUNS_ALARM
 from minjob_ingest.pipeline.structure import (
+    DEFAULT_WORKERS,
     StructureOptions,
     StructureReport,
     StructureResult,
@@ -739,3 +740,57 @@ def test_the_preview_file_records_what_verification_did(tmp_path: Path) -> None:
     written = json.loads(path.read_text(encoding="utf-8"))[0]
     assert written["scrubbed"] == ["contact_link"]
     assert written["unchecked"] == {"required_docs": 2}
+
+
+def test_the_worker_count_reaches_the_pipeline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 전달이 끊기면 기본값으로 조용히 돈다 — 화면에는 `--workers 12`가 찍히는데 4곳만 돈다."""
+    captured: list[object] = []
+
+    def fake_pipeline(
+        _store: object, _extractor: object, _options: object, **kwargs: object
+    ) -> StructureReport:
+        captured.append(kwargs.get("workers"))
+        return StructureReport()
+
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path))
+    monkeypatch.setattr(cli, "structure_pending", fake_pipeline)
+    _stub_gemini(monkeypatch)
+
+    assert main(["structure", "--limit", "1", "--dry-run"]) == 0
+    assert main(["structure", "--limit", "1", "--dry-run", "--workers", "12"]) == 0
+
+    assert captured == [DEFAULT_WORKERS, 12]
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("value", ["0", "-3"])
+def test_structure_rejects_a_useless_worker_count(
+    value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit):
+        main(["structure", "--limit", "1", "--workers", value])
+    capsys.readouterr()
+
+
+def test_one_board_is_not_advertised_as_parallel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ `--source`를 주면 게시판이 하나라 스레드도 하나다.
+
+    숫자를 그대로 찍으면 돌지 않는 병렬을 돈다고 읽는다.
+    """
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path))
+    monkeypatch.setattr(cli, "structure_pending", lambda *_a, **_k: StructureReport())
+    _stub_gemini(monkeypatch)
+
+    assert main(["structure", "--limit", "1", "--dry-run", "--workers", "8"]) == 0
+    spread = capsys.readouterr().out
+    assert (
+        main(["structure", "--limit", "1", "--dry-run", "--workers", "8", "--source", "YTUS"]) == 0
+    )
+    narrowed = capsys.readouterr().out
+
+    assert "게시판 8곳씩" in spread
+    assert "게시판 8곳씩" not in narrowed

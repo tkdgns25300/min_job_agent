@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -609,3 +610,46 @@ def test_list_unstructured_can_be_bound_to_one_source(store: JsonStore) -> None:
     assert [record.source_key for record in store.list_unstructured(10)] == ["YTUS", "PUTS"]
     assert [record.external_id for record in only_puts] == ["2"]
     assert store.list_unstructured(10, source_key="ACTS") == ()
+
+
+# ── 동시 쓰기 ────────────────────────────────────────────────────
+
+
+def test_records_survive_boards_writing_at_the_same_time(tmp_path: Path) -> None:
+    """⚠️ 파일 전체를 다시 쓰는 구조라 잠그지 않으면 **나중 쓰기가 앞의 것을 통째로 덮는다**.
+
+    구조화가 게시판 간 병렬로 돌기 때문에(`pipeline/structure.py`) 실제로 일어나는 경로다.
+    잃는 것이 `structured_at`이면 Gemini 재과금이고, 초안이면 탐지할 방법이 없다.
+    """
+    store = JsonStore(tmp_path)
+    records = [_source_data(f"{number}") for number in range(40)]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        saved = list(pool.map(store.save_source_data, records))
+
+    assert all(saved)
+    assert len(_read_raw(tmp_path, "source_data.json")) == 40
+
+
+def test_a_state_update_does_not_drop_a_concurrent_insert(tmp_path: Path) -> None:
+    """읽고-고쳐-쓰는 두 갱신이 겹치는 경우. 한쪽이 읽은 뒤 다른 쪽이 쓰면 그 행이 사라진다."""
+    store = JsonStore(tmp_path)
+    existing = _source_data("100")
+    store.save_source_data(existing)
+
+    def update() -> None:
+        store.update_structure_state(existing.with_verdict_recorded())
+
+    def insert(number: int) -> None:
+        store.save_source_data(_source_data(f"{number}"))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(insert, number) for number in range(20)]
+        futures.append(pool.submit(update))
+        for future in futures:
+            future.result()
+
+    rows = _read_raw(tmp_path, "source_data.json")
+    assert len(rows) == 21
+    stored = {row["external_id"]: row for row in rows}
+    assert stored["100"]["structured_at"] is not None

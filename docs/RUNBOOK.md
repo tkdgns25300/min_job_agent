@@ -43,12 +43,35 @@ minjob-ingest snapshot --source KEY                         🌐    fixture용 H
 minjob-ingest structure --dry-run --limit 1 --source DAESHIN   💰  1건만 화면으로 확인 (저장 안 함)
 minjob-ingest structure --limit 1                             💰  1건 실제 저장
 minjob-ingest structure --limit 20 --source YTUS              💰  한 게시판 20건
-minjob-ingest structure --all                                 💰  전량 (약 2~3시간 · 순차)
+minjob-ingest structure --all --workers 8                     💰  전량 (게시판 8곳씩 동시)
 ```
 
 ⚠️ **`--limit N` 또는 `--all` 이 없으면 실행을 거부한다.** 유료 호출이 옵션 없이 전량으로 도는 경로를 두지 않았다.
 
-`structure` 옵션 — **`--limit N`**(판정할 건수 = 유료 호출 상한) · **`--all`**(남은 전부) · **`--dry-run`**(호출은 하되 저장 안 함) · `--source KEY` · `--verbose`(호출 로그) · **`--out FILE`**(결과를 JSON으로 — 모델 비교용) · **`--lite`**(값싼 모델로)
+`structure` 옵션 — **`--limit N`**(판정할 건수 = 유료 호출 상한) · **`--all`**(남은 전부) · **`--dry-run`**(호출은 하되 저장 안 함) · `--source KEY` · **`--workers N`**(동시에 돌릴 게시판 수 · 기본 4) · `--verbose`(호출 로그) · **`--out FILE`**(결과를 JSON으로 — 모델 비교용) · **`--lite`**(값싼 모델로)
+
+### 얼마나 빨라지나 — `--workers`
+
+**게시판 간에만 동시에 돈다. 한 게시판 안은 언제나 한 건씩이다**(같은 게시판에 요청 두 개를 흘리지 않는다).
+
+```
+--workers 1     5시간 반      순차
+--workers 8       50분
+--workers 16      25분
+```
+
+⚠️ **전체 시간의 하한은 가장 큰 게시판 하나가 정한다**(`CSU` 731건 ≈ 1.6시간). 워커를 30으로 올려도 이 하한은 줄지 않고, 마지막 한 시간은 큰 게시판 혼자 돈다. **큰 곳은 따로 먼저 돌리는 편이 빠르다**:
+
+```bash
+minjob-ingest structure --source CSU --all &
+minjob-ingest structure --source PUTS --all &
+wait
+minjob-ingest structure --all --workers 8     # 나머지 28곳
+```
+
+⚠️ **`--workers`를 올리기 전에 Vertex 분당 요청 한도를 본다.** 넘기면 429가 오고 SDK가 기다렸다 다시 걸어 **결국 한도만큼만 나간다** — 숫자만 키우면 오히려 느려진다. 8에서 시작해 429가 없으면 올린다(`--verbose`로 보인다).
+
+⚠️ **`--source`를 주면 게시판이 하나라 `--workers`는 아무 일도 하지 않는다.** 그때는 셸에서 게시판별로 나눠 띄운다(위 예시).
 
 ⚠️ **`--out`은 연락처가 담긴다.** 커밋되지 않는 `data/` 아래에 쓴다(`--out data/preview.json`).
 
@@ -65,17 +88,25 @@ minjob-ingest structure --all                                 💰  전량 (약 
 
 ### 두 모델 견주기
 
-```bash
-# 같은 공고를 두 번 — ⚠️ --dry-run 이라 판정이 안 남아 두 실행이 같은 10건을 본다
-minjob-ingest structure --source DAESHIN --limit 10 --dry-run --lite --out data/lite-daeshin.json
-minjob-ingest structure --source DAESHIN --limit 10 --dry-run        --out data/flash-daeshin.json
+⚠️ **`--limit`은 오래된 것부터 세므로 게시판을 지정하지 않으면 한 곳만 나온다**(실측: 앞의 40건이 전부 `DAESHIN`). 게시판을 섞으려면 `--source`를 게시판마다 준다.
 
-.venv/bin/python scripts/compare_models.py data/lite-daeshin.json data/flash-daeshin.json
+```bash
+# 게시판 3곳 × 10건 × 모델 2개 — ⚠️ --dry-run 이라 판정이 안 남아 두 모델이 같은 공고를 본다
+for K in PCKWORLD CSU PUTS; do
+  minjob-ingest structure --source $K --limit 10 --dry-run        --out data/flash-$K.json
+  minjob-ingest structure --source $K --limit 10 --dry-run --lite --out data/lite-$K.json
+done
+
+for K in PCKWORLD CSU PUTS; do
+  .venv/bin/python scripts/compare_models.py data/lite-$K.json data/flash-$K.json
+done
 ```
 
 칸별로 **몇 번 갈렸는지**가 먼저 나온다. 어느 쪽이 맞는지는 말하지 않는다 — 갈린 공고만 원문과 대조하면 된다.
 
-💡 **게시판을 섞는다.** 게시판마다 형식이 달라 한 곳만 보면 다른 곳에서 깨지는 것을 못 본다(`DAESHIN`은 본문형, `CSU`는 게시판 필드형, PDF 첨부는 `PUTS`·`UHS`에 있다).
+💡 **게시판을 섞는다.** 게시판마다 형식이 달라 한 곳만 보면 다른 곳에서 깨지는 것을 못 본다(`PCKWORLD`는 60건 전부 그림·PDF, `CSU`는 게시판 필드형, `PUTS`는 본문형이면서 최다).
+
+⚠️ **`--dry-run`을 빼면 비교가 성립하지 않는다.** 판정이 찍혀 두 번째 모델이 같은 공고를 보지 못한다(`structured_at`은 앞으로만 간다).
 
 **`--limit`은 "판정한 건수"를 센다** — 훑은 건수가 아니다. Gemini를 부르지 않는 공고(빈 공고 등)는 세지 않으므로 `--limit 20`은 항상 **호출 20회 이하**다. 리포트의 `훑음`이 `--limit`보다 큰 것은 정상이다.
 

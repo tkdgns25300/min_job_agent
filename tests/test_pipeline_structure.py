@@ -7,9 +7,12 @@ AI는 가짜(`_FakeExtractor`)로 바꾼다. **네트워크도 유료 호출도 
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+import threading
+import time
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Final
 
@@ -43,6 +46,8 @@ from minjob_ingest.pipeline.extraction import Extraction, ExtractionError
 from minjob_ingest.pipeline.media import BoardMediaSource, Media, MediaSet
 from minjob_ingest.pipeline.structure import (
     StructureOptions,
+    StructureReport,
+    StructureResult,
     Verdict,
     build_draft,
     structure_one,
@@ -967,3 +972,197 @@ def test_an_open_posting_stays_pending() -> None:
 
     assert draft.review_status is ReviewStatus.PENDING
     assert draft.reject_reason is None
+
+
+# ── 게시판 간 병렬 ───────────────────────────────────────────────
+
+
+@dataclass
+class _BarrierExtractor:
+    """두 게시판이 **동시에** 모델을 부를 때만 통과한다 — 순차면 여기서 시간이 다 간다."""
+
+    barrier: threading.Barrier
+    seen: list[str] = field(default_factory=list)
+
+    def extract(self, record: SourceData, images: Sequence[Media] = ()) -> Extraction:
+        self.barrier.wait(timeout=5)
+        self.seen.append(f"{record.source_key}/{len(images)}")
+        return _extraction()
+
+
+@dataclass
+class _ConcurrencyProbe:
+    """게시판마다 **동시에 몇 건이 모델에 가 있었나**를 잰다."""
+
+    peak: dict[str, int] = field(default_factory=dict)
+    inside: Counter[str] = field(default_factory=Counter)
+    calls: list[str] = field(default_factory=list)
+    image_counts: list[int] = field(default_factory=list)
+    delay: float = 0.02
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def extract(self, record: SourceData, images: Sequence[Media] = ()) -> Extraction:
+        key = record.source_key
+        with self.lock:
+            self.calls.append(record.external_id)
+            self.image_counts.append(len(images))
+            self.inside[key] += 1
+            self.peak[key] = max(self.peak.get(key, 0), self.inside[key])
+        time.sleep(self.delay)
+        with self.lock:
+            self.inside[key] -= 1
+        return _extraction()
+
+
+def _fill(store: JsonStore, boards: Mapping[str, int], *, raw_text: str | None = None) -> None:
+    for key, count in boards.items():
+        for number in range(count):
+            record = _source_data(f"{key}-{number}", source_key=key)
+            store.save_source_data(
+                record if raw_text is None else replace(record, raw_text=raw_text)
+            )
+
+
+def test_two_boards_reach_the_model_at_the_same_time(store: JsonStore) -> None:
+    """병렬의 유일한 증거. 순차로 돌면 두 번째가 영영 오지 않아 장벽이 깨진다."""
+    _fill(store, {"DAESHIN": 1, "YTUS": 1})
+    extractor = _BarrierExtractor(threading.Barrier(2))
+
+    report = structure_pending(store, extractor, StructureOptions(limit=10), workers=2)
+
+    assert report.drafted == 2
+    assert sorted(extractor.seen) == ["DAESHIN/0", "YTUS/0"]
+
+
+def test_one_board_never_has_two_postings_in_flight(store: JsonStore) -> None:
+    """⚠️ 게시판 안이 순차라는 것이 fetch 층에 잠금을 두지 않는 근거다(SPEC §3 한 호스트 1요청).
+
+    워커를 넉넉히 줘도 한 게시판은 한 번에 한 건이어야 한다 — 아니면 같은 호스트로 그림
+    요청이 두 개 나가고, 요청 간격·세션 쿠키를 든 클라이언트를 두 스레드가 함께 만진다.
+    """
+    _fill(store, {"DAESHIN": 4, "YTUS": 4})
+    probe = _ConcurrencyProbe()
+
+    structure_pending(store, probe, StructureOptions(limit=20), workers=8)
+
+    assert probe.peak == {"DAESHIN": 1, "YTUS": 1}
+
+
+def test_a_bigger_board_starts_first() -> None:
+    """⚠️ 전체 시간은 가장 큰 게시판이 정한다 — 늦게 출발하면 그게 혼자 남는다."""
+    small = _source_data("1", source_key="MOKWON")
+    big = tuple(_source_data(f"b{n}", source_key="CSU") for n in range(3))
+    middle = tuple(_source_data(f"m{n}", source_key="YTUS") for n in range(2))
+
+    boards = structure.group_by_source((small, *middle, *big))
+
+    assert [len(board) for board in boards] == [3, 2, 1]
+    assert [board[0].source_key for board in boards] == ["CSU", "YTUS", "MOKWON"]
+
+
+def test_a_board_keeps_the_oldest_first_inside(store: JsonStore) -> None:
+    """게시판을 나눠도 그 안의 순서는 수집 시각 그대로다 — 오래된 공고가 뒤로 밀리지 않는다."""
+    for number in (2, 0, 1):
+        store.save_source_data(
+            _source_data(
+                f"D{number}",
+                source_key="DAESHIN",
+                fetched_at=_NOW + timedelta(minutes=number),
+            )
+        )
+    probe = _ConcurrencyProbe(delay=0)
+
+    structure_pending(store, probe, StructureOptions(limit=10), workers=4)
+
+    assert probe.calls == ["D0", "D1", "D2"]
+
+
+# ── 유료 상한 ────────────────────────────────────────────────────
+
+
+def test_the_paid_limit_holds_when_boards_run_together(store: JsonStore) -> None:
+    """⚠️ 상한은 **부르기 전에** 잡는다 — 부르고 나서 세면 게시판 수만큼 넘겨 청구된다."""
+    _fill(store, {"CSU": 4, "PUTS": 4, "YTUS": 4, "BPU": 4, "HTUS": 4, "SJS": 4})
+    probe = _ConcurrencyProbe()
+
+    report = structure_pending(store, probe, StructureOptions(limit=5), workers=6)
+
+    assert len(probe.calls) == 5, "게시판이 각자 한 건씩 더 보냈다"
+    assert report.drafted == 5
+
+
+def test_a_posting_the_model_never_saw_does_not_spend_the_limit(store: JsonStore) -> None:
+    """빈 공고는 자리를 돌려준다 — 안 그러면 목록 앞머리가 상한을 먹고 뒤에 도달하지 못한다."""
+    for number in range(3):
+        store.save_source_data(
+            replace(_source_data(f"empty{number}"), raw_text="", fetched_at=_NOW)
+        )
+    for number in range(2):
+        store.save_source_data(
+            _source_data(f"real{number}", fetched_at=_NOW + timedelta(minutes=1 + number))
+        )
+    extractor = _FakeExtractor()
+
+    report = structure_pending(store, extractor, StructureOptions(limit=2), workers=4)
+
+    assert report.empty == 3
+    assert len(extractor.calls) == 2
+
+
+def test_only_the_verdicts_that_called_the_model_spend_the_limit() -> None:
+    """⚠️ `_FREE_VERDICTS`와 `_Tally.judged`가 갈라지면 상한이 조용히 틀어진다.
+
+    한쪽만 고치면 빈 공고가 유료 자리를 먹거나(굶음) 호출한 건이 안 세어진다(초과 청구).
+    """
+    for verdict in Verdict:
+        tally = structure._Tally()
+        tally.add(StructureResult(record=_source_data(), verdict=verdict, error="사유"))
+        spends_money = tally.judged == 1
+        assert spends_money is (verdict not in structure._FREE_VERDICTS), verdict
+
+
+def test_workers_must_be_at_least_one(store: JsonStore) -> None:
+    with pytest.raises(ValueError, match="workers"):
+        structure_pending(store, _FakeExtractor(), StructureOptions(limit=1), workers=0)
+
+
+# ── 집계·표시 ────────────────────────────────────────────────────
+
+
+def test_the_tally_loses_nothing_when_boards_finish_together(store: JsonStore) -> None:
+    """집계는 락 안에서 한 스레드씩 — 아니면 `scanned`가 실행마다 다른 값이 된다."""
+    _fill(store, dict.fromkeys(("CSU", "PUTS", "YTUS", "BPU", "HTUS", "SJS"), 5))
+
+    report = structure_pending(
+        store, _ConcurrencyProbe(delay=0), StructureOptions(limit=None), workers=6
+    )
+
+    assert report.scanned == 30
+    assert report.drafted == 30
+
+
+def test_the_progress_sink_never_runs_twice_at_once(store: JsonStore) -> None:
+    """받는 쪽(화면·`--out` 파일)은 병렬을 몰라도 되게 한다 — 동시 호출을 여기서 막는다."""
+    _fill(store, {"CSU": 4, "PUTS": 4, "YTUS": 4})
+    inside = 0
+    peak = 0
+    guard = threading.Lock()
+
+    def sink(_result: StructureResult, _progress: StructureReport) -> None:
+        nonlocal inside, peak
+        with guard:
+            inside += 1
+            peak = max(peak, inside)
+        time.sleep(0.005)
+        with guard:
+            inside -= 1
+
+    structure_pending(
+        store,
+        _ConcurrencyProbe(delay=0),
+        StructureOptions(limit=None),
+        on_result=sink,
+        workers=3,
+    )
+
+    assert peak == 1

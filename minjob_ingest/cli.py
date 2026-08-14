@@ -62,6 +62,7 @@ from minjob_ingest.pipeline.snapshot import (
     snapshot_url,
 )
 from minjob_ingest.pipeline.structure import (
+    DEFAULT_WORKERS,
     ResultSink,
     StructureOptions,
     StructureReport,
@@ -175,6 +176,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             verbose=bool(args.verbose),
             out=Path(str(args.out)) if args.out is not None else None,
             lite=bool(args.lite),
+            workers=int(args.workers),
         )
     # argparse가 이미 미등록 명령을 걸러내므로, 여기 오는 건 "서브파서는 추가했는데 연결을
     # 잊은" 경우다 — 조용히 성공(0)하는 대신 크래시로 알린다.
@@ -608,6 +610,7 @@ def _run_structure(
     verbose: bool,
     out: Path | None,
     lite: bool,
+    workers: int,
 ) -> int:
     """수집한 원자료를 AI로 구조화해 검수 초안(`review_data`)을 만든다.
 
@@ -621,7 +624,9 @@ def _run_structure(
     client = GeminiClient(settings.require_vertex(lite=lite))
     extractor = GeminiExtractor(client)
 
-    console.heading("구조화 미리보기" if dry_run else "구조화", note=_structure_scope(options))
+    console.heading(
+        "구조화 미리보기" if dry_run else "구조화", note=_structure_scope(options, workers)
+    )
     # ⚠️ 모델 이름을 **실행마다 찍는다** — 두 모델을 견주는 실행에서 어느 쪽 결과인지
     #    화면으로 확인할 수 없으면 `--out` 파일이 뒤바뀐 것을 알아낼 방법이 없다.
     console.field("모델", client.model, note="--lite" if lite else ENV_VERTEX_MODEL)
@@ -632,7 +637,7 @@ def _run_structure(
         sinks.append(preview.add)
     with _console_logging(console, verbose=verbose), board_media(_open_source_client) as images:
         report = structure_pending(
-            store, extractor, options, on_result=_fan_out(sinks), images=images
+            store, extractor, options, on_result=_fan_out(sinks), images=images, workers=workers
         )
     line.clear()
     if preview is not None:
@@ -742,9 +747,12 @@ def _require_source(sources: Sequence[SourceConfig], key: str) -> SourceConfig:
     return found
 
 
-def _structure_scope(options: StructureOptions) -> str:
+def _structure_scope(options: StructureOptions, workers: int) -> str:
     scope = "미판정 전부" if options.limit is None else f"최대 {options.limit}건"
-    return scope if options.source_key is None else f"{scope} · {options.source_key}"
+    if options.source_key is not None:
+        # 게시판을 하나로 좁히면 스레드도 하나다 — 숫자를 보여주면 안 도는 병렬을 돈다고 읽는다.
+        return f"{scope} · {options.source_key}"
+    return scope if workers == 1 else f"{scope} · 게시판 {workers}곳씩"
 
 
 def _structure_renderer(console: Console, line: ProgressLine, *, dry_run: bool) -> ResultSink:
@@ -1028,6 +1036,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--out",
         default=None,
         help="결과를 JSON 파일로 (프롬프트 비교용 · ⚠️ 연락처가 담긴다 — data/ 아래로)",
+    )
+    structure.add_argument(
+        "--workers",
+        type=_positive_int,
+        default=DEFAULT_WORKERS,
+        help=f"동시에 돌릴 게시판 수 (기본 {DEFAULT_WORKERS} · 게시판 안은 언제나 순차)",
     )
     structure.add_argument(
         "--lite",
