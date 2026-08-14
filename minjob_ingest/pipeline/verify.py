@@ -47,31 +47,54 @@ from minjob_ingest.pipeline.extraction import Extraction, meta_lines
 #: ⚠️ 배제 낱말이 있는 이유: 낱말이 서로를 품는다. `준전임`은 `전임`을 품어서 배제가 없으면
 #: `준전임 사역자`가 FULL_TIME을 뒷받침한다(실측 확인).
 #:
+#: ⚠️ **영문 공고가 있다**(실측 17건 · CSU 9 · WGST 5 · TTGU 2 · PUTS 1). 한글만 두면 그
+#: 공고들은 근거가 멀쩡해도 전부 지워진다 — `Experience in secretarial work`가 경력이 아닌
+#: 것이 된다. 낱말은 `_squeeze`로 공백이 지워진 뒤 소문자로 견주므로 `parttime`처럼 붙여서도
+#: 적는다.
+#:
 #: ⚠️ `Position.ETC`·`Department.ETC`는 표에 없다 — "그 밖"이라 뒷받침할 낱말이 없다(통과).
 #: 그 둘 말고 빠진 값이 생기면 `supports`가 조용히 통과시키므로 적합성 테스트가 막는다.
 _SUPPORTING_WORDS: Final[dict[StrEnum, tuple[tuple[str, ...], tuple[str, ...]]]] = {
-    Position.SENIOR_PASTOR: (("담임", "위임", "원로"), ()),
+    Position.SENIOR_PASTOR: (("담임", "위임", "원로", "seniorpastor", "leadpastor"), ()),
     # ⚠️ `담임목사`가 `목사`를 품는다 — 배제하지 않으면 담임 청빙이 부목사로 저장된다.
-    Position.ASSOCIATE_PASTOR: (("목사",), ("담임", "위임", "원로")),
-    Position.EVANGELIST: (("전도사",), ()),
+    Position.ASSOCIATE_PASTOR: (
+        ("목사", "associatepastor", "assistantpastor"),
+        ("담임", "위임", "원로", "seniorpastor", "leadpastor"),
+    ),
+    Position.EVANGELIST: (("전도사", "evangelist"), ()),
     Position.LICENSED_MINISTER: (("강도사",), ()),
-    Department.INFANT: (("영아", "유아", "유치"), ()),
-    Department.CHILDREN: (("유년", "초등", "아동", "어린이"), ()),
-    Department.YOUTH: (("중고등", "청소년", "중등", "고등", "중학", "고교"), ()),
-    Department.YOUNG_ADULT: (("청년", "대학"), ()),
+    Department.INFANT: (("영아", "유아", "유치", "미취학", "infant", "preschool", "toddler"), ()),
+    Department.CHILDREN: (("유년", "초등", "아동", "어린이", "children", "elementary"), ()),
+    Department.YOUTH: (
+        ("중고등", "청소년", "중등", "고등", "중학", "고교", "youth", "teen"),
+        (),
+    ),
+    Department.YOUNG_ADULT: (("청년", "대학", "youngadult", "college", "campus"), ()),
     Department.DISTRICT: (("교구", "심방"), ()),
-    Department.WORSHIP: (("찬양", "예배", "성가", "지휘", "반주", "미디어", "음악"), ()),
-    Department.ADMIN: (("행정", "사무", "관리"), ()),
+    Department.WORSHIP: (
+        ("찬양", "예배", "성가", "지휘", "반주", "미디어", "음악", "worship", "music"),
+        (),
+    ),
+    Department.ADMIN: (
+        ("행정", "사무", "관리", "administrative", "administration", "secretarial", "office"),
+        (),
+    ),
     # ⚠️ `상근`·`정규직`이 없으면 `평일은 상근직으로 8시간`(실측 9건)이 걸러진다.
-    EmploymentType.FULL_TIME: (("전임", "풀타임", "상근", "정규직", "full"), ("준전임", "반전임")),
+    EmploymentType.FULL_TIME: (
+        ("전임", "풀타임", "상근", "정규직", "full"),
+        ("준전임", "반전임", "parttime", "part-time"),
+    ),
     EmploymentType.SEMI_FULL_TIME: (("준전임", "반전임", "세미"), ()),
     EmploymentType.PART_TIME: (("파트", "part"), ()),
-    Qualification.SEMINARIAN: (("신대원", "신학대학원", "신학교", "재학", "졸업", "신학"), ()),
-    Qualification.ORDAINED: (("안수", "목사"), ()),
+    Qualification.SEMINARIAN: (
+        ("신대원", "신학대학원", "신학교", "재학", "졸업", "신학", "seminary", "m.div", "mdiv"),
+        (),
+    ),
+    Qualification.ORDAINED: (("안수", "목사", "ordained", "ordination"), ()),
     # ⚠️ `경험`이 없으면 `사역 경험이 있는 분`(실측 290건)이 걸러진다.
-    Qualification.EXPERIENCED: (("경력", "경험"), ()),
-    Qualification.ENTRY: (("신입", "졸업예정", "초임"), ()),
-    Qualification.ANY: (("무관", "제한", "누구나"), ()),
+    Qualification.EXPERIENCED: (("경력", "경험", "experience", "experienced"), ()),
+    Qualification.ENTRY: (("신입", "졸업예정", "초임", "entrylevel"), ()),
+    Qualification.ANY: (("무관", "제한", "누구나", "anyone", "regardlessof"), ()),
 }
 
 #: 근거에 **모집한다는 말**까지 있어야 하는 값. **담임 계열 하나뿐이다.**
@@ -104,6 +127,13 @@ _BOUNDARY: Final = "\x00"
 _DIGITS: Final = re.compile(r"\D")
 _NOT_ALNUM: Final = re.compile(r"[^0-9A-Za-z가-힣]")
 _SCHEME: Final = re.compile(r"^https?://")
+
+#: 제목의 괄호 묶음. 담임목사 **이름**이 여기 들어간다 — 뽑는 자리와 구별해야 한다.
+_PARENTHESES: Final = re.compile("[(\\[<\uff08][^)\\]>\uff09]*[)\\]>\uff09]")
+
+#: 번호 하나로 볼 덩어리 — 숫자로 시작해 숫자·하이픈·점만 이어진 곳. 쉼표·괄호·공백·한글에서
+#: 끊긴다(그래야 번호 둘이 한 덩어리로 붙지 않는다).
+_PHONE_CHUNK: Final = re.compile(r"[0-9][0-9.\-]{5,}")
 
 #: 스팸을 피하려 한글로 쓴 숫자(실측 16건 — `010-2720-구육구이`·`010-오18칠-칠칠오오`).
 #: ⚠️ 프롬프트가 이걸 숫자로 되돌리라 시키므로, **원문 쪽만** 같이 되돌린다. 안 하면 시킨
@@ -196,7 +226,12 @@ def verify(
     # ⚠️ 면제는 **모델이 실제로 그림을 봤을 때만**이다. URL 목록으로 정하면 `file:///C:\…`만
     #    있는 공고 5건(가져올 수 없어 아무것도 안 보냈다)까지 면제된다.
     parts = _source_parts(record)
-    checker = _Checker(haystack=_BOUNDARY.join(parts), parts=parts, may_scrub=not media_sent)
+    checker = _Checker(
+        haystack=_BOUNDARY.join(parts),
+        title=record.title,
+        parts=parts,
+        may_scrub=not media_sent,
+    )
     known = extraction.evidence
     # ⚠️ 코드가 만든 값(사례비·지역)은 **그 근거가 원문에 있을 때만** 남긴다 — 모델이 금액
     #    표현을 지어내면 3200이라는 숫자 자체는 멀쩡해 보여서 아래 검산으로는 안 걸린다.
@@ -227,9 +262,9 @@ def verify(
         start_timing=checker.text("start_timing", extraction.start_timing),
         church_name=checker.text("church_name", extraction.church_name),
         raw_denomination=checker.text("raw_denomination", extraction.raw_denomination),
-        contact_email=checker.text("contact_email", extraction.contact_email),
+        contact_email=checker.punctuated("contact_email", extraction.contact_email),
         contact_tel=checker.digits("contact_tel", extraction.contact_tel),
-        contact_link=checker.link("contact_link", extraction.contact_link),
+        contact_link=checker.punctuated("contact_link", extraction.contact_link),
         position=checker.choices("position", extraction.position, known.position_items),
         department=checker.choice("department", extraction.department, known.department),
         employment_type=checker.choice(
@@ -248,11 +283,16 @@ def verify(
     return verified, checker.report()
 
 
-def supports(value: StrEnum, evidence: str) -> bool:
+def supports(value: StrEnum, evidence: str, *, title: str = "") -> bool:
     """근거가 그 값을 뒷받침하나. 뒷받침할 낱말이 정해지지 않은 값(`ETC`)은 통과.
 
     ⚠️ 직분은 낱말만으로 부족하다 — `담임목사: 박은제`(연락처)와 `담임목사 청빙`(모집)이
     둘 다 `담임`을 담는다. 그래서 `_NEEDS_RECRUITING_WORD`인 값은 **모집한다는 말**까지 본다.
+
+    ⚠️ 모집 목록은 그 말을 안 달고 온다 — `담임목사 1명`이 그렇다(실측 NAZARENE/123).
+    그때는 **제목이 대신 말해준다**: 괄호를 걷어낸 제목에 담임계열과 모집어가 함께 있으면
+    그 공고는 담임을 뽑는 공고다. 괄호를 걷는 이유는 거기가 사람 이름 자리이기 때문이다 —
+    `현대교회(담임목사 박건욱)에서 사무간사님을 모십니다`는 담임을 뽑지 않는다(실측 7건).
     """
     entry = _SUPPORTING_WORDS.get(value)
     if entry is None:
@@ -264,8 +304,18 @@ def supports(value: StrEnum, evidence: str) -> bool:
     if not any(word in squeezed for word in required):
         return False
     if value in _NEEDS_RECRUITING_WORD:
-        return any(word in squeezed for word in _RECRUITING_WORDS)
+        return _recruits(squeezed) or _title_recruits(title, required)
     return True
+
+
+def _recruits(text: str) -> bool:
+    return any(word in text for word in _RECRUITING_WORDS)
+
+
+def _title_recruits(title: str, required: tuple[str, ...]) -> bool:
+    """제목이 "이 직분을 뽑는다"고 말하나. **괄호 안은 보지 않는다**(사람 이름 자리)."""
+    bare = _squeeze(_PARENTHESES.sub("", title))
+    return any(word in bare for word in required) and _recruits(bare)
 
 
 @dataclass
@@ -277,6 +327,8 @@ class _Checker:
     """
 
     haystack: str
+    #: 게시판 제목. 모집 여부를 근거만으로 못 가릴 때 본다(`supports`).
+    title: str
     #: 칸별 원문. 숫자 대조가 칸을 넘나들지 않게 나눠 둔다(`digits`).
     parts: tuple[str, ...]
     may_scrub: bool
@@ -297,19 +349,24 @@ class _Checker:
         if value is None:
             return None
         # ⚠️ 빈 문자열은 어디에나 있다 — `없음`·`교회로 문의`가 전화번호로 통과하던 구멍.
-        wanted = _digits(value)
-        # ⚠️ **칸마다 따로 본다.** 숫자만 남기면 칸 사이 구분자도 지워져 본문 끝 `…1151`과
-        #    다음 칸 앞 `4…`가 이어져 `11514`가 "있다"가 된다 — 지어낸 번호가 통과하는 길이다.
-        if wanted and any(wanted in _digits_of_source(part) for part in self.parts):
+        # ⚠️ **번호 덩어리마다 따로 본다.** 한 칸에 번호가 둘인 공고가 흔한데
+        #    (`032-515-5004(사무실) / 010-7669-4035 (담당자)` — 실측 5건 중 4건) 통째로 이으면
+        #    그 숫자열은 어느 원문에도 없다. 프롬프트가 둘 다 담으라고 시켜놓고 벌하지 않는다.
+        wanted = _phone_numbers(value)
+        # ⚠️ 칸마다 따로 본다 — 숫자만 남기면 칸 사이 구분자도 지워져 본문 끝 `…1151`과
+        #    다음 칸 앞 `4…`가 이어져 `11514`가 "있다"가 된다.
+        haystacks = [_digits_of_source(part) for part in self.parts]
+        if wanted and all(any(number in hay for hay in haystacks) for number in wanted):
             return value
         return None if self._note((Dropped(name, value),)) else value
 
-    def link(self, name: str, value: str | None) -> str | None:
-        """지원 링크 — **글자와 숫자만** 견준다(`https://`·`.`·`,`를 지운다).
+    def punctuated(self, name: str, value: str | None) -> str | None:
+        """이메일·링크 — **글자와 숫자만** 견준다(`https://`·`.`·`,`를 지운다).
 
         ⚠️ 실측: 원문이 `홈페이지:www,guryejungangchurch.com`(쉼표 오타)인데 모델이 점으로
         고쳤다. 그대로 견주면 **고친 답이 버려지고 깨진 URL을 그대로 옮긴 답이 살아남는다** —
-        검산이 더 나쁜 답을 고르게 된다.
+        검산이 더 나쁜 답을 고르게 된다. 이메일도 같다 — 원문 `tmlee153@naver.,com`(쉼표
+        오타)을 모델이 고쳤고, 글자 그대로 견주면 **고친 답이 버려진다**(실측 SJS/50075).
         """
         if value is None or _alnum(_SCHEME.sub("", value)) in _alnum(self.haystack):
             return value
@@ -331,7 +388,7 @@ class _Checker:
     def choice[E: StrEnum](self, name: str, chosen: E | None, evidence: str | None) -> E | None:
         if chosen is None:
             return None
-        if self._grounded(evidence) and supports(chosen, evidence or ""):
+        if self._grounded(evidence) and supports(chosen, evidence or "", title=self.title):
             return chosen
         return None if self._note((Dropped(name, chosen.value, evidence),)) else chosen
 
@@ -347,7 +404,7 @@ class _Checker:
         dropped: list[Dropped] = []
         for index, value in enumerate(chosen):
             found = evidence[index] if index < len(evidence) else None
-            if self._grounded(found) and supports(value, found or ""):
+            if self._grounded(found) and supports(value, found or "", title=self.title):
                 kept.append(value)
             else:
                 dropped.append(Dropped(name, value.value, found))
@@ -436,6 +493,11 @@ def _squeeze(text: str) -> str:
 def _alnum(text: str) -> str:
     """구두점을 지운 꼴. `www,x.com`과 `www.x.com`이 같아진다(원문 쉼표 오타 · 실측 1건)."""
     return _NOT_ALNUM.sub("", text).lower()
+
+
+def _phone_numbers(value: str) -> tuple[str, ...]:
+    """답에 담긴 전화번호를 하나씩. 쉼표·괄호·한글이 번호를 가른다."""
+    return tuple(_DIGITS.sub("", chunk) for chunk in _PHONE_CHUNK.findall(_ascii_forms(value)))
 
 
 def _digits(text: str) -> str:

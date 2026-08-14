@@ -52,6 +52,7 @@ _BODY: Final = (
 
 def _record(
     *,
+    title: str = "성원교회 부목사 청빙",
     raw_text: str = _BODY,
     raw_meta: dict[str, JsonValue] | None = None,
     image_urls: tuple[str, ...] = (),
@@ -61,7 +62,7 @@ def _record(
         source_key="DAESHIN",
         external_id="37",
         source_url="https://example.kr/board/37",
-        title="성원교회 부목사 청빙",
+        title=title,
         run_id=new_id(),
         fetched_at=_NOW,
         raw_text=raw_text,
@@ -921,3 +922,160 @@ def test_two_schedules_joined_into_one_field_are_not_blanked() -> None:
     assert verified.work_days == "준전임- 수, 금, 토, 주일 / 파트- 토, 주일"
     assert report.scrubbed == ()
     assert report.unchecked_fields == {"work_days": 1}
+
+
+def test_two_phone_numbers_in_one_field_are_checked_one_by_one() -> None:
+    """⚠️ 한 칸에 번호가 둘인 공고가 흔하다 — 실측 5건 중 4건.
+
+    통째로 이으면 그 숫자열은 어느 원문에도 없어 **둘 다** 지워진다.
+    """
+    record = _record(raw_text="문의 032-515-5004(사무실), 담당자 010-7669-4035")
+    answered = "032-515-5004(사무실) / 010-7669-4035 (담당자 : 송화평)"
+
+    verified, report = verify(record, _extraction(contact_tel=answered))
+
+    assert verified.contact_tel == answered
+    assert report.scrubbed == ()
+
+
+def test_one_invented_number_beside_a_real_one_is_still_caught() -> None:
+    """⚠️ 덩어리마다 보되 **전부** 있어야 한다 — 하나만 맞으면 나머지가 무임승차한다."""
+    record = _record(raw_text="문의 032-515-5004")
+
+    verified, report = verify(
+        record, _extraction(contact_tel="032-515-5004 / 010-7669-4035 (담당자)")
+    )
+
+    assert verified.contact_tel is None
+    assert report.scrubbed == ("contact_tel",)
+
+
+def test_an_email_typo_fixed_by_the_model_is_not_thrown_away() -> None:
+    """⚠️ 원문 `naver.,com`(쉼표 오타)을 모델이 고쳤다 — 글자로 견주면 고친 답이 버려진다."""
+    record = _record(raw_text="제출처 :tmlee153@naver.,com")
+
+    verified, report = verify(record, _extraction(contact_email="tmlee153@naver.com"))
+
+    assert verified.contact_email == "tmlee153@naver.com"
+    assert report.scrubbed == ()
+
+
+def test_an_invented_email_is_still_caught() -> None:
+    """⚠️ 게시판이 이메일을 가리면(`[email protected]`) 모델이 작성자 이름으로 지어낸다.
+
+    실측 6건 — `임관혁` → `limkh81@naver.com` · `사수정` → `sujung012@naver.com`.
+    """
+    record = _record(raw_text="6. 제출 및 문의 - [email protected]")
+
+    verified, report = verify(record, _extraction(contact_email="limkh81@naver.com"))
+
+    assert verified.contact_email is None
+    assert report.scrubbed == ("contact_email",)
+
+
+def test_the_title_can_supply_the_recruiting_word_for_a_senior_pastor() -> None:
+    """⚠️ 모집 목록은 모집한다는 말을 안 달고 온다 — `담임목사 1명`(실측 NAZARENE/123)."""
+    record = _record(title="담임목사 청빙 공고 (기간연장 및 자격변경)", raw_text="담임목사 1명")
+
+    verified, report = verify(
+        record,
+        _extraction(
+            church_name=None,
+            position=(Position.SENIOR_PASTOR,),
+            evidence=Evidence(position_items=("담임목사 1명",)),
+        ),
+    )
+
+    assert verified.position == (Position.SENIOR_PASTOR,)
+    assert report.scrubbed == ()
+
+
+def test_a_pastor_name_in_the_title_does_not_supply_it() -> None:
+    """⚠️ 괄호 안은 사람 이름 자리다 — `현대교회(담임목사 박건욱)에서 사무간사님을 모십니다`는
+    담임을 뽑지 않는다(실측 7건)."""
+    record = _record(
+        title="현대교회(담임목사 박건욱)에서 사무간사님을 모십니다",
+        raw_text="현대교회 담임목사 박건욱",
+    )
+
+    verified, report = verify(
+        record,
+        _extraction(
+            church_name=None,
+            position=(Position.SENIOR_PASTOR,),
+            evidence=Evidence(position_items=("담임목사 박건욱",)),
+        ),
+    )
+
+    assert verified.position == ()
+    assert report.scrubbed == ("position",)
+
+
+def test_a_preschool_department_is_recognised() -> None:
+    """`미취학`도 영유아부다 — 낱말이 빠져 있으면 맞는 부서가 지워진다(실측 TTGU/1107400)."""
+    record = _record(raw_text="모집부서: 서빙고, 도곡 미취학 영역")
+
+    verified, report = verify(
+        record,
+        _extraction(department=Department.INFANT, evidence=Evidence(department="미취학 영역")),
+    )
+
+    assert verified.department is Department.INFANT
+    assert report.scrubbed == ()
+
+
+# ── 영문 공고 ────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("value", "evidence_text", "with_evidence"),
+    [
+        (
+            Qualification.EXPERIENCED,
+            "Experience in secretarial, bookkeeping and/or administrative work",
+            _qualification_evidence,
+        ),
+        (Qualification.SEMINARIAN, "M.Div. from an accredited seminary", _qualification_evidence),
+        (EmploymentType.PART_TIME, "This is a part-time position", _employment_evidence),
+        (Department.ADMIN, "Administrative support for the Seoul office", _department_evidence),
+    ],
+    ids=["경력", "신대원", "파트", "행정"],
+)
+def test_an_english_posting_is_not_emptied_for_being_english(
+    value: object, evidence_text: str, with_evidence: Callable[[str], Evidence]
+) -> None:
+    """⚠️ 영문 공고가 17건 있다(CSU 9 · WGST 5 · TTGU 2 · PUTS 1).
+
+    낱말표가 한글뿐이면 근거가 멀쩡해도 그 공고들은 통째로 지워진다(실측 TTGU/1107404).
+    """
+    record = _record(raw_text=evidence_text)
+    field_name = {
+        "Qualification": "qualification",
+        "EmploymentType": "employment_type",
+        "Department": "department",
+    }[type(value).__name__]
+
+    verified, report = verify(
+        record,
+        _extraction(church_name=None, **{field_name: value}, evidence=with_evidence(evidence_text)),
+    )
+
+    assert getattr(verified, field_name) is value
+    assert report.scrubbed == ()
+
+
+def test_a_part_time_english_posting_does_not_support_full_time() -> None:
+    """⚠️ 배제 낱말도 영문이어야 한다 — `part-time`이 FULL_TIME을 뒷받침하면 안 된다."""
+    record = _record(raw_text="This is a part-time position")
+
+    verified, report = verify(
+        record,
+        _extraction(
+            church_name=None,
+            employment_type=EmploymentType.FULL_TIME,
+            evidence=_employment_evidence("This is a part-time position"),
+        ),
+    )
+
+    assert verified.employment_type is None
+    assert report.scrubbed == ("employment_type",)
