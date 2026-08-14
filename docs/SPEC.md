@@ -253,7 +253,7 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 | `raw_text` | text | 확보 텍스트(이미지형은 얇거나 빈 것이 **정상** — config `image_only`) |
 | `raw_html` | text | **구조만 남긴 본문 HTML**(2026-08-05 추가). `raw_text`를 대체하지 않는다 — 구조화는 `raw_text`를 읽고, 이 값은 **나중에 필요해진 것을 재수집 없이 뽑는 자리**다. ⚠️ 텍스트만 남기면 **링크의 `href`·표의 행열 대응·항목 경계가 사라진다** — 그래서 하루에 세 번 재수집을 원했다(DAESHIN 첨부·HANIL 링크·`href` 전량). `church_links`(HOMEPAGE·YOUTUBE·BAND…)는 `href` 없이 채울 수 없고, `type`이 NOT NULL이라 링크 **라벨**도 필요하다. **남기는 것**: 태그 구조 · `href`·`src`·`alt`·`colspan`/`rowspan`. **버리는 것**: `style`·`class`·`id`·`data-*`·`on*`·`<script>`·HTML 주석·꾸밈 태그 껍데기 (`span`·`font`·`o:p`) · **`data:` 이미지 바이트**(`image_urls`가 이미 갖고 있어 두 번 저장하지 않는다). 실측: 원본 평균 11KB → **797B**(93% 절감 · 3,181건 = +2.4MB). 본문 컨테이너가 없는 소스는 빈 문자열(`PCKWORLD` — 상세가 포스터 한 장) |
 | `title` | text NOT NULL | 게시판 목록의 제목 **그대로**(`review_data.title`은 여기서 `(끌어올림)`류 머리표만 뗀 값이다 — 모델을 거치지 않는다). 별도 컬럼인 이유: `raw_meta`에 묻으면 운영자가 원자료 표에서 무슨 공고인지 못 보고, 원장 대조에서 Store가 어댑터 키 이름을 알아야 한다 |
-| `posted_on` | date NULL | 목록에 표시된 게시일. **백필 컷오프의 유일한 기준**(§4) — 구조화 전이라 `review_data.posted_at`이 없다. 목록에 날짜가 없는 소스는 NULL이고 페이지 수로 범위를 정한다 |
+| `posted_on` | date NOT NULL | 게시일. **백필 컷오프의 유일한 기준**(§4) — 구조화 전이라 `review_data.posted_at`이 없다. ⚠️ **NOT NULL이다**(2026-08-14) — 없으면 min_job이 "게시일+N개월 자동 만료"(§9)를 적용할 수 없다. 목록에 날짜 칸이 없는 소스는 **어댑터가 다른 근거로 채운다**(`PCKWORLD`는 썸네일 파일명) · 그것도 없으면 `collect`가 수집일로 둔다. ⚠️ 그런 소스는 그 값을 **컷오프에 쓰지 않는다**(config `list_has_dates: false`) — 근거가 게시판이 발행한 날짜가 아니라 관례라서, 조용히 바뀌면 공고가 잘려 나간다 |
 | `image_urls` | text[] | **본문에 인라인으로 박힌** 이미지 URL. 구조화 직전 바이트 fetch용(§3). raw_meta에 섞지 않고 **별도 컬럼**. ⚠️ **`data:` URI가 들어올 수 있다**(2026-08-04 실측 · CALVIN은 본문 텍스트가 0자이고 내용이 인라인 `data:image/png;base64` 약 150KB 한 장이다) → 구조화는 **스킴을 보고 갈라야 한다**: `http(s)`는 fetch, `data:`는 **fetch하지 말고 그대로 디코드**한다. 이걸 URL로 취급해 요청하면 그 게시판 전체가 실패한다 |
 | `attachments` | jsonb | **첨부파일 전부** `[{name, url}]`. 이미지만이 아니라 HWP·PDF도 담는다 — 원문 증거를 최대한 남긴다(2026-08-04 추가). 구조화는 `is_image`인 것만 Gemini에 보내고, 못 읽는 형식은 URL만 검수로 넘긴다(사람이 열 수 있다). ⚠️ **URL을 그대로 저장한다** — 인코딩하지 않는다(2026-08-05 실측). 첨부 URL에 **공백이 들어 있고**(`…/서식1. 이력서 및 개인정보 수집동의서_ts….hwp`) **한글이 NFD로 분해**돼 있는 게시판이 있다(KAICAM). 정규화하면 저장 경로와 어긋나 404가 된다 → **바이트를 받는 쪽(구조화)이 요청 직전에 경로를 quote**해야 한다. `name`은 표시용이라 NFC로 정규화하지만 `url`은 손대지 않는다. ⚠️⚠️ **바이트를 받기 전에 그 공고 상세를 같은 세션에서 먼저 GET해야 하는 게시판이 있다**(2026-08-05 실측 · 그누보드 계열 4곳 `HAPSHIN`·`HTUS`·`PCK`·`SUNGKYUL`). 그러지 않으면 파일 대신 `잘못된 접근입니다` HTML이 온다 — 그누보드가 `wr_id`별 세션 표시를 남기고 `download.php`가 그걸 검사한다. **목록을 보는 것도, 다른 글을 보는 것도 안 된다**(실측). 나머지(`KBTUS`·`KWANGSHIN`·`MTU`·`SJS`·`UHS`)는 세션 없이 받힌다. → 구조화는 **소스별 세션을 유지한 클라이언트로 `상세 → 파일` 순서**로 요청한다. ⚠️ **파일명을 함께 저장**한다 — 다운로드 URL에 파일명이 없어(`/download/…/57439f…`) 이름 없이는 종류를 알 수 없다 |
 | `raw_meta` | jsonb | 작성일·조회수·첨부·게시판 원필드(비정형) |
@@ -288,7 +288,9 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 >
 > ⚠️⚠️ **승격 게이트 = 필수 4 + CHECK 2**(min_job DATA.md §3 정본 · 2026-08-05 우리 실측 3,181건으로 8개→6개로 줄였다). 크롤러가 맞춰야 하는 6개: **교회 매칭 · `title` · `job_kind` · 직분(`position`) 또는 직무(`role`) · `description` · 연락처 4컬럼 중 1개**(⚠️ `source_url`은 세지 않는다 — 세면 제약이 항상 참이 되어 무의미하다).
 >
-> **`denomination`·`region`·`posted_at`은 비어도 승격된다** — 게시판이 안 주거나 원문에 없을 수 있다(실측: 교단 명시 2.8% · 지역 81% · PCKWORLD 게시일 0%). 여기서는 **전부 nullable이 맞다** — AI가 못 뽑을 수 있고 운영자가 채우는 초안이다.
+> **`denomination`·`region`은 비어도 승격된다** — 게시판이 안 주거나 원문에 없을 수 있다(실측: 교단 명시 2.8% · 지역 81%). AI가 못 뽑을 수 있고 운영자가 채우는 초안이라 nullable이 맞다.
+>
+> ⚠️ **`posted_at`은 예외로 NOT NULL이다**(2026-08-14). 만료 판정(§9)의 기준이라 비면 그 공고를 언제까지 보여줄지 정할 수 없다. `source_data.posted_on`을 그대로 물려받고, 그쪽이 이미 NOT NULL이다(§6 ①). PCKWORLD 게시일 0%는 **해소됐다** — 썸네일 파일명에서 읽는다(60/60).
 >
 > **우리 몫**: 위 6개 중 못 채운 것이 있으면 `confidence=low`로 올려 운영자가 먼저 보게 한다. ⚠️ **검수 우선순위는 교단보다 지역**이다 — 지역이 비면 min_job 지역 필터에서 무조건 탈락해 사실상 안 보이는 공고가 된다(교단 미상은 공개해도 지원에 지장 없다).
 > **UNIQUE(`source_data_id`)** — 한 원자료당 초안 1개(중복 PENDING 방지). 재구조화 시 기존 행을 교체(upsert)한다. 게시판 default 교단은 `source_key`로 유도 가능(레지스트리)하므로 별도 hint 컬럼을 두지 않는다.

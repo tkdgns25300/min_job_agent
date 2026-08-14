@@ -152,6 +152,23 @@ minjob-ingest snapshot --source YTUS       🌐  한 곳만
 ```
 테스트 요약 맨 아래에 `어댑터 fixture 커버리지: N/30 검증`이 찍힌다 — 이 숫자가 낮으면 초록불이어도 검증이 건너뛰어진 것이다.
 
+## 되돌리기·이관 — `scripts/` (CLI 명령이 아니다)
+
+```bash
+.venv/bin/python scripts/reset_structure.py --source PCKWORLD   # 무엇을 되돌릴지만
+.venv/bin/python scripts/reset_structure.py --all --write       # 판정을 지워 다시 구조화 가능하게
+```
+
+⚠️ **전량 저장 전에 이게 있어야 한다.** `structured_at`은 앞으로만 가서, 3,188건을 저장한 뒤 프롬프트 문제를 발견하면 고친 것을 적용할 방법이 없다.
+
+⚠️ **운영자가 손댄 초안은 되돌리지 않는다** — 승인·거절했거나 값을 고쳐둔 행. 건너뛴 목록을 화면에 찍는다. 읽을 수 없는 초안이 하나라도 있으면 **아무것도 쓰지 않고 멈춘다**.
+
+```bash
+.venv/bin/python scripts/migrate_posted_on.py --write   # 옛 파일(version 1) → version 2
+```
+
+⚠️ **`data/` 파일이 version 1이면 모든 명령이 거부한다.** 게시일이 필수가 되면서(2026-08-14) 옛 파일을 그냥 두면 그 공고가 수집도 구조화도 안 되는 **유령**이 되기 때문이다. 이 스크립트가 `PCKWORLD` 게시일을 썸네일 파일명에서 채우고 버전을 올린다(게시판에 요청하지 않는다).
+
 ## 게이트 — 커밋 전 4개 통과
 
 ```bash

@@ -40,7 +40,8 @@ class LedgerEntry:
     """
 
     title: str
-    posted_on: date | None
+    #: 저장된 게시일. `source_data.posted_on`이 필수라 여기서도 항상 있다.
+    posted_on: date
 
     def points_to_another_posting(self, *, title: str, posted_on: date | None) -> bool:
         """같은 번호인데 **제목과 게시일이 둘 다** 다른가.

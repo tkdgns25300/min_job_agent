@@ -117,7 +117,7 @@ def row_to_source_data(row: Row) -> SourceData:
             raw_text=_str(row, "raw_text", allow_empty=True),
             raw_html=_str(row, "raw_html", allow_empty=True),
             title=_str(row, "title"),
-            posted_on=_optional_date(row, "posted_on"),
+            posted_on=_date(row, "posted_on"),
             image_urls=_str_tuple(row, "image_urls"),
             attachments=_attachments(row),
             raw_meta=_json_mapping(row, "raw_meta"),
@@ -164,7 +164,7 @@ def row_to_review_data(row: Row) -> ReviewData:
             optional_docs=_str_tuple(row, "optional_docs"),
             process_steps=_str_tuple(row, "process_steps"),
             description=_optional_str(row, "description"),
-            posted_at=_optional_date(row, "posted_at"),
+            posted_at=_date(row, "posted_at"),
             deadline=_optional_date(row, "deadline"),
             church_name=_optional_str(row, "church_name"),
             region=_optional_enum(row, "region", Region),
@@ -325,6 +325,14 @@ def _optional_timestamp(row: Row, key: str) -> datetime | None:
     return None if _raw(row, key) is None else _timestamp(row, key)
 
 
+def _date(row: Row, key: str) -> date:
+    """필수 날짜. 없으면 실패다 — 조용히 오늘로 채우면 그 행이 언제 글인지 영영 알 수 없다."""
+    found = _optional_date(row, key)
+    if found is None:
+        raise SerdeError(f"{key}: 필수인데 비어 있음")
+    return found
+
+
 def _optional_date(row: Row, key: str) -> date | None:
     if _raw(row, key) is None:
         return None
@@ -408,7 +416,7 @@ def ledger_entry_of_row(row: Row) -> LedgerEntry:
     목록 페이지당 수백 행을 훑으므로 `raw_text`·`attachments`까지 디코딩하면 낭비다.
     """
     _check_columns(row, SourceData)
-    return LedgerEntry(title=_str(row, "title"), posted_on=_optional_date(row, "posted_on"))
+    return LedgerEntry(title=_str(row, "title"), posted_on=_date(row, "posted_on"))
 
 
 def _attachments(row: Row) -> tuple[Attachment, ...]:

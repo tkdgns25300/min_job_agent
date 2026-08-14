@@ -54,6 +54,7 @@ def _source_data(
         external_id="9",
         source_url=f"https://example.kr/{source_key.lower()}/9",
         title="포스터 공고",
+        posted_on=_NOW.date(),
         run_id=new_id(),
         fetched_at=_NOW,
         raw_text="",

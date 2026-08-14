@@ -17,7 +17,7 @@ from datetime import date, timedelta
 from typing import Final
 from uuid import UUID
 
-from minjob_ingest.clock import kst_now
+from minjob_ingest.clock import board_today, kst_now
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.models import SourceData
 from minjob_ingest.sources.adapters.base import ParseError, PostingRef, RawPosting
@@ -397,7 +397,10 @@ def _record(
         external_id=ref.external_id,
         source_url=ref.url,
         title=ref.title,
-        posted_on=ref.posted_on,
+        # ⚠️ 어댑터가 채우는 것이 원칙이다(`PCKWORLD`는 썸네일 파일명에서 읽는다). 여기 오는
+        #    것은 게시판이 날짜를 안 주고 어댑터도 못 찾은 경우뿐이라, **오늘 처음 봤다**는
+        #    우리가 아는 유일한 사실을 쓴다 — 없는 과거 날짜를 지어내는 것보다 낫다.
+        posted_on=ref.posted_on or board_today(),
         run_id=run_id,
         fetched_at=kst_now(),
         raw_text=raw.raw_text,

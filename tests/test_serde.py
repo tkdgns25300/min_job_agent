@@ -42,6 +42,7 @@ from minjob_ingest.models import (
 )
 from minjob_ingest.store.serde import (
     SerdeError,
+    ledger_entry_of_row,
     ledger_key_of_row,
     row_to_crawl_run,
     row_to_review_data,
@@ -272,6 +273,7 @@ def test_encodes_none_for_unset_optionals() -> None:
         external_id="1",
         source_url="https://x/1",
         title="제목",
+        posted_on=FIXED_NOW.date(),
         run_id=new_id(),
         fetched_at=FIXED_NOW,
         raw_text="본문",
@@ -279,7 +281,6 @@ def test_encodes_none_for_unset_optionals() -> None:
     row = to_row(minimal)
     assert row["structured_at"] is None
     assert row["content_hash"] is None
-    assert row["posted_on"] is None  # 목록에 날짜가 없는 게시판
     assert row["image_urls"] == []
 
 
@@ -538,3 +539,37 @@ def test_a_corrupt_array_enum_says_what_is_allowed() -> None:
 
     with pytest.raises(SerdeError, match="허용값 아님"):
         row_to_review_data(row)
+
+
+# ── 필수 날짜 ────────────────────────────────────────────────────
+
+
+def test_a_row_without_a_posted_on_is_refused() -> None:
+    """⚠️ 이 판정이 없으면 옛 행이 **유령**이 된다.
+
+    원장 조회는 `posted_on: null`을 읽어 "이미 본 글"이라 하고 구조화 조회는 건너뛴다 —
+    수집도 구조화도 되지 않는데 아무 경보도 울리지 않는다(2026-08-14 검수).
+    """
+    row = to_row(_full_source_data())
+    row["posted_on"] = None
+
+    with pytest.raises(SerdeError, match="posted_on"):
+        row_to_source_data(row)
+
+
+def test_a_draft_without_a_posted_at_is_refused() -> None:
+    """min_job이 게시일로 만료를 판정한다 — 없으면 언제까지 보여줄지 정할 수 없다."""
+    row = to_row(_full_review_data())
+    row["posted_at"] = None
+
+    with pytest.raises(SerdeError, match="posted_at"):
+        row_to_review_data(row)
+
+
+def test_a_ledger_entry_without_a_date_is_refused() -> None:
+    """⚠️ 원장 조회도 같은 계약이어야 한다 — 한쪽만 느슨하면 그 행이 두 경로에서 갈린다."""
+    row = to_row(_full_source_data())
+    row["posted_on"] = None
+
+    with pytest.raises(SerdeError, match="posted_on"):
+        ledger_entry_of_row(row)

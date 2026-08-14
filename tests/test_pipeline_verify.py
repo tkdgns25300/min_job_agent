@@ -63,6 +63,7 @@ def _record(
         external_id="37",
         source_url="https://example.kr/board/37",
         title=title,
+        posted_on=_NOW.date(),
         run_id=new_id(),
         fetched_at=_NOW,
         raw_text=raw_text,

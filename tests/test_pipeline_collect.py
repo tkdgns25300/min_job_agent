@@ -52,6 +52,7 @@ def _ref(external_id: str, *, title: str = "청빙 공고", on: date | None = _T
 
 def _entry(ref: PostingRef) -> LedgerEntry:
     """그 참조를 그대로 저장했다면 남을 원장 항목."""
+    assert ref.posted_on is not None, "저장된 행에는 날짜가 반드시 있다"
     return LedgerEntry(title=ref.title, posted_on=ref.posted_on)
 
 
@@ -902,3 +903,35 @@ def test_a_few_empty_postings_are_reported_not_failed(
     assert report.saved == 18
     assert report.failed == 0  # 실패가 아니다
     assert report.empty == 1  # 그러나 눈에 보인다
+
+
+class _UndatedList(_ValueErrorOnOnePosting):
+    """목록에서 날짜를 못 읽는 어댑터 대역 — 파일명 관례가 바뀐 `PCKWORLD`가 이 모양이다."""
+
+    def parse_list(self, html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
+        return tuple(replace(ref, posted_on=None) for ref in self._real.parse_list(html, source))
+
+
+def test_a_posting_the_board_never_dated_is_stored_as_seen_today(
+    board_html: tuple[str, str], tmp_path: Path
+) -> None:
+    """⚠️ `posted_on`은 필수인데 게시판이 날짜를 안 주는 경우가 있다(`PCKWORLD`).
+
+    어댑터가 채우는 것이 원칙이고(썸네일 파일명) 그것마저 실패하면 **오늘 처음 봤다**로 둔다 —
+    없는 과거 날짜를 지어내는 것보다 정직하고, 그래야 그 공고가 저장은 된다.
+    """
+    store = JsonStore(tmp_path / "data")
+    today = date(2026, 8, 14)
+
+    report = _collect(
+        _Board(*board_html),
+        store,
+        # 컷오프를 요청하지 않는다 — 날짜 없는 목록에 기간을 걸면 그건 별도 실패다
+        # (`_require_dates_for_cutoff`). 여기서 보는 것은 저장되는 값이다.
+        CollectOptions(max_pages=1, months=None),
+        today=today,
+        adapter=_UndatedList("없는번호"),
+    )
+
+    assert report.saved == 18
+    assert all(record.posted_on == today for record in store.list_unstructured(50))

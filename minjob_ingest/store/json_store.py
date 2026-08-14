@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Final
 
 from minjob_ingest.clock import kst_now
-from minjob_ingest.domain import CrawlMode, ReviewStatus, normalize_source_key
+from minjob_ingest.domain import CrawlMode, normalize_source_key
 from minjob_ingest.models import CrawlRun, ReviewData, SourceData, SourceHealth
 from minjob_ingest.store.base import LedgerEntry, StoreError
 from minjob_ingest.store.serde import (
@@ -44,7 +44,11 @@ _LOG = logging.getLogger(__name__)
 
 #: 파일 포맷 버전. 스키마가 바뀌면(백필 후 필드 추가 등) 이 값을 올리고 `data/`를 재작성한다 —
 #: 버전을 확인하지 않으면 옛 파일이 "컬럼 누락"으로만 보여 원인을 찾기 어렵다(serde docstring).
-FILE_VERSION: Final = 1
+#:
+#: **2 (2026-08-14)** — `posted_on`·`posted_at` 필수화. ⚠️ 옛 파일을 그냥 두면 더 나쁘다:
+#: 원장 조회는 `posted_on: null`을 읽어 "이미 본 글"이라 하고 구조화 조회는 손상 행으로 건너뛰어,
+#: 그 공고가 **수집도 구조화도 안 되는 유령**이 된다. 버전으로 즉시 거부해 재작성을 강제한다.
+FILE_VERSION: Final = 2
 
 _SOURCE_DATA_FILE: Final = "source_data.json"
 _REVIEW_DATA_FILE: Final = "review_data.json"
@@ -154,7 +158,7 @@ class JsonStore:
 
             # 기존 행이 깨졌으면 조용히 덮어쓰지 않는다 — 운영자 승인 상태를 날릴 수 있다.
             existing = row_to_review_data(rows[index])
-            if existing.review_status is not ReviewStatus.PENDING or existing.is_operator_touched:
+            if not existing.is_safe_to_replace:
                 _LOG.info(
                     "운영자가 손댄 초안이라 재구조화 결과를 버림 (source_data_id=%s, status=%s)",
                     record.source_data_id,

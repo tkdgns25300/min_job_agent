@@ -247,10 +247,11 @@ class SourceData:
     #: 뽑는 자리다. 스타일·클래스·워드 주석을 걷어내 평균 818B다(2026-08-05 실측 27곳).
     raw_html: str = ""
     id: UUID = field(default_factory=new_id)
-    #: 목록에 표시된 게시일. **백필 컷오프(`--months N`)의 유일한 기준**이다(SPEC §4) —
-    #: 구조화 전이라 `review_data.posted_at`이 아직 없다. 목록에 날짜가 없는 게시판이 있어
-    #: `None`을 허용하고, 그런 소스는 페이지 수로 범위를 정한다.
-    posted_on: date | None = None
+    #: 게시일. **필수다** — min_job의 `게시일+N개월 자동 만료`(SPEC §9) 기준이라 없으면 그
+    #: 공고를 언제까지 보여줄지 정할 수 없다. 백필 컷오프(`--months N`)도 이 값을 본다(SPEC §4).
+    #: ⚠️ 목록에 날짜 칸이 없는 게시판은 **어댑터가 채운다**(`PCKWORLD`는 썸네일 파일명).
+    #: 그래도 없으면 `collect`가 오늘로 둔다 — 지어낸 과거 날짜보다 "오늘 처음 봤다"가 정직하다.
+    posted_on: date
     #: **본문에 인라인으로 박힌** 이미지 URL. 구조화 직전 바이트 fetch용. 빈 튜플 = 없음.
     image_urls: tuple[str, ...] = ()
     #: **첨부파일 전부**(이름 + URL). 이미지만이 아니라 HWP·PDF도 담는다 — 원문 증거를 최대한
@@ -272,9 +273,8 @@ class SourceData:
         _set(self, "external_id", _require_non_empty(self.external_id, "external_id"))
         _set(self, "source_url", _require_non_empty(self.source_url, "source_url"))
         _set(self, "title", _require_non_empty(self.title, "title"))
-        if self.posted_on is not None:
-            # `datetime`은 `date`의 서브클래스라 그냥 통과한다 → date 컬럼에 시각이 섞인다.
-            _set(self, "posted_on", require_plain_date(self.posted_on))
+        # `datetime`은 `date`의 서브클래스라 그냥 통과한다 → date 컬럼에 시각이 섞인다.
+        _set(self, "posted_on", require_plain_date(self.posted_on))
         _require_non_negative(self.structure_attempts, "structure_attempts")
         _set(self, "fetched_at", ensure_kst(self.fetched_at))
         if self.structured_at is not None:
@@ -422,7 +422,9 @@ class ReviewData:
     #: 같은 일이 있었다). 요약을 강제하는 자리는 **프롬프트**이고, 원문 재게시를 막는
     #: 최종 방어선은 **운영자 검수**다. 원문은 `source_data.raw_text`에 그대로 있다.
     description: str | None = None
-    posted_at: date | None = None
+    #: 게시일. **필수다** — min_job의 `게시일+N개월 자동 만료`(SPEC §9) 기준이다.
+    #: `source_data.posted_on`을 그대로 물려받는다.
+    posted_at: date
     deadline: date | None = None
 
     # 교회 초안 (승인 시 churches로 매칭·생성)
@@ -473,8 +475,7 @@ class ReviewData:
         _set(self, "created_at", ensure_kst(self.created_at))
         if self.reviewed_at is not None:
             _set(self, "reviewed_at", ensure_kst(self.reviewed_at))
-        if self.posted_at is not None:
-            require_plain_date(self.posted_at)
+        require_plain_date(self.posted_at)
         if self.deadline is not None:
             require_plain_date(self.deadline)
         for name in (
@@ -632,6 +633,20 @@ class ReviewData:
         return (
             self.reviewed_by is not None or self.denomination_source is DenominationSource.OPERATOR
         )
+
+    @property
+    def is_safe_to_replace(self) -> bool:
+        """재구조화가 이 초안을 **버려도 되는가**.
+
+        ⚠️ `is_operator_touched`만으로는 부족하다 — admin이 `reviewed_by`를 안 채운 채 승인만
+        해도 `published_job_id`가 붙는데, 그 링크가 사라지면 이미 공개한 공고를 한 번 더
+        승격하게 된다(SPEC §4.2가 그 값으로 끌어올림을 찾는다). **검수가 끝난 행도 지킨다.**
+
+        ⚠️ 이 판정은 **한 곳에만 있어야 한다** — 저장(`JsonStore.upsert_review_data`)과
+        되돌리기(`scripts/reset_structure.py`)가 서로 다른 기준을 쓰면 한쪽이 다른 쪽이
+        지키기로 한 행을 지운다(실측 2026-08-14 검수).
+        """
+        return self.review_status is ReviewStatus.PENDING and not self.is_operator_touched
 
     def carrying_review_state_of(self, previous: ReviewData) -> ReviewData:
         """재구조화 초안이 기존 행을 대체할 때 **식별자·검수 상태를 이어받는다**.

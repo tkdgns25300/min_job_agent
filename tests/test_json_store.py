@@ -77,6 +77,7 @@ def _source_data(external_id: str = "25553", *, run_id: object = None) -> Source
 
 def _review_data(source_data_id: object) -> ReviewData:
     return ReviewData(
+        posted_at=FIXED_NOW.date(),
         source_url="https://www.ytus.ac.kr/board/view/trXXR/25553",
         source_data_id=source_data_id,  # type: ignore[arg-type]
         run_id=new_id(),
@@ -212,15 +213,13 @@ def test_both_changed_means_the_number_points_elsewhere() -> None:
     assert entry.points_to_another_posting(title="○○교회 부목사 청빙", posted_on=date(2026, 9, 15))
 
 
-def test_missing_dates_on_both_sides_are_equal() -> None:
-    """목록에 날짜가 없는 게시판 — 제목만 다르면 수정으로 본다."""
-    entry = LedgerEntry(title="가", posted_on=None)
-    assert not entry.points_to_another_posting(title="나", posted_on=None)
+def test_a_row_the_list_no_longer_dates_counts_as_different() -> None:
+    """⚠️ 저장된 행에는 날짜가 반드시 있다(`posted_on` 필수). 목록 쪽이 날짜를 잃는 것은
+    셀렉터가 깨졌다는 신호이고, 제목까지 다르면 그 번호가 다른 글을 가리키는 것이다."""
+    entry = LedgerEntry(title="가", posted_on=date(2026, 8, 3))
 
-
-def test_date_appearing_where_there_was_none_counts_as_different() -> None:
-    entry = LedgerEntry(title="가", posted_on=None)
-    assert entry.points_to_another_posting(title="나", posted_on=date(2026, 8, 3))
+    assert entry.points_to_another_posting(title="나", posted_on=None)
+    assert not entry.points_to_another_posting(title="가", posted_on=None)
 
 
 def test_corrupt_entry_row_is_skipped_not_fatal(

@@ -12,9 +12,16 @@
 ⚠️ **목록에 게시일이 없다** → config `list_has_dates: false`. 그래서 `--months`가 아니라 페이지
 상한이 범위를 정한다(`collect._cutoff_for`).
 
-썸네일 파일명이 `20260729171107.jpg`처럼 업로드 시각을 담고 있어 날짜를 **추론할 수는 있다**.
-하지만 하지 않는다 — 발행된 데이터가 아니라 파일명 관례라서 조용히 바뀔 수 있고, 그 값이
-백필 컷오프를 움직이면 공고가 조용히 잘려 나간다. 게시판이 날짜를 노출하면 그때 켠다.
+게시일은 **썸네일 파일명**에서 읽는다(`20260729171107.jpg` → 2026-07-29 · 실측 60/60).
+
+⚠️ 전에는 읽지 않았다 — 파일명 관례라 조용히 바뀔 수 있고, 그 값이 백필 컷오프를 움직이면
+공고가 조용히 잘려 나가기 때문이었다. **그 이유는 지금도 유효하고, 그래서 `list_has_dates`는
+계속 `false`다** — 컷오프는 이 날짜를 보지 않고 페이지 상한이 범위를 정한다. 여기서 읽는 값은
+`posted_at`으로만 쓰인다(게시일 기준 자동 만료 · SPEC §9).
+
+⚠️ 파일명을 못 읽으면 **여기서 채우지 않고 비운다**. 어댑터가 오늘로 메꾸면 관례가 바뀐 사실이
+어디에도 안 드러난다 — 적합성 테스트도, `source_health`의 최신 게시일 경보도 통과해버린다.
+폴백은 `collect`가 저장 직전에 한 번만 한다.
 
 ⚠️ **빈 `raw_text`가 정상이다**(config `image_only`). 내용은 포스터 이미지에만 있고, 구조화가
 Gemini 멀티모달로 읽는다(SPEC §3·§5).
@@ -23,6 +30,7 @@ Gemini 멀티모달로 읽는다(SPEC §3·§5).
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Final
 
 from bs4 import Tag
@@ -51,8 +59,16 @@ _TITLE: Final = "span"
 _PAGE_PARAM: Final = "page"
 #: `javascript:adview('1551',1761,822)` — 첫 인자가 광고 번호(`aid`)다.
 _ADVIEW_ID: Final = re.compile(r"adview\(\s*'(\d+)'")
+
+#: 썸네일 파일명의 업로드 시각 — `/upimg/adsearch/20260729171107.jpg`. 앞 8자리가 날짜다.
+_UPLOAD_STAMP: Final = re.compile(r"/(\d{4})(\d{2})(\d{2})\d{6}\.")
+
+#: 파일명에서 읽은 값을 게시일로 인정할 연도 범위. 밖이면 파일명 관례가 바뀐 것이다.
+_PLAUSIBLE_YEARS: Final = range(2000, 2101)
 #: 상세는 포스터 이미지 한 장뿐이라 본문 컨테이너가 따로 없다.
-_DETAIL_IMAGE: Final = "img[src*='/upimg/adsearch/']"
+#: 포스터 이미지. 목록 썸네일과 상세 본문에 같은 경로를 쓴다 — 게시판이 아이콘·뱃지 `img`를
+#: 넣어도 **그 파일명이 게시일이 되는 일**이 없도록 목록에서도 이걸로 좁힌다.
+_POSTER_IMAGE: Final = "img[src*='/upimg/adsearch/']"
 _CLOSE_BUTTON_TEXT: Final = "창닫기"
 
 
@@ -84,12 +100,29 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     images = image_urls_in(soup, base_url=ref.url)
     if not images:
         raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 포스터 이미지가 없음 — 셀렉터 `{_DETAIL_IMAGE}` 확인"
+            f"{SOURCE_KEY} {ref.external_id}: 포스터 이미지가 없음 — 셀렉터 `{_POSTER_IMAGE}` 확인"
         )
     # ⚠️ `raw_html`을 담지 않는다 — 이 게시판 상세는 포스터 `<img>` 한 장뿐이고 본문
     # 컨테이너가 없다(내용은 이미지에만 있다 · config `image_only`). 페이지 전체를
     # 담으면 껍데기만 저장된다.
     return RawPosting(ref=ref, raw_text=_body_text(soup), image_urls=images)
+
+
+def uploaded_on(source_path: str | None) -> date | None:
+    """썸네일 파일명이 말하는 업로드 날짜. 읽을 수 없으면 `None`(부르는 쪽이 오늘로 둔다)."""
+    if source_path is None:
+        return None
+    found = _UPLOAD_STAMP.search(source_path)
+    if found is None:
+        return None
+    year, month, day = (int(part) for part in found.groups())
+    if year not in _PLAUSIBLE_YEARS:
+        return None
+    try:
+        return date(year, month, day)
+    except ValueError:
+        # 파일명이 날짜꼴이지만 없는 날이다(`20261332…`) — 관례가 바뀐 신호로 보고 버린다.
+        return None
 
 
 def _body_text(soup: Tag) -> str:
@@ -109,17 +142,20 @@ def _ref_from_item(item: Tag, source: SourceConfig) -> PostingRef:
     title = (title_node or link).get_text(" ", strip=True)
     if not title:
         raise ParseError(f"{SOURCE_KEY} {external_id}: 제목이 비었음 — 셀렉터 `{_TITLE}` 확인")
-    thumbnail = item.select_one("img")
+    thumbnail = item.select_one(_POSTER_IMAGE)
+    source_path = None if thumbnail is None else str(thumbnail.get("src"))
     return PostingRef(
         external_id=external_id,
         url=detail_url(source, external_id),
         title=title,
-        # ⚠️ 날짜를 넣지 않는다(모듈 docstring 참조 · config `list_has_dates: false`).
-        posted_on=None,
+        # ⚠️ 못 읽으면 **비운다** — 여기서 오늘로 채우면 파일명 관례가 바뀐 사실을 아무도
+        #    모르게 된다(테스트도 `source_health`의 최신 게시일 경보도 통과해버린다).
+        #    폴백은 `collect`가 저장 직전에 한 번만 한다.
+        posted_on=uploaded_on(source_path),
         list_meta={
             "list_title": title,
             "list_date": None,
-            # 썸네일. 파일명에 업로드 시각이 들어 있어 나중에 날짜 근거가 필요하면 여기서 본다.
-            "thumbnail": str(thumbnail.get("src")) if thumbnail is not None else None,
+            # 썸네일. 게시일의 근거라서 남긴다 — 파일명이 바뀌면 여기서 확인한다.
+            "thumbnail": source_path,
         },
     )

@@ -59,6 +59,7 @@ def _review_data() -> ReviewData:
         source_url="https://www.ytus.ac.kr/board/view/trXXR/25553",
         source_data_id=new_id(),
         run_id=new_id(),
+        posted_at=date(2026, 7, 28),
         is_church_recruitment=IsChurchRecruitment.YES,
         confidence=Confidence.HIGH,
         denomination_source=DenominationSource.STATED,
@@ -576,6 +577,7 @@ def test_enum_strings_are_coerced_on_read() -> None:
         source_url="https://www.ytus.ac.kr/board/view/trXXR/25553",
         source_data_id=new_id(),
         run_id=new_id(),
+        posted_at=FIXED_NOW.date(),
         is_church_recruitment="YES",  # type: ignore[arg-type]
         confidence="high",  # type: ignore[arg-type]
         denomination_source="stated",  # type: ignore[arg-type]
@@ -594,6 +596,7 @@ def test_gate1_rejection_survives_string_input() -> None:
             source_url="https://www.ytus.ac.kr/board/view/trXXR/25553",
             source_data_id=new_id(),
             run_id=new_id(),
+            posted_at=FIXED_NOW.date(),
             is_church_recruitment="NO",  # type: ignore[arg-type]
             confidence="low",  # type: ignore[arg-type]
             denomination_source="unknown",  # type: ignore[arg-type]
@@ -798,9 +801,20 @@ def test_source_data_rejects_datetime_as_posted_on() -> None:
         replace(_source_data(), posted_on=datetime(2026, 8, 3, 12, 0, tzinfo=UTC))
 
 
-def test_source_data_accepts_a_missing_posted_on() -> None:
-    """목록에 날짜가 없는 게시판이 있다 — 그런 소스는 페이지 수로 범위를 정한다."""
-    assert replace(_source_data(), posted_on=None).posted_on is None
+def test_source_data_demands_a_posted_on() -> None:
+    """⚠️ 게시일이 없으면 min_job이 만료를 판정할 수 없다(SPEC §9) — 언제까지 보여줄지 못 정한다.
+
+    목록에 날짜 칸이 없는 게시판은 **어댑터가 채운다**(`PCKWORLD`는 썸네일 파일명).
+    """
+    with pytest.raises(TypeError):
+        SourceData(  # type: ignore[call-arg]
+            source_key="YTUS",
+            external_id="1",
+            source_url="https://e.kr/1",
+            title="공고",
+            run_id=new_id(),
+            fetched_at=FIXED_NOW,
+        )
 
 
 # ── SourceHealth: 상태와 관측값이 어긋나는 것 ────────────────────
@@ -973,6 +987,7 @@ def _review(**overrides: object) -> ReviewData:
         "source_data_id": new_id(),
         "run_id": new_id(),
         "source_url": "https://example.kr/1",
+        "posted_at": FIXED_NOW.date(),
         "is_church_recruitment": IsChurchRecruitment.YES,
         "confidence": Confidence.LOW,
         "denomination_source": DenominationSource.UNKNOWN,
@@ -1066,3 +1081,21 @@ def test_an_unclassified_draft_is_allowed() -> None:
 def test_a_draft_without_a_kind_cannot_carry_a_position() -> None:
     with pytest.raises(ValueError, match="job_kind가 없는데"):
         _review(position=(Position.EVANGELIST,))
+
+
+def test_an_approved_draft_is_never_replaced_even_without_a_reviewer() -> None:
+    """⚠️ admin이 `reviewed_by`를 안 채운 채 승인만 해도 `published_job_id`가 붙는다.
+
+    그 링크가 사라지면 이미 공개한 공고를 한 번 더 승격하게 된다(SPEC §4.2가 그 값으로
+    끌어올림을 찾는다). 저장과 되돌리기가 **같은 판정**을 써야 한쪽이 다른 쪽이 지키기로
+    한 행을 지우지 않는다(2026-08-14 검수).
+    """
+    approved = replace(_review_data(), review_status=ReviewStatus.APPROVED)
+
+    assert not approved.is_operator_touched, "사람 손자국이 없어도"
+    assert not approved.is_safe_to_replace, "검수가 끝난 행은 지킨다"
+
+
+def test_a_pending_untouched_draft_is_replaceable() -> None:
+    """재구조화가 덮어써도 되는 유일한 상태 — 아무도 손대지 않은 PENDING."""
+    assert _review_data().is_safe_to_replace

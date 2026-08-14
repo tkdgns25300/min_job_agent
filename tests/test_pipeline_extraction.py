@@ -46,6 +46,7 @@ def _source_data(
         external_id="1117808",
         source_url="https://example.kr/board/1117808",
         title="점촌제일교회 전임 사역자 청빙",
+        posted_on=_NOW.date(),
         run_id=new_id(),
         fetched_at=_NOW,
         raw_text=raw_text,

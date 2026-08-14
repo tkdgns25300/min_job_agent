@@ -85,11 +85,17 @@ def board_today() -> date:
 
 
 def require_plain_date(value: date) -> date:
-    """`datetime`이 아닌 순수 `date`인지 확인한다.
+    """`datetime`이 아닌 **순수 `date`가 실제로 있는지** 확인한다.
 
     `datetime`은 `date`의 서브클래스라 타입 검사·런타임 모두 통과한다 →
     `posted_at`에 시각이 들어가 `YYYY-MM-DD` 컬럼과 어긋난다.
+
+    ⚠️ `None`도 막는다. 어댑터가 주는 값은 외부 입력이고, 타입만으로 필수를 선언하면
+    런타임에는 조용히 통과한다 — `posted_on=None`인 행이 저장되면 그 공고는 만료 판정
+    (SPEC §9)에서 빠지고 원장·구조화 두 조회가 갈린다(2026-08-14 검수).
     """
+    if value is None:
+        raise ValueError("date 컬럼이 비어 있음")
     if isinstance(value, datetime):
         raise ValueError(f"date 컬럼에 datetime을 넣을 수 없음: {value!r}")
     return value

@@ -98,6 +98,7 @@ def _source_data(
         external_id=external_id,
         source_url=f"https://example.kr/board/{external_id}",
         title=f"공고 {external_id}",
+        posted_on=fetched_at.date(),
         run_id=_RUN_ID,
         fetched_at=fetched_at,
         raw_text=raw_text,

@@ -141,19 +141,19 @@ def test_fixture_list_yields_usable_refs(key: str) -> None:
 
 
 @pytest.mark.parametrize("key", _KEYS)
-def test_dates_are_parsed_when_the_board_has_them(key: str) -> None:
-    """config가 날짜가 있다고 한 게시판은 **전 행에 날짜가 있어야** 한다.
+def test_every_row_carries_a_date(key: str) -> None:
+    """⚠️ **모든 행에 게시일이 있어야 한다** — `source_data.posted_on`이 필수라서 없으면 저장이
+    막히고, min_job이 `게시일+N개월 자동 만료`(SPEC §9)를 적용할 수 없다.
 
-    없으면 `--months` 범위가 조용히 무의미해진다(그 행은 절대 컷오프에 걸리지 않는다).
-    날짜가 정말 없는 게시판은 config `list_has_dates: false`로 표시한다.
+    ⚠️ `list_has_dates: false`는 "날짜가 없다"가 아니라 **"이 날짜를 컷오프에 쓰지 않는다"**다.
+    `PCKWORLD`는 목록에 날짜 칸이 없어 썸네일 파일명에서 읽는데, 그 값이 `--months` 범위를
+    움직이면 공고가 조용히 잘리기 때문에 컷오프에서는 뺀다.
     """
     adapter, source = _adapter_and_source(key)
     refs = adapter.parse_list(_require_fixture(key, LIST_FIXTURE), source)
-    dated = [ref for ref in refs if ref.posted_on is not None]
-    if source.list_has_dates:
-        assert len(dated) == len(refs), f"{key}: 날짜 없는 행 {len(refs) - len(dated)}건"
-    else:
-        assert not dated, f"{key}: list_has_dates=false인데 날짜가 나온다 — config를 고친다"
+    undated = [ref.external_id for ref in refs if ref.posted_on is None]
+
+    assert not undated, f"{key}: 날짜 없는 행 {len(undated)}건 — {undated[:5]}"
 
 
 @pytest.mark.parametrize("key", _KEYS)

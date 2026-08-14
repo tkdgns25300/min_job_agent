@@ -131,3 +131,13 @@ def test_parse_iso_rejects_date_only() -> None:
 def test_parse_iso_rejects_empty() -> None:
     with pytest.raises(ValueError, match="ISO8601"):
         parse_iso("")
+
+
+def test_an_empty_date_column_is_refused() -> None:
+    """⚠️ 타입만으로 필수를 선언하면 런타임에는 조용히 통과한다.
+
+    `posted_on=None`인 행이 저장되면 그 공고는 만료 판정(SPEC §9)에서 빠지고, 원장 조회는
+    "이미 본 글"이라 하는데 구조화 조회는 건너뛴다 — 어디에도 안 잡히는 유령이 된다.
+    """
+    with pytest.raises(ValueError, match="비어 있음"):
+        require_plain_date(None)  # type: ignore[arg-type]
