@@ -14,6 +14,7 @@ import argparse
 import json
 import logging
 import sys
+from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import fields
@@ -104,6 +105,9 @@ _SMOKE_PROMPT = "연결 확인용. 한국어로 정확히 'OK'라고만 답하�
 
 #: 뽑히지 않은 값의 표시. 빈 칸으로 두면 "안 뽑힌 것"과 "빈 문자열"이 같아 보인다.
 _NO_VALUE: Final = "—"
+#: 검산 요약에 보여줄 칸 이름 수. 전부 찍으면 한 줄이 화면을 넘는다.
+_SCRUBBED_SAMPLE: Final = 4
+
 #: 미리보기에 이름을 펼칠 빈 칸 개수. 40개를 다 찍으면 정작 뽑힌 값이 묻힌다.
 _UNFILLED_SAMPLES: Final = 6
 
@@ -691,6 +695,11 @@ class _PreviewFile:
             row["error"] = result.error
         if result.media_note is not None:
             row["media_note"] = result.media_note
+        # ⚠️ 공고 단위로 남겨야 "모델이 null을 줬다"와 "검산이 비웠다"를 구분할 수 있다.
+        if result.verified.scrubbed:
+            row["scrubbed"] = list(result.verified.scrubbed)
+        if result.verified.unchecked:
+            row["unchecked"] = dict(result.verified.unchecked_fields)
         if result.draft is not None:
             row["draft"] = {
                 key: value
@@ -805,6 +814,18 @@ def _print_preview(console: Console, result: StructureResult) -> None:
         )
         console.field("원문 링크", draft.source_url)
         _note_unfilled_columns(console, draft)
+    if result.verified.scrubbed:
+        # ⚠️ 이게 없으면 빈 칸을 보고 "모델이 null 을 줬다"와 "검산이 비웠다"를 구분할 수 없다.
+        console.warn(
+            "원문에 없어 비운 칸: " + _field_note(Counter(result.verified.scrubbed)),
+            "모델이 지어낸 값입니다 — 원문을 보고 검수에서 채워야 합니다.",
+        )
+    if result.verified.unchecked:
+        console.field(
+            "원문에서 확인 못 함",
+            f"{result.verified.unchecked}개",
+            note=_field_note(result.verified.unchecked_fields),
+        )
     if result.media_note is not None:
         console.warn(result.media_note)
     if result.error is not None:
@@ -876,6 +897,26 @@ def _print_structure_report(console: Console, report: StructureReport, *, dry_ru
         console.field("빈 공고", f"{report.empty}건", note="내용이 없어 호출하지 않음")
     if report.deferred:
         console.field("그림 대기", f"{report.deferred}건", note="그림을 가져올 수단 없이 실행됨")
+    if report.scrubbed:
+        # ⚠️ 조용히 지우지 않는다. 이 줄이 없으면 프롬프트를 고쳤을 때 나아졌는지 알려고
+        #    매번 원문과 손으로 대조해야 한다.
+        console.field(
+            "검산에서 비움",
+            f"{report.scrubbed}개",
+            note=_field_note(report.scrubbed_fields),
+        )
+    if report.unverifiable:
+        console.field(
+            "본문 확인 못 함",
+            f"{report.unverifiable}개",
+            note="그림·PDF 공고 — 포스터가 원문이라 비우지 않았습니다",
+        )
+    if report.unchecked:
+        console.field(
+            "원문에서 확인 못 함",
+            f"{report.unchecked}개",
+            note=_field_note(report.unchecked_fields),
+        )
     if report.text_only:
         console.warn(
             f"그림을 못 읽고 텍스트만으로 판정한 공고 {report.text_only}건"
@@ -890,6 +931,15 @@ def _print_structure_report(console: Console, report: StructureReport, *, dry_ru
     if dry_run:
         console.line()
         console.ok("미리보기입니다 — 저장하지 않았으므로 같은 공고를 다시 볼 수 있습니다.")
+
+
+def _field_note(fields_dropped: Mapping[str, int]) -> str:
+    """`required_docs 3 · headcount 2` — 많이 걸린 칸부터.
+
+    어느 칸이 문제인지가 다음 프롬프트 수정을 정한다.
+    """
+    ranked = sorted(fields_dropped.items(), key=lambda item: (-item[1], item[0]))
+    return " · ".join(f"{name} {count}" for name, count in ranked[:_SCRUBBED_SAMPLE])
 
 
 def _positive_int(value: str) -> int:

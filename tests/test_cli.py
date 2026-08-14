@@ -27,8 +27,10 @@ from minjob_ingest.pipeline.structure import (
     StructureReport,
     StructureResult,
     Verdict,
+    _Tally,
     build_draft,
 )
+from minjob_ingest.pipeline.verify import VerifyReport
 from minjob_ingest.settings import (
     ENV_DATA_DIR,
     ENV_VERTEX_CLIENT_EMAIL,
@@ -634,3 +636,106 @@ def test_the_preview_file_records_why_a_posting_was_skipped(tmp_path: Path) -> N
     assert "draft" not in written[0]
     # ⚠️ 두 모델을 견줄 때 파일 이름만 믿으면 뒤바뀐 것을 알 수 없다 — 파일이 스스로 밝힌다.
     assert written[0]["model"] == _FakeGemini.model
+
+
+# ── 검산 결과가 운영자에게 닿나 ─────────────────────────────────
+#
+# ⚠️ 검산은 "조용히 지우지 않는다"가 규칙이다. 집계와 화면 출력에 테스트가 없으면 그 규칙이
+# 코드에만 있고 사람에게는 안 닿는다 — 실제로 초안 경로에서 리포트가 통째로 죽어 있었다.
+
+
+def _result_with(report: VerifyReport) -> StructureResult:
+    record = SourceData(
+        source_key="DAESHIN",
+        external_id="37",
+        source_url="https://e.kr/37",
+        title="성원교회 부교역자 청빙",
+        run_id=new_id(),
+        fetched_at=kst_now(),
+        raw_text="성원교회에서 부교역자를 청빙합니다.",
+    )
+    extraction = Extraction(
+        is_church_recruitment=IsChurchRecruitment.YES,
+        church_name="성원교회",
+        description="성원교회가 부교역자를 청빙합니다.",
+    )
+    return StructureResult(
+        record=record,
+        verdict=Verdict.DRAFTED,
+        extraction=extraction,
+        draft=build_draft(record, extraction),
+        verified=report,
+    )
+
+
+def test_the_run_report_adds_up_what_verification_did() -> None:
+    """⚠️ 초안 경로에서 이 집계가 통째로 0이던 적이 있다 — 리포트를 붙인 의미가 없었다."""
+    tally = _Tally()
+
+    tally.add(
+        _result_with(
+            VerifyReport(
+                scrubbed=("raw_denomination",),
+                unchecked=2,
+                unchecked_fields={"required_docs": 2},
+            )
+        )
+    )
+    tally.add(_result_with(VerifyReport(scrubbed=("contact_email",), unverifiable=3)))
+
+    report = tally.report()
+    assert report.scrubbed == 2
+    assert report.scrubbed_fields == {"raw_denomination": 1, "contact_email": 1}
+    assert report.unverifiable == 3
+    # ⚠️ 조립 칸 집계도 같이 올라와야 한다 — 이게 빠지면 프롬프트를 고쳐도 움직임이 안 보인다.
+    assert report.unchecked == 2
+    assert report.unchecked_fields == {"required_docs": 2}
+
+
+def test_the_run_report_shows_the_verification_lines(capsys: pytest.CaptureFixture[str]) -> None:
+    report = StructureReport(
+        scanned=2,
+        drafted=2,
+        scrubbed=1,
+        scrubbed_fields={"raw_denomination": 1},
+        unverifiable=3,
+        unchecked=5,
+        unchecked_fields={"required_docs": 5},
+    )
+
+    cli._print_structure_report(Console(color=False), report, dry_run=True)
+
+    shown = capsys.readouterr().out
+    assert "검산에서 비움" in shown and "raw_denomination" in shown
+    assert "본문 확인 못 함" in shown
+    assert "원문에서 확인 못 함" in shown and "required_docs" in shown
+
+
+def test_the_preview_says_which_field_verification_emptied(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """⚠️ 이게 없으면 빈 칸을 보고 "모델이 null 을 줬다"와 "검산이 비웠다"를 구분할 수 없다."""
+    cli._print_preview(
+        Console(color=False), _result_with(VerifyReport(scrubbed=("contact_email",)))
+    )
+
+    assert "원문에 없어 비운 칸" in capsys.readouterr().out
+
+
+def test_the_preview_file_records_what_verification_did(tmp_path: Path) -> None:
+    path = tmp_path / "p.json"
+    preview = cli._PreviewFile(path, model=_FakeGemini.model)
+
+    preview.add(
+        _result_with(
+            VerifyReport(
+                scrubbed=("contact_link",), unchecked=2, unchecked_fields={"required_docs": 2}
+            )
+        ),
+        StructureReport(),
+    )
+    preview.write()
+
+    written = json.loads(path.read_text(encoding="utf-8"))[0]
+    assert written["scrubbed"] == ["contact_link"]
+    assert written["unchecked"] == {"required_docs": 2}
