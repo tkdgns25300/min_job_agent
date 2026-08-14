@@ -12,7 +12,7 @@
 
 **별도 리포인 이유**: min_job은 **in-repo 크롤러 코드를 두지 않는다**(min_job `CLAUDE.md` Ingest 레이어 규칙). 자동 수집 자체는 min_job 쪽에서 허용된 것이며(공개 공식 게시판 한정·운영자 검수 전제·법률 검토 완료 2026-07-28), 그 구현체가 이 리포다.
 
-**Stack**: Python 3.12+ · `httpx` + `beautifulsoup4`/`lxml` · `google-genai`(Vertex AI Gemini) · JSON 파일 저장(Phase 1) → Supabase · GitHub Actions(스케줄)
+**Stack**: Python 3.12+ · `httpx` + `beautifulsoup4`/`lxml` · `google-genai`(Vertex AI Gemini) · `Pillow`(인쇄용 CMYK 포스터를 화면용으로 — Vertex가 4채널 JPEG를 거절한다) · JSON 파일 저장(Phase 1) → Supabase · GitHub Actions(스케줄)
 
 > ⚠️ **스택 변경(2026-07-29)**: 원래 TypeScript/Node였다(SNAPSHOT §2 "되돌리지 말 것" 항목). **Python으로 교체됨** — 크롤 생태계 성숙도 + 운영자가 직접 실행. TS를 택한 명목("min_job 타입 공유")은 별도 리포·별도 프로세스라 실제로 성립하지 않았고, enum 정합은 코드 공유가 아니라 **CONTRACT §1 계약 + 드리프트 테스트**로 지킨다.
 >

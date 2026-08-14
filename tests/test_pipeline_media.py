@@ -8,9 +8,11 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass, field
 from datetime import datetime
+from io import BytesIO
 from typing import Final
 
 import pytest
+from PIL import Image
 
 from minjob_ingest.clock import KST
 from minjob_ingest.fetch.client import Binary, FetchError
@@ -23,10 +25,12 @@ from minjob_ingest.pipeline.media import (
     BoardMediaSource,
     Media,
     MediaSet,
+    as_media,
     attachment_urls,
     board_media,
     decode_data_uri,
     failure_note,
+    jpeg_channels,
     sniff_media_type,
     unusable_reason,
     wanted_urls,
@@ -389,3 +393,64 @@ def test_the_note_counts_what_was_missed() -> None:
     note = failure_note(partial, ("https://e.kr/1.png", "https://e.kr/2.png"))
 
     assert note is not None and "1/2개를 못 읽음" in note
+
+
+# ── 인쇄용(CMYK) 그림 ────────────────────────────────────────────
+
+
+def _jpeg(mode: str, *, size: tuple[int, int] = (40, 30)) -> bytes:
+    buffer = BytesIO()
+    Image.new(mode, size, color=None).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+def test_a_print_ready_poster_is_converted_for_the_screen() -> None:
+    """⚠️ Vertex는 4채널 JPEG를 400으로 거절한다 — 실측 PCKWORLD/1545·1539.
+
+    `PCKWORLD`는 본문이 비어 포스터가 곧 공고라, 못 읽으면 그 공고가 통째로 사라진다.
+    """
+    printed = _jpeg("CMYK")
+    assert jpeg_channels(printed) == 4
+
+    item = as_media("image/jpeg", printed)
+
+    assert jpeg_channels(item.data) == 3
+    assert item.media_type == "image/jpeg"
+
+
+def test_an_ordinary_photo_is_passed_through_untouched() -> None:
+    """⚠️ 전부 다시 인코딩하면 화질이 떨어진다 — 실측 299개 중 바꿀 것은 2개였다."""
+    photo = _jpeg("RGB")
+
+    item = as_media("image/jpeg", photo)
+
+    assert item.data == photo
+
+
+def test_a_png_is_never_re_encoded() -> None:
+    """JPEG가 아닌 것은 채널을 세지도 않는다 — CMYK PNG는 존재하지 않는다."""
+    buffer = BytesIO()
+    Image.new("RGB", (40, 30)).save(buffer, format="PNG")
+    png = buffer.getvalue()
+
+    assert as_media("image/png", png).data == png
+
+
+def test_bytes_inside_a_segment_are_not_mistaken_for_a_frame_header() -> None:
+    """⚠️ 조각 **길이를 따라** 걸어야 한다 — 안을 훑으면 프로파일·주석에 우연히 든 바이트를
+    프레임 머리로 읽는다.
+
+    실측 `PCKWORLD/1545`는 ICC 프로파일이 64KB 조각 여럿으로 붙어 색 정보가 130KB 뒤에
+    있었다. 여기서는 주석 조각 안에 4채널짜리 가짜 머리를 심어 같은 상황을 만든다.
+    """
+    photo = _jpeg("RGB")
+    fake_frame = b"\xff\xc0\x00\x11\x08\x00\x10\x00\x10\x04"
+    comment = b"\xff\xfe" + (len(fake_frame) + 2).to_bytes(2, "big") + fake_frame
+    booby_trapped = photo[:2] + comment + photo[2:]
+
+    assert jpeg_channels(booby_trapped) == 3
+
+
+def test_bytes_that_are_not_a_jpeg_have_no_channel_count() -> None:
+    assert jpeg_channels(b"%PDF-1.4 ...") is None
+    assert jpeg_channels(b"") is None

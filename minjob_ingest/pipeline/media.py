@@ -20,8 +20,11 @@ import logging
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from io import BytesIO
 from typing import Final, Protocol
 from urllib.parse import unquote_to_bytes
+
+from PIL import Image
 
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.models import SourceData
@@ -44,6 +47,28 @@ MIN_MEDIA_BYTES: Final = 2 * 1024
 
 #: `data:` URI 시작.
 _DATA_SCHEME: Final = "data:"
+
+_JPEG: Final = "image/jpeg"
+
+#: 인쇄용 JPEG. Vertex가 400으로 거절한다(`screen_ready`).
+_CMYK_CHANNELS: Final = 4
+
+#: 다시 인코딩할 때의 화질. 포스터는 글씨가 내용이라 낮추면 못 읽는다.
+_REENCODE_QUALITY: Final = 90
+
+#: JPEG 조각을 걷는 데 필요한 최소 바이트(마커 2 + 길이 2 + 프레임 머리 5).
+_SEGMENT_HEADER: Final = 9
+
+#: 길이 칸이 없는 마커 — SOI·EOI.
+_STANDALONE_MARKERS: Final = frozenset({0xD8, 0xD9})
+
+#: 재시작 마커(RST0~RST7)도 길이가 없다.
+_RESTART_MARKERS: Final = range(0xD0, 0xD8)
+
+#: 프레임 머리(SOF). 여기 9번째 바이트가 채널 수다. 허프만·산술·손실없음 변형을 모두 담는다.
+_FRAME_MARKERS: Final = frozenset(
+    {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+)
 
 #: 게시판에 요청할 수 있는 스킴. ⚠️ 본문에 `file:///C:\...`가 섞인 공고가 있다(실측 8건 —
 #: HWP에서 붙여넣은 흔적). 요청하면 전송 층이 죽고 그 실행 내내 robots를 못 읽는다.
@@ -136,7 +161,58 @@ def sniff_media_type(data: bytes) -> str | None:
 
 def as_media(header_media_type: str, data: bytes) -> Media:
     """받은 바이트를 `Media`로. **앞머리가 헤더를 이긴다**(`_MAGIC` 참조)."""
-    return Media(media_type=sniff_media_type(data) or header_media_type, data=data)
+    media_type = sniff_media_type(data) or header_media_type
+    return Media(media_type=media_type, data=screen_ready(media_type, data))
+
+
+def screen_ready(media_type: str, data: bytes) -> bytes:
+    """인쇄용(CMYK) JPEG를 화면용(RGB)으로 바꾼다. 나머지 바이트는 **손대지 않는다**.
+
+    ⚠️ Vertex는 4채널 JPEG를 400 INVALID_ARGUMENT로 거절한다(실측 2026-08-14 ·
+    `PCKWORLD/1545`·`1539` — 인쇄소에서 받은 포스터를 그대로 올린 것이다). `PCKWORLD`는
+    본문이 비어 있어 그림이 곧 공고라, 못 읽으면 **그 공고가 통째로 사라진다**.
+
+    ⚠️ **필요할 때만 다시 만든다.** 전부 다시 인코딩하면 화질이 떨어지고 느려지는데,
+    실측 299개 중 바꿔야 하는 것은 2개였다.
+    """
+    if media_type != _JPEG or jpeg_channels(data) != _CMYK_CHANNELS:
+        return data
+    try:
+        with Image.open(BytesIO(data)) as image:
+            buffer = BytesIO()
+            image.convert("RGB").save(buffer, format="JPEG", quality=_REENCODE_QUALITY)
+    except (OSError, ValueError) as err:
+        # 바꾸지 못해도 원본을 보낸다 — 거절당하겠지만 사유가 리포트에 남는다.
+        _LOG.warning("CMYK 그림을 바꾸지 못해 원본 그대로 보낸다 (%s)", err)
+        return data
+    return buffer.getvalue()
+
+
+def jpeg_channels(data: bytes) -> int | None:
+    """JPEG의 색 채널 수(3=RGB · 4=CMYK). JPEG가 아니거나 못 읽으면 `None`.
+
+    ⚠️ 앞머리만 훑는 것으로는 부족하다 — ICC 프로파일이 64KB짜리 조각 여럿으로 붙어 색
+    정보가 130KB 뒤로 밀린 파일이 있었다(`PCKWORLD/1545`). 조각 길이를 따라 끝까지 걷는다.
+    """
+    if not data.startswith(b"\xff\xd8"):
+        return None
+    index = 2
+    while index < len(data) - _SEGMENT_HEADER:
+        if data[index] != 0xFF:
+            index += 1
+            continue
+        marker = data[index + 1]
+        if (
+            marker in _STANDALONE_MARKERS
+            or _RESTART_MARKERS.start <= marker < _RESTART_MARKERS.stop
+        ):
+            index += 2
+            continue
+        length = int.from_bytes(data[index + 2 : index + 4], "big")
+        if marker in _FRAME_MARKERS:
+            return data[index + 9]
+        index += 2 + length
+    return None
 
 
 def decode_data_uri(uri: str) -> Media:
