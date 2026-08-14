@@ -799,3 +799,21 @@ def test_one_board_is_not_advertised_as_parallel(
 
     assert "게시판 8곳씩" in spread
     assert "게시판 8곳씩" not in narrowed
+
+
+def test_a_halted_run_reports_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 멈춘 사유가 화면에 없으면 운영자는 "5건만 처리됐네"로 읽는다.
+
+    종료 코드는 `failed`가 책임진다 — 멈춘 실행은 저장 실패를 함께 센다
+    (`test_a_broken_ledger_stops_the_run_instead_of_burning_the_budget`).
+    """
+    halted = StructureReport(scanned=5, failed=5, halted="저장이 연속 5번 실패해 멈췄다")
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path))
+    monkeypatch.setattr(cli, "structure_pending", lambda *_a, **_k: halted)
+    _stub_gemini(monkeypatch)
+
+    assert main(["structure", "--all"]) == 1
+
+    assert "저장이 연속 5번 실패해 멈췄다" in capsys.readouterr().out

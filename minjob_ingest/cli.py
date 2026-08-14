@@ -645,6 +645,7 @@ def _run_structure(
         preview.write()
         console.field("미리보기 파일", str(out), note=f"{preview.count}건")
     _print_structure_report(console, report, dry_run=dry_run)
+    # 멈춘 실행은 실패도 함께 세어져 있다(`_Tally._watch_store` — 저장 실패는 FAILED다).
     return 1 if report.failed else 0
 
 
@@ -909,6 +910,9 @@ def _print_structure_report(console: Console, report: StructureReport, *, dry_ru
             "--source 가 가리키는 게시판에 남은 것이 없습니다.",
         )
         return
+    if report.halted is not None:
+        # ⚠️ 제일 위에 놓는다 — 아래 숫자들이 "끝까지 돈 결과"가 아니라는 사실이 먼저다.
+        console.warn(f"⛔ {report.halted}", "남은 공고는 다음 실행이 다시 잡습니다.")
     console.field("훑음", f"{report.scanned}건")
     console.field(
         "초안",

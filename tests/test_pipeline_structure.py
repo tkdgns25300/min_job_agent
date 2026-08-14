@@ -45,6 +45,7 @@ from minjob_ingest.pipeline import structure
 from minjob_ingest.pipeline.extraction import Extraction, ExtractionError
 from minjob_ingest.pipeline.media import BoardMediaSource, Media, MediaSet
 from minjob_ingest.pipeline.structure import (
+    STORE_FAILURE_LIMIT,
     StructureOptions,
     StructureReport,
     StructureResult,
@@ -1167,3 +1168,101 @@ def test_the_progress_sink_never_runs_twice_at_once(store: JsonStore) -> None:
     )
 
     assert peak == 1
+
+
+# ── 저장이 통째로 깨졌을 때 ──────────────────────────────────────
+
+
+@dataclass
+class _BrokenStore:
+    """저장만 실패하는 스토어 대역 — 조회는 정상이다(원장 파일 하나가 깨진 모양)."""
+
+    inner: JsonStore
+
+    def list_unstructured(
+        self, limit: int, *, source_key: str | None = None
+    ) -> Sequence[SourceData]:
+        return self.inner.list_unstructured(limit, source_key=source_key)
+
+    def upsert_review_data(self, _record: ReviewData) -> bool:
+        raise StoreError("review_data.json: JSON 파싱 실패")
+
+    def update_structure_state(self, _record: SourceData) -> None:
+        raise StoreError("source_data.json: JSON 파싱 실패")
+
+
+def test_a_broken_ledger_stops_the_run_instead_of_burning_the_budget(store: JsonStore) -> None:
+    """⚠️ 글 단위 격리가 여기서는 독이 된다.
+
+    원장이 통째로 깨지면 공고마다 **Gemini를 부른 뒤** 저장이 실패한다 — 그대로 두면
+    `--all`이 3,000번 과금하고 아무것도 저장하지 못한다(ROADMAP 1-2).
+    """
+    _fill(store, {"DAESHIN": 20})
+    extractor = _FakeExtractor()
+
+    report = structure_pending(
+        _BrokenStore(store),  # type: ignore[arg-type]
+        extractor,
+        StructureOptions(limit=None),
+        workers=1,
+    )
+
+    assert report.halted is not None
+    assert len(extractor.calls) == STORE_FAILURE_LIMIT, "상한을 넘겨 부르지 않는다"
+    assert report.scanned == STORE_FAILURE_LIMIT
+    # ⚠️ 멈춘 실행은 **실패로도 세어져야** 한다 — CLI 종료 코드가 이 값만 본다.
+    assert report.failed == STORE_FAILURE_LIMIT
+
+
+def test_scattered_broken_rows_do_not_stop_the_run(store: JsonStore) -> None:
+    """⚠️ 반대쪽도 지킨다 — 행이 깨졌다고 멈추면 뒤의 수천 건에 도달하지 못한다.
+
+    상한을 넘는 수(여기서는 10건)가 깨져도 **연속이 아니면** 끝까지 돈다. 성공 한 번이
+    누적을 지운다 — 안 그러면 흩어진 손상 행 몇 개로 정상 실행이 멎는다.
+    """
+    _fill(store, {"DAESHIN": 20})
+    every_other = {
+        record.external_id
+        for position, record in enumerate(store.list_unstructured(20))
+        if position % 2 == 1
+    }
+    assert len(every_other) > STORE_FAILURE_LIMIT, "상한보다 많이 깨뜨려야 의미가 있다"
+
+    report = structure_pending(
+        _SometimesBrokenStore(store, every_other),  # type: ignore[arg-type]
+        _FakeExtractor(),
+        StructureOptions(limit=None),
+        workers=1,
+    )
+
+    assert report.halted is None
+    assert report.scanned == 20
+    assert report.failed == len(every_other)
+
+
+@dataclass
+class _SometimesBrokenStore:
+    """정해둔 공고에서만 저장이 실패하는 대역."""
+
+    inner: JsonStore
+    failing: set[str]
+
+    def list_unstructured(
+        self, limit: int, *, source_key: str | None = None
+    ) -> Sequence[SourceData]:
+        return self.inner.list_unstructured(limit, source_key=source_key)
+
+    def upsert_review_data(self, record: ReviewData) -> bool:
+        if str(record.source_data_id) in self._broken_ids():
+            raise StoreError("review_data.json: 이 행만 깨졌다")
+        return self.inner.upsert_review_data(record)
+
+    def update_structure_state(self, record: SourceData) -> None:
+        self.inner.update_structure_state(record)
+
+    def _broken_ids(self) -> set[str]:
+        return {
+            str(record.id)
+            for record in self.inner.list_unstructured(1000)
+            if record.external_id in self.failing
+        }

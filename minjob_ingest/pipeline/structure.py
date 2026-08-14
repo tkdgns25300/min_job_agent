@@ -59,6 +59,13 @@ _LOG = logging.getLogger(__name__)
 #: (`collect.py`가 같은 이유로 3건만 남긴다).
 _FAILURE_SAMPLE_SIZE: Final = 5
 
+#: 저장이 **연속으로** 이만큼 실패하면 실행을 멈춘다. 글 단위 격리는 한 행이 깨진 경우를
+#: 위한 것이고, 원장 파일이 통째로 깨진 경우에는 격리가 오히려 독이 된다 — 공고마다 Gemini를
+#: 부른 뒤 저장이 실패해 **돈만 쓰고 아무것도 남지 않는다**(ROADMAP 1-2).
+#: ⚠️ 값이 작으면 한 행이 깨진 정상 상황에서 실행이 멎는다. 게시판을 나눠 도는 것도 감안해
+#: 여유를 둔다.
+STORE_FAILURE_LIMIT: Final = 5
+
 #: 동시에 돌릴 **게시판 수**. 자원 보호용 상한이라 정책이 아니라 실행 옵션이다(CLAUDE.md
 #: fetch 층) — CLI의 `--workers`가 덮어쓴다. 올리기 전에 Vertex 분당 요청 한도를 확인한다:
 #: 넘기면 429가 오고 SDK가 기다렸다 다시 걸어 **결국 한도만큼만 나간다**.
@@ -155,6 +162,9 @@ class StructureResult:
     #: 원문 대조 결과. 비운 칸이 있으면 리포트가 센다.
     verified: VerifyReport = field(default_factory=VerifyReport)
     error: str | None = None
+    #: 실패가 **저장**에서 났나. ⚠️ Gemini 실패와 갈라야 한다 — 원장이 통째로 깨지면 공고마다
+    #: **부른 뒤에** 저장이 실패해서, 실행이 그대로면 3,000번 과금하고 아무것도 남지 않는다.
+    store_failed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +193,8 @@ class StructureReport:
     failures: tuple[StructureFailure, ...] = ()
     #: 그림 실패 사유 표본.
     media_failures: tuple[StructureFailure, ...] = ()
+    #: 실행을 중간에 멈춘 사유. `None`이면 끝까지 돌았다.
+    halted: str | None = None
 
 
 #: 진행 상황 수신자 — 방금 끝난 1건과 그때까지의 누적. CLI가 화면에 그린다.
@@ -207,6 +219,8 @@ class _Tally:
     unchecked_fields: Counter[str] = field(default_factory=Counter)
     failures: list[StructureFailure] = field(default_factory=list)
     media_failures: list[StructureFailure] = field(default_factory=list)
+    consecutive_store_failures: int = 0
+    halted: str | None = None
 
     @property
     def judged(self) -> int:
@@ -215,6 +229,7 @@ class _Tally:
 
     def add(self, result: StructureResult) -> None:
         self.scanned += 1
+        self._watch_store(result)
         self.scrubbed_fields.update(result.verified.scrubbed)
         self.unverifiable += result.verified.unverifiable
         self.unchecked_fields.update(result.verified.unchecked_fields)
@@ -238,6 +253,18 @@ class _Tally:
             case unhandled:
                 assert_never(unhandled)
 
+    def _watch_store(self, result: StructureResult) -> None:
+        """저장이 연속으로 실패하면 멈춘다 — 원장이 깨진 것이지 이 공고가 이상한 게 아니다."""
+        if not result.store_failed:
+            self.consecutive_store_failures = 0
+            return
+        self.consecutive_store_failures += 1
+        if self.consecutive_store_failures >= STORE_FAILURE_LIMIT and self.halted is None:
+            self.halted = (
+                f"저장이 연속 {self.consecutive_store_failures}번 실패해 멈췄다"
+                " — 원장 파일을 확인한다(호출 비용만 나가고 아무것도 저장되지 않는다)"
+            )
+
     def _note_failure(self, result: StructureResult) -> None:
         self.failed += 1
         if len(self.failures) < _FAILURE_SAMPLE_SIZE:
@@ -259,6 +286,7 @@ class _Tally:
             unchecked_fields=dict(self.unchecked_fields),
             failures=tuple(self.failures),
             media_failures=tuple(self.media_failures),
+            halted=self.halted,
         )
 
 
@@ -337,7 +365,7 @@ def structure_pending(
 
     def run_board(records: Sequence[SourceData]) -> None:
         for record in records:
-            if not budget.take():
+            if tally.halted is not None or not budget.take():
                 return
             result = structure_one(record, store, extractor, dry_run=options.dry_run, images=images)
             if result.verdict in _FREE_VERDICTS:
@@ -370,7 +398,9 @@ def structure_one(
         # ⚠️ 저장이 깨진 행 **하나** 때문에 배치가 멈추면 뒤의 수천 건에 영원히 도달하지
         # 못한다(SPEC §4 글 단위 격리). 시도 횟수도 못 올리므로(그 기록 역시 저장이다)
         # 이 행은 매 실행 다시 시도된다 — 리포트에 남겨 운영자가 원인을 고치게 한다.
-        return StructureResult(record=record, verdict=Verdict.FAILED, error=_reason(err))
+        return StructureResult(
+            record=record, verdict=Verdict.FAILED, error=_reason(err), store_failed=True
+        )
 
 
 def build_draft(record: SourceData, extraction: Extraction) -> ReviewData:
