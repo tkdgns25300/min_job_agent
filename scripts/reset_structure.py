@@ -26,13 +26,13 @@ from typing import Final
 
 from minjob_ingest.domain import normalize_source_key
 from minjob_ingest.settings import Settings
-from minjob_ingest.store.json_store import (
-    _MUTABLE_STATE_FIELDS,
-    _REVIEW_DATA_FILE,
-    _SOURCE_DATA_FILE,
-    FILE_VERSION,
-)
+from minjob_ingest.store.json_store import _MUTABLE_STATE_FIELDS, FILE_VERSION
 from minjob_ingest.store.serde import SerdeError, row_to_review_data
+
+#: 만질 원장 파일. ⚠️ store의 사적 이름을 끌어오지 않는다 — 파일 경로가 store 밖으로 새면
+#: 안 된다는 규칙(CLAUDE.md §Store)은 스크립트에도 같다. 이름이 바뀌면 여기서 즉시 터진다.
+_SOURCE_DATA_FILE: Final = "source_data.json"
+_REVIEW_DATA_FILE: Final = "review_data.json"
 
 #: 되돌릴 때 되돌려 놓는 처리 상태.
 _RESET_STATE: Final = {"structured_at": None, "structure_attempts": 0, "last_structure_error": None}
@@ -41,6 +41,10 @@ _RESET_STATE: Final = {"structured_at": None, "structure_attempts": 0, "last_str
 #    모르면 그 값이 남아 되돌린 공고가 재구조화에서 조용히 다르게 처리된다.
 if set(_RESET_STATE) != set(_MUTABLE_STATE_FIELDS):
     raise RuntimeError(f"처리 상태 칸이 store와 다르다: {set(_MUTABLE_STATE_FIELDS)}")
+
+
+class ResetRefused(Exception):
+    """되돌릴 수 없는 상태 — 아무것도 쓰지 않고 멈춘다."""
 
 
 def _load(path: Path) -> dict[str, object]:
@@ -77,10 +81,6 @@ def _write(path: Path, document: dict[str, object]) -> None:
     except OSError:
         temp.unlink(missing_ok=True)
         raise
-
-
-class ResetRefused(Exception):
-    """되돌릴 수 없는 상태 — 아무것도 쓰지 않고 멈춘다."""
 
 
 def protected_ids(review_rows: list[dict[str, object]]) -> set[str]:

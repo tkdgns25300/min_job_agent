@@ -419,7 +419,8 @@ class Extraction:
     contact_tel: str | None = None
     contact_link: str | None = None
     contact_post: str | None = None
-    #: 위 대문자 값 넷의 근거. ⚠️ `ReviewData`에 같은 칸이 없다 — 검산용이고 저장되지 않는다.
+    #: 대문자 값 넷 + 코드가 바꾼 값 셋(사례비·지역·마감)의 근거.
+    #: ⚠️ `ReviewData`에 같은 칸이 없다 — 검산용이고 저장되지 않는다.
     evidence: Evidence = field(default_factory=Evidence)
 
 
@@ -517,7 +518,7 @@ def parse_extraction(payload: str) -> Extraction:
 
 def meta_lines(raw_meta: Mapping[str, JsonValue]) -> tuple[tuple[str, str], ...]:
     """프롬프트에 실을 게시판 필드를 (라벨, 값)으로. **`verify`도 같은 것을 본다** —
-    모델이 오려낸 근거에 라벨이 붙어 오기 때문이다(`verify._haystack`)."""
+    모델이 오려낸 근거에 라벨이 붙어 오기 때문이다(`verify._source_parts`)."""
     return tuple(
         (_META_LABELS.get(key, key), str(value))
         for key, value in raw_meta.items()

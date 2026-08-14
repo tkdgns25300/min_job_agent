@@ -65,7 +65,10 @@ _STANDALONE_MARKERS: Final = frozenset({0xD8, 0xD9})
 #: 재시작 마커(RST0~RST7)도 길이가 없다.
 _RESTART_MARKERS: Final = range(0xD0, 0xD8)
 
-#: 프레임 머리(SOF). 여기 9번째 바이트가 채널 수다. 허프만·산술·손실없음 변형을 모두 담는다.
+#: 프레임 머리(SOF) 안에서 채널 수가 있는 자리(마커 2 + 길이 2 + 정밀도 1 + 높이 2 + 너비 2).
+_CHANNELS_OFFSET: Final = 9
+
+#: 프레임 머리(SOF). 허프만·산술·손실없음 변형을 모두 담는다.
 _FRAME_MARKERS: Final = frozenset(
     {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
 )
@@ -210,7 +213,7 @@ def jpeg_channels(data: bytes) -> int | None:
             continue
         length = int.from_bytes(data[index + 2 : index + 4], "big")
         if marker in _FRAME_MARKERS:
-            return data[index + 9]
+            return data[index + _CHANNELS_OFFSET]
         index += 2 + length
     return None
 

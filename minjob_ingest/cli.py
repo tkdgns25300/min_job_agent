@@ -108,7 +108,7 @@ _SMOKE_PROMPT = "연결 확인용. 한국어로 정확히 'OK'라고만 답하�
 #: 뽑히지 않은 값의 표시. 빈 칸으로 두면 "안 뽑힌 것"과 "빈 문자열"이 같아 보인다.
 _NO_VALUE: Final = "—"
 #: 검산 요약에 보여줄 칸 이름 수. 전부 찍으면 한 줄이 화면을 넘는다.
-_SCRUBBED_SAMPLE: Final = 4
+_FIELD_NOTE_SAMPLE: Final = 4
 
 #: 미리보기에 이름을 펼칠 빈 칸 개수. 40개를 다 찍으면 정작 뽑힌 값이 묻힌다.
 _UNFILLED_SAMPLES: Final = 6
@@ -838,8 +838,12 @@ def _print_preview(console: Console, result: StructureResult) -> None:
         # ⚠️ 이게 없으면 빈 칸을 보고 "모델이 null 을 줬다"와 "검산이 비웠다"를 구분할 수 없다.
         console.warn(
             "원문에 없어 비운 칸: " + _field_note(Counter(result.verified.scrubbed)),
-            "모델이 지어낸 값입니다 — 원문을 보고 검수에서 채워야 합니다.",
+            "원문에서 찾지 못한 값입니다 — 검수에서 원문과 대조해 채우거나 되돌립니다.",
         )
+        for item in result.verified.dropped:
+            # ⚠️ 버린 **값**까지 보여준다. 칸 이름만으로는 지어낸 것인지 검산이 과한 것인지
+            #    가릴 수 없다 — 실측에서 전화번호 4건이 과검이었다(2026-08-14).
+            console.field(f"  버림 {item.field}", _dropped_note(item))
     if result.verified.unchecked:
         console.field(
             "원문에서 확인 못 함",
@@ -953,13 +957,13 @@ def _print_structure_report(console: Console, report: StructureReport, *, dry_ru
         console.ok("미리보기입니다 — 저장하지 않았으므로 같은 공고를 다시 볼 수 있습니다.")
 
 
-def _field_note(fields_dropped: Mapping[str, int]) -> str:
+def _field_note(counts: Mapping[str, int]) -> str:
     """`required_docs 3 · headcount 2` — 많이 걸린 칸부터.
 
     어느 칸이 문제인지가 다음 프롬프트 수정을 정한다.
     """
-    ranked = sorted(fields_dropped.items(), key=lambda item: (-item[1], item[0]))
-    return " · ".join(f"{name} {count}" for name, count in ranked[:_SCRUBBED_SAMPLE])
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return " · ".join(f"{name} {count}" for name, count in ranked[:_FIELD_NOTE_SAMPLE])
 
 
 def _positive_int(value: str) -> int:

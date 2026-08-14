@@ -27,7 +27,7 @@ import os
 from pathlib import Path
 from typing import Final
 
-from minjob_ingest.paths import PROJECT_ROOT
+from minjob_ingest.settings import Settings
 from minjob_ingest.sources.adapters.pckworld import uploaded_on
 from minjob_ingest.store.json_store import FILE_VERSION
 
@@ -89,7 +89,10 @@ def _write(path: Path, document: dict[str, object]) -> None:
 
 
 def migrate_file(path: Path, *, write: bool) -> str:
-    document: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    loaded: object = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise MigrationRefused(f"{path.name}: 최상위가 객체가 아니다")
+    document: dict[str, object] = loaded
     version = document.get("version")
     if version == FILE_VERSION:
         return "이미 최신"
@@ -98,6 +101,9 @@ def migrate_file(path: Path, *, write: bool) -> str:
     records = document.get("records")
     if not isinstance(records, list):
         raise MigrationRefused(f"{path.name}: records가 배열이 아니다")
+    for position, row in enumerate(records):
+        if not isinstance(row, dict):
+            raise MigrationRefused(f"{path.name}: records[{position}]가 객체가 아니다")
     field = _LEDGER_FILES[path.name]
     filled = 0 if field is None else fill(records, field)
     document["version"] = FILE_VERSION
@@ -111,7 +117,9 @@ def main() -> int:
     parser.add_argument("--write", action="store_true", help="실제로 이관한다 (기본은 미리보기)")
     args = parser.parse_args()
 
-    data_dir = PROJECT_ROOT / "data"
+    # ⚠️ `MINJOB_DATA_DIR`을 존중한다 — env로 다른 원장을 쓰는 운영자에게 "할 일이 없다"고
+    #    답하면서 그 원장은 버전이 안 맞아 모든 명령이 거부당한다.
+    data_dir = Settings.load().data_dir
     if not data_dir.exists():
         print("data/ 없음 — 할 일이 없다")
         return 0

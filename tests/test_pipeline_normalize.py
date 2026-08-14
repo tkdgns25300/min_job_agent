@@ -365,7 +365,7 @@ def test_a_yearly_word_after_a_monthly_amount_does_not_flip_it() -> None:
     ids=["110", "100만원", "400만원(월 최대)", "3500만원", "3200"],
 )
 def test_an_unstated_period_is_read_from_the_size(given: str, want: StipendPeriod) -> None:
-    """⚠️ 실측: 원문이 `월`이라 한 금액은 10~400만원, `연`이라 한 금액은 3,200~3,600만원 —
+    """⚠️ 실측 범위는 `normalize._MONTHLY_CEILING`·`_YEARLY_FLOOR` 주석이 정본이다 —
     **겹치는 값이 하나도 없다.** 그래서 크기가 주기를 말해준다."""
     assert period_of(given) is want
 

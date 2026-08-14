@@ -38,6 +38,17 @@ from minjob_ingest.domain import Department, EmploymentType, Position, Qualifica
 from minjob_ingest.models import SourceData
 from minjob_ingest.pipeline.extraction import Extraction, meta_lines
 
+
+@dataclass(frozen=True, slots=True)
+class _Words:
+    """근거가 어떤 값을 뒷받침하는지 가리는 낱말. **짝 튜플로 두면 어느 쪽이 배제인지가
+    쓰는 자리에서 안 보인다** — 40줄 중 대부분이 빈 튜플이라 더 그렇다."""
+
+    required: tuple[str, ...]
+    #: 있으면 **안 되는** 낱말. 낱말이 서로를 품기 때문에 필요하다(`준전임`이 `전임`을 품는다).
+    excluded: tuple[str, ...] = ()
+
+
 #: 근거가 그 값을 **뒷받침하나**. 값마다 (있어야 할 낱말, 있으면 안 되는 낱말)이다.
 #:
 #: ⚠️ 이 표는 **분류를 다시 하지 않는다** — 근거가 그 칸과 아무 상관 없는 글자일 때만 잡는다.
@@ -54,47 +65,43 @@ from minjob_ingest.pipeline.extraction import Extraction, meta_lines
 #:
 #: ⚠️ `Position.ETC`·`Department.ETC`는 표에 없다 — "그 밖"이라 뒷받침할 낱말이 없다(통과).
 #: 그 둘 말고 빠진 값이 생기면 `supports`가 조용히 통과시키므로 적합성 테스트가 막는다.
-_SUPPORTING_WORDS: Final[dict[StrEnum, tuple[tuple[str, ...], tuple[str, ...]]]] = {
-    Position.SENIOR_PASTOR: (("담임", "위임", "원로", "seniorpastor", "leadpastor"), ()),
+_SUPPORTING_WORDS: Final[dict[StrEnum, _Words]] = {
+    Position.SENIOR_PASTOR: _Words(("담임", "위임", "원로", "seniorpastor", "leadpastor")),
     # ⚠️ `담임목사`가 `목사`를 품는다 — 배제하지 않으면 담임 청빙이 부목사로 저장된다.
-    Position.ASSOCIATE_PASTOR: (
+    Position.ASSOCIATE_PASTOR: _Words(
         ("목사", "associatepastor", "assistantpastor"),
         ("담임", "위임", "원로", "seniorpastor", "leadpastor"),
     ),
-    Position.EVANGELIST: (("전도사", "evangelist"), ()),
-    Position.LICENSED_MINISTER: (("강도사",), ()),
-    Department.INFANT: (("영아", "유아", "유치", "미취학", "infant", "preschool", "toddler"), ()),
-    Department.CHILDREN: (("유년", "초등", "아동", "어린이", "children", "elementary"), ()),
-    Department.YOUTH: (
+    Position.EVANGELIST: _Words(("전도사", "evangelist")),
+    Position.LICENSED_MINISTER: _Words(("강도사",)),
+    Department.INFANT: _Words(("영아", "유아", "유치", "미취학", "infant", "preschool", "toddler")),
+    Department.CHILDREN: _Words(("유년", "초등", "아동", "어린이", "children", "elementary")),
+    Department.YOUTH: _Words(
         ("중고등", "청소년", "중등", "고등", "중학", "고교", "학생", "youth", "teen"),
-        (),
     ),
-    Department.YOUNG_ADULT: (("청년", "대학", "youngadult", "college", "campus"), ()),
-    Department.DISTRICT: (("교구", "심방"), ()),
-    Department.WORSHIP: (
+    Department.YOUNG_ADULT: _Words(("청년", "대학", "youngadult", "college", "campus")),
+    Department.DISTRICT: _Words(("교구", "심방")),
+    Department.WORSHIP: _Words(
         ("찬양", "예배", "성가", "지휘", "반주", "미디어", "음악", "worship", "music"),
-        (),
     ),
-    Department.ADMIN: (
+    Department.ADMIN: _Words(
         ("행정", "사무", "관리", "administrative", "administration", "secretarial", "office"),
-        (),
     ),
     # ⚠️ `상근`·`정규직`이 없으면 `평일은 상근직으로 8시간`(실측 9건)이 걸러진다.
-    EmploymentType.FULL_TIME: (
+    EmploymentType.FULL_TIME: _Words(
         ("전임", "풀타임", "상근", "정규직", "full"),
         ("준전임", "반전임", "parttime", "part-time"),
     ),
-    EmploymentType.SEMI_FULL_TIME: (("준전임", "반전임", "세미"), ()),
-    EmploymentType.PART_TIME: (("파트", "part"), ()),
-    Qualification.SEMINARIAN: (
+    EmploymentType.SEMI_FULL_TIME: _Words(("준전임", "반전임", "세미")),
+    EmploymentType.PART_TIME: _Words(("파트", "part")),
+    Qualification.SEMINARIAN: _Words(
         ("신대원", "신학대학원", "신학교", "재학", "졸업", "신학", "seminary", "m.div", "mdiv"),
-        (),
     ),
-    Qualification.ORDAINED: (("안수", "목사", "ordained", "ordination"), ()),
+    Qualification.ORDAINED: _Words(("안수", "목사", "ordained", "ordination")),
     # ⚠️ `경험`이 없으면 `사역 경험이 있는 분`(실측 290건)이 걸러진다.
-    Qualification.EXPERIENCED: (("경력", "경험", "experience", "experienced"), ()),
-    Qualification.ENTRY: (("신입", "졸업예정", "초임", "entrylevel"), ()),
-    Qualification.ANY: (("무관", "제한", "누구나", "anyone", "regardlessof"), ()),
+    Qualification.EXPERIENCED: _Words(("경력", "경험", "experience", "experienced")),
+    Qualification.ENTRY: _Words(("신입", "졸업예정", "초임", "entrylevel")),
+    Qualification.ANY: _Words(("무관", "제한", "누구나", "anyone", "regardlessof")),
 }
 
 #: 근거에 **모집한다는 말**까지 있어야 하는 값. **담임 계열 하나뿐이다.**
@@ -218,13 +225,14 @@ def verify(
     ⚠️ **비우는 칸과 세기만 하는 칸이 다르다.** 갈리는 기준은 "프롬프트가 조립을 시켰나"다.
 
     **비운다 — 원문에서 한 조각을 그대로 옮기는 칸**
-    `church_name`·`raw_denomination`·`role`·`start_timing`·`work_days`·`contact_*`, 그리고
+    `church_name`·`raw_denomination`·`contact_email`·`contact_tel`·`contact_link`, 그리고
     근거로 검산하는 대문자 값 넷과 코드가 만든 값들. 실측 20건에서 42개 중 **1개만 비웠고
     그 1개가 진짜 오류**였다(`raw_denomination = "DAESHIN"` — 게시판 키가 교단 칸에 들어갔다).
 
     **세기만 한다 — 프롬프트가 여러 조각을 이으라고 시킨 칸**
     `headcount`(`1.부목사 2.교육목사`) · `housing_note`·`pay_note`·`benefit_note`(자리마다 다른
-    처우를 한 줄로) · 목록 다섯 칸(`항목 하나에 한 가지씩` — 표와 문장을 항목으로 편다).
+    처우를 한 줄로) · `role`(원문 인용이 아니라 짧게 고쳐 쓴 직무명) · `work_days`·`start_timing`
+    (자리가 둘이면 값도 둘이다) · `contact_post` · 목록 다섯 칸(`항목 하나에 한 가지씩`).
     ⚠️ 실측: 목록 칸에서 23개가 어긋났는데 **지어낸 것은 0개**였다. `각1통`을 `1통` 둘로
     나누고 표의 `공통` 열을 항목마다 붙인 것들이라 **모델이 옳았다** — 시켜놓고 벌하지 않는다.
 
@@ -313,14 +321,13 @@ def supports(value: StrEnum, evidence: str, *, title: str = "") -> bool:
     entry = _SUPPORTING_WORDS.get(value)
     if entry is None:
         return True
-    required, excluded = entry
     squeezed = _squeeze(evidence).lower()
-    if any(word in squeezed for word in excluded):
+    if any(word in squeezed for word in entry.excluded):
         return False
-    if not any(word in squeezed for word in required):
+    if not any(word in squeezed for word in entry.required):
         return False
     if value in _NEEDS_RECRUITING_WORD:
-        return _recruits(squeezed) or _title_recruits(title, required)
+        return _recruits(squeezed) or _title_recruits(title, entry.required)
     return True
 
 
@@ -357,7 +364,7 @@ class _Checker:
     def text(self, name: str, value: str | None) -> str | None:
         if value is None or self._found(value):
             return value
-        return None if self._note((Dropped(name, value),)) else value
+        return None if self._scrubbed_away((Dropped(name, value),)) else value
 
     def digits(self, name: str, value: str | None) -> str | None:
         """전화번호 — **숫자만** 견준다. 프롬프트가 `010-2720-구육구이`를 되돌리라 시켜서
@@ -374,7 +381,7 @@ class _Checker:
         haystacks = [_digits_of_source(part) for part in self.parts]
         if wanted and all(any(number in hay for hay in haystacks) for number in wanted):
             return value
-        return None if self._note((Dropped(name, value),)) else value
+        return None if self._scrubbed_away((Dropped(name, value),)) else value
 
     def email(self, name: str, value: str | None) -> str | None:
         """이메일 — **주소만 하나씩** 견준다. 붙어 있는 담당자 이름은 보지 않는다.
@@ -389,7 +396,7 @@ class _Checker:
         wanted = [_alnum(token) for token in _EMAIL_TOKEN.findall(_romanized(value))]
         if wanted and all(token in haystack for token in wanted):
             return value
-        return None if self._note((Dropped(name, value),)) else value
+        return None if self._scrubbed_away((Dropped(name, value),)) else value
 
     def punctuated(self, name: str, value: str | None) -> str | None:
         """링크 — **글자와 숫자만** 견준다(`https://`·`.`·`,`를 지운다).
@@ -405,7 +412,7 @@ class _Checker:
         bare = _SCHEME.sub("", _PARENTHESES.sub("", value))
         if _alnum(_romanized(bare)) in _alnum(_romanized(self.haystack)):
             return value
-        return None if self._note((Dropped(name, value),)) else value
+        return None if self._scrubbed_away((Dropped(name, value),)) else value
 
     def tally(self, name: str, value: str | None) -> None:
         """비우지 않고 **세기만** 한다.
@@ -425,7 +432,7 @@ class _Checker:
             return None
         if self._grounded(evidence) and supports(chosen, evidence or "", title=self.title):
             return chosen
-        return None if self._note((Dropped(name, chosen.value, evidence),)) else chosen
+        return None if self._scrubbed_away((Dropped(name, chosen.value, evidence),)) else chosen
 
     def choices[E: StrEnum](
         self, name: str, chosen: tuple[E, ...], evidence: Sequence[str]
@@ -445,7 +452,7 @@ class _Checker:
                 dropped.append(Dropped(name, value.value, found))
         if not dropped:
             return chosen
-        return tuple(kept) if self._note(tuple(dropped)) else chosen
+        return tuple(kept) if self._scrubbed_away(tuple(dropped)) else chosen
 
     def grounds(self, name: str, evidence: str | None) -> bool:
         """근거가 원문에 있나. 없으면 세어 두고 거짓을 준다(부르는 쪽이 파생값을 비운다).
@@ -457,7 +464,7 @@ class _Checker:
             return True
         if self._found(evidence):
             return True
-        return not self._note((Dropped(name, evidence),))
+        return not self._scrubbed_away((Dropped(name, evidence),))
 
     def report(self) -> VerifyReport:
         return VerifyReport(
@@ -476,8 +483,8 @@ class _Checker:
         squeezed = _squeeze(value)
         return bool(squeezed) and squeezed in self.haystack
 
-    def _note(self, dropped: Sequence[Dropped]) -> bool:
-        """비울 수 있으면 **버린 값까지** 적고 True. 아니면 개수만 세고 False(값을 그대로 둔다).
+    def _scrubbed_away(self, dropped: Sequence[Dropped]) -> bool:
+        """이 값들을 **비웠나**. 비울 수 있으면 버린 값까지 적고 True, 아니면 개수만 세고 False.
 
         ⚠️ 버린 값을 남기는 이유: 칸 이름만 있으면 "모델이 뭐라고 답했길래 지웠나"를 알 수
         없어 **과검을 검수할 방법이 없다**(실측 2026-08-14 · 전화번호·교단이 왜 지워졌는지
@@ -489,15 +496,6 @@ class _Checker:
         self._scrubbed.extend(item.field for item in dropped)
         self._dropped.extend(dropped)
         return True
-
-
-def _haystack(record: SourceData) -> str:
-    """`_source_parts`를 한 덩어리로 이은 것. 글자 대조가 쓴다.
-
-    ⚠️ 칸 사이를 **값에 나올 수 없는 글자**로 막는다. 공백으로 잇고 공백을 지우면 칸이 붙어,
-    본문 끝 `…1685`와 제목 앞 `성원교회`가 이어져 `1685성원교회`가 "있다"가 된다(실측).
-    """
-    return _BOUNDARY.join(_source_parts(record))
 
 
 def _source_parts(record: SourceData) -> tuple[str, ...]:
@@ -545,15 +543,17 @@ def _phone_numbers(value: str) -> tuple[str, ...]:
 
 
 def _romanized(text: str) -> str:
-    """한글로 쓴 도메인을 영문으로. **원문 쪽에만** 건다(`_KOREAN_DOMAINS`)."""
+    """한글로 쓴 도메인을 영문으로. **양쪽에 건다** — 모델이 시킨 대로 되돌린 답과 원문이
+    같아지도록.
+
+    ⚠️ 바로 아래 `_KOREAN_DIGITS`와 **정반대**다. 숫자 낱말(`사`·`영`)은 이름에 흔해서 답에
+    걸면 `김준수 목사`가 숫자로 둔갑하지만, 도메인 낱말(`네이버`·`한메일`)은 이름에 나오지
+    않는다. 원문 `네이버-고덕호수교회.com`을 그대로 옮긴 답이 한쪽만 바꿔서 지워졌다(실측
+    2026-08-14 PGAK/436538).
+    """
     for hangul, roman in _KOREAN_DOMAINS.items():
         text = text.replace(hangul, roman)
     return text
-
-
-def _digits(text: str) -> str:
-    """모델 답에서 뽑는 숫자열. **한글은 되돌리지 않는다**(위 `_KOREAN_DIGITS` 경고)."""
-    return _DIGITS.sub("", _ascii_forms(text))
 
 
 def _digits_of_source(text: str) -> str:
