@@ -85,14 +85,14 @@ minjob_ingest/                 ★ 패키지 (= import 이름)
 ├── clock.py                  KST·ISO8601·date 생성/직렬화 단일 창구
 ├── paths.py                  리포 기준 경로 (한 곳에서만 계산)
 ├── settings.py               env 로딩 1곳 (import 시점 캡처 금지)
-├── sources/registry.py       소스 레지스트리 로드·검증  (+ adapters/ 예정 = 게시판별 파싱)
+├── sources/{registry.py, adapters/}   소스 레지스트리 · 게시판 1곳 = 파일 1개(30곳)
 ├── fetch/{client.py, robots.py}   전송 단일 창구 · robots 준수
 ├── store/{base.py, serde.py, json_store.py}   Store 프로토콜 · 행 변환 · JSON 구현
 │                                              (+ supabase_store.py 예정 = 1-6)
 ├── lib/gemini.py             Vertex 클라이언트 (재시도는 SDK 설정)
 └── pipeline/                collect·structure·extraction(프롬프트·스키마)·normalize(변환)·
-                            verify(원문 대조)·media(그림·PDF 바이트)
-                            (+ run·denomination·dedup 예정)
+                            verify(원문 대조)·media(그림·PDF 바이트)·health·snapshot
+                            (+ denomination·dedup 예정 = ROADMAP 1-2 규칙 후처리·1-3)
 config/
 ├── sources.json              ★ 소스 레지스트리 (전송 정본 · 라이브 검증값)
 └── heresy-ref.json           이단 참고 목록 (사람이 관리 · git 이력 = 감사)
@@ -101,7 +101,7 @@ tests/{fixtures/ ← gitignored, test_*.py}
 data/                         로컬 저장소 (gitignored)
 ```
 
-> ⚠️ 위 트리에서 `sources/adapters`·`fetch`·`pipeline`·`store`·`lib`는 **아직 없는 목표 구조**다. 드리프트할 수 있으니 "계약"으로 신뢰하지 말 것.
+> ⚠️ 트리는 드리프트할 수 있으니 "계약"으로 신뢰하지 말 것 — 실제 파일이 정본이다.
 >
 > **커밋하지 않는 것**: `.venv/`·`__pycache__/`·`minjob_ingest.egg-info/`·`.mypy_cache/`·`.ruff_cache/`·`.pytest_cache/`·`data/` (자동생성물 — 지워도 도구가 다시 만든다) + **`tests/fixtures/`**(게시판 HTML 원본 · `snapshot`으로 다시 받는다). 전부 `.gitignore`에 있다.
 >
@@ -127,9 +127,17 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/minjob-ingest snapshot [--source K]  # fixture용 HTML 확보 (게시판 요청)
 .venv/bin/minjob-ingest collect --months 3     # 공고 수집 (게시판 요청 · 무료)
 .venv/bin/minjob-ingest structure --limit 20   # AI 구조화 (⚠️ 유료 · 범위 필수 · `--lite`로 값싼 모델)
+.venv/bin/minjob-ingest structure --all --workers 8   # 전량 (게시판 8곳씩 동시 · 게시판 안은 순차)
 ```
 ⚠️ **`structure`는 `--limit N` 또는 `--all`이 없으면 실행을 거부한다** — 유료 호출이 옵션 없이 전량으로 도는 경로를 두지 않는다. 확인용은 `--dry-run`(호출은 하되 저장 안 함).
 아직 없는 명령(Phase 1): `dedup`·`daily`·`backfill`·`status`.
+
+**일회성 스크립트**(CLI 명령이 아니다 · `scripts/`)
+```bash
+.venv/bin/python scripts/reset_structure.py --all --write   # 판정을 지워 재구조화 가능하게
+.venv/bin/python scripts/migrate_posted_on.py --write       # 옛 원장(version 1) → version 2
+```
+⚠️ **되돌리기 스크립트 없이 전량 저장하지 않는다** — `structured_at`은 앞으로만 가서, 저장 뒤에 프롬프트 문제를 발견하면 고친 것을 적용할 방법이 없다.
 
 > ⚠️ **CLI 명령을 추가·변경하면 `docs/RUNBOOK.md`를 같이 고친다.** 운영자는 그 파일만 보고 실행한다 — 여기에만 적으면 전달되지 않는다.
 
@@ -190,6 +198,9 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 
 ### Runner (`pipeline/run.py`) · CLI (`cli.py`)
 - 소스 **간 병렬 · 소스 내 순차**(SPEC §3). **에러 격리** — 한 소스 실패가 나머지를 멈추지 않는다.
+- ⚠️ **구조화도 같은 모양이다**(`structure_pending` · `--workers`): 게시판 하나를 스레드 하나가 통째로 맡는다. 그래서 그 게시판의 접속 클라이언트(요청 간격·세션)를 아무도 같이 건드리지 않아 fetch 층에 잠금이 필요 없다. 공유되는 것은 저장(`JsonStore` 락)과 집계뿐이다.
+- ⚠️ **유료 상한(`--limit`)은 부르기 전에 자리를 잡는다** — 부르고 나서 세면 게시판 수만큼 넘겨 청구된다. Gemini를 부르지 않은 판정(빈 공고·그림 대기)은 자리를 돌려준다.
+- ⚠️ **저장이 연속 5번 실패하면 실행을 멈춘다** — 원장이 통째로 깨지면 글 단위 격리가 독이 되어 3,000번 과금하고 아무것도 저장하지 못한다. 흩어진 손상 행은 성공 한 번이 누적을 지워 끝까지 돈다.
 - 실행 요약(`crawl_run`)·소스 상태(`source_health`) 기록, **0건·급감 경보 판정도 여기**(기준은 SPEC §7).
 - CLI 모드: `daily`(증분) · `backfill`(로컬 1회 · 범위는 SPEC §4) · `collect`/`structure`(단계별) · `status` · `check-gemini` · `list-sources`. **운영자용 사용법은 RUNBOOK에 기록한다.**
 
