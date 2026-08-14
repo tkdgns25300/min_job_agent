@@ -161,6 +161,23 @@ def _enum_values[E: StrEnum](enum_type: type[E], *, at_least: int = 0) -> types.
     )
 
 
+def _enum_pairs[E: StrEnum](enum_type: type[E]) -> types.Schema:
+    """값과 그 근거를 **한 항목에** 담는 배열. 값이 여럿일 때 근거가 밀리지 않는다."""
+    return types.Schema(
+        type=types.Type.ARRAY,
+        items=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "value": types.Schema(
+                    type=types.Type.STRING, enum=[member.value for member in enum_type]
+                ),
+                "evidence": types.Schema(type=types.Type.STRING, max_length=MAX_SHORT_TEXT_CHARS),
+            },
+            required=["value", "evidence"],
+        ),
+    )
+
+
 def _text_values() -> types.Schema:
     return types.Schema(
         type=types.Type.ARRAY,
@@ -184,13 +201,16 @@ _PROPERTIES: Final[Mapping[str, types.Schema]] = {
     "job_kind": _enum_values(JobKind, at_least=1),
     "role": _text(),
     # 공고
-    "position": _enum_values(Position),
+    #: ⚠️ **직분만 값·근거를 한 쌍으로 받는다.** 여러 자리를 뽑는 공고가 흔한데(CSU 10건 중
+    #: 4건) 근거를 하나만 받으면 그 한 조각이 나머지를 뒷받침하지 못해 **맞는 직분이 통째로
+    #: 지워진다**(실측: `부목사·전도사·강도사·기타` → `기타`만 남음). 쌍으로 받으면 어긋날 수
+    #: 없다 — 배열 두 개를 순서로 맞추는 방식은 모델이 밀려 쓰면 조용히 틀린다.
+    "position": _enum_pairs(Position),
     "department": _enum_value(Department),
     "employment_type": _enum_value(EmploymentType),
     "qualification": _enum_value(Qualification),
-    #: 위 넷을 **왜 그렇게 골랐나** — 원문에서 오려낸 근거. 저장하지 않고 검산에만 쓴다
+    #: 위 셋을 **왜 그렇게 골랐나** — 원문에서 오려낸 근거. 저장하지 않고 검산에만 쓴다
     #: (`pipeline/verify.py`). 원문에 없으면 그 칸을 비운다.
-    "position_evidence": _text(),
     "department_evidence": _text(),
     "employment_type_evidence": _text(),
     "qualification_evidence": _text(),
@@ -249,6 +269,10 @@ _PROMPT_TEMPLATE: Final = """\
 - position: **뽑는다고 적힌 직분만** 담는다. 담임·위임·원로 목사=SENIOR_PASTOR /
   부목사·전임목사·교육목사·그냥 `목사`=ASSOCIATE_PASTOR /
   전도사·여전도사·교육전도사=EVANGELIST / 강도사=LICENSED_MINISTER / 그 밖=ETC
+  **항목마다 value와 evidence를 함께** 담는다 — evidence는 그 직분을 뽑는다고 적힌 대목을
+  원문에서 **글자 그대로** 오려낸 것이다
+  (`{{value: EVANGELIST, evidence: "② 전임여전도사: 교구 및 새가족사역 (1명)"}}`).
+  ⚠️ 직분마다 근거가 다르다. 한 대목을 여러 직분에 돌려 쓰지 말고 **각자 적힌 자리**를 오려낸다.
   ⚠️ 공고에 나오는 직분 이름이 다 모집 직분은 아니다 — 연락처·인사말·교회 소개에 적힌
   직분(`문의: 담임목사 김○○`)은 **뽑는 자리가 아니다**. `동역자`·`사역자`·`교역자`도
   자리를 부르는 총칭이라 직분이 아니다.
@@ -269,15 +293,19 @@ _PROMPT_TEMPLATE: Final = """\
 - headcount: 모집 인원과 **자리 구성을 통째로**(`1.부목사(전임) 2.교육목사`). 숫자만 남기지 않는다.
 - housing_provided: 준다=true / 없다=false / **이야기가 없으면 null**
   (모르는 것을 false로 두지 않는다).
-- *_evidence: 위 넷을 그렇게 고른 **근거를 원문에서 오려내** 넣는다
-  (`position_evidence: "부목사 1명(전임or 파트)"`). ⚠️ 고쳐 쓰지 말고 **글자 그대로** 옮긴다 —
-  원문에 없는 근거는 코드가 걸러내고 그 칸이 비워진다. 값이 없으면 근거도 null.
-- role: GENERAL일 때 무슨 일인지 짧게 — `방송·미디어·음향` / `행정·사무·회계` /
-  `시설·관리·운전·주방` / 그 밖은 `기타`. MINISTRY만 있으면 null.
+- *_evidence: department·employment_type·qualification을 그렇게 고른 **근거를 원문에서
+  오려내** 넣는다(`employment_type_evidence: "전임 부목사 1명"`). ⚠️ 고쳐 쓰지 말고 **글자
+  그대로** 옮긴다 — 원문에 없는 근거는 코드가 걸러내고 그 칸이 비워진다. 값이 없으면 null.
+- role: GENERAL일 때 무슨 일인지 **원문 표현을 살려 20자 안으로**. 정해진 목록이 아니다 —
+  공고가 부르는 이름을 그대로 쓴다(`관리집사`·`사무간사`·`음향간사`·`영상간사`·`차량운전 기사`·
+  `방과후 교실 교사`·`행정총무간사`·`편집 직원`). 여러 일이면 한 문자열로 잇는다(`방송·행정`).
+  MINISTRY만 있으면 null.
 - deadline: 마감일을 **원문 표기 그대로**(`2026-08-31`·`2026년 8월 31일까지`).
   ⚠️ 연도가 없으면(`8/31`) null — 어느 해인지 지어내지 않는다.
 - pay_amount: 사례비 **금액 표현만**(`연봉 3,200이상`·`월 250만원`). ⚠️ 계산하지 않고,
   `연봉`·`월` 같은 말이 붙어 있으면 **떼지 않는다**.
+- work_days: 나오는 요일·근무 형태를 **원문 표기 그대로**. 자리마다 다르면 원문 순서대로
+  이어 쓴다(`준전임- 수, 금, 토, 주일 / 파트- 토, 주일`) — 하나만 골라 버리지 않는다.
 - pay_note: 금액이 아닌 사례비 표현(`교회 내규에 따름`).
 - housing_note: 사택 조건 그대로(`사택 제공`·`24평 아파트`·`전세 지원 5천만원`).
 - benefit_note: 사례비·사택 **말고** 그 밖 처우(`4대보험`·`상여금 200%`·`연차 15일`).
@@ -334,7 +362,9 @@ class Evidence:
     스키마를 고쳐야 한다. 구조화하는 순간 `pipeline/verify.py`가 검사하는 데만 쓰고 버린다.
     """
 
-    position: str | None = None
+    #: ⚠️ 직분만 **값마다 하나씩**이다(`position[i]`의 근거가 `position_items[i]`). 여러 자리를
+    #: 뽑는 공고에서 근거 하나로 여러 직분을 뒷받침할 수 없다.
+    position_items: tuple[str, ...] = ()
     department: str | None = None
     employment_type: str | None = None
     qualification: str | None = None
@@ -437,13 +467,14 @@ def parse_extraction(payload: str) -> Extraction:
     #    없는 변환을 모델에 맡기면 같은 글자에서 실행마다 다른 값이 나온다.
     location = _short_text(decoded, "location")
     pay_amount = _short_text(decoded, "pay_amount")
+    positions, position_evidence = _enum_pairs_of(decoded, "position", Position)
     region, city = place_of(location)
     pay_min, pay_max = pay_of(pay_amount)
     return Extraction(
         is_church_recruitment=gate1,
         job_kind=_gate2(decoded, gate1),
         role=_short_text(decoded, "role"),
-        position=_enum_tuple(decoded, "position", Position),
+        position=positions,
         department=_optional_member(decoded, "department", Department),
         employment_type=_optional_member(decoded, "employment_type", EmploymentType),
         qualification=_optional_member(decoded, "qualification", Qualification),
@@ -473,7 +504,7 @@ def parse_extraction(payload: str) -> Extraction:
         contact_link=_short_text(decoded, "contact_link"),
         contact_post=_short_text(decoded, "contact_post"),
         evidence=Evidence(
-            position=_short_text(decoded, "position_evidence"),
+            position_items=position_evidence,
             department=_short_text(decoded, "department_evidence"),
             employment_type=_short_text(decoded, "employment_type_evidence"),
             qualification=_short_text(decoded, "qualification_evidence"),
@@ -484,12 +515,18 @@ def parse_extraction(payload: str) -> Extraction:
     )
 
 
-def _meta_block(raw_meta: Mapping[str, JsonValue]) -> str:
-    lines = [
-        f"- {_META_LABELS.get(key, key)}: {value}"
+def meta_lines(raw_meta: Mapping[str, JsonValue]) -> tuple[tuple[str, str], ...]:
+    """프롬프트에 실을 게시판 필드를 (라벨, 값)으로. **`verify`도 같은 것을 본다** —
+    모델이 오려낸 근거에 라벨이 붙어 오기 때문이다(`verify._haystack`)."""
+    return tuple(
+        (_META_LABELS.get(key, key), str(value))
         for key, value in raw_meta.items()
         if key not in _META_NOISE_KEYS and _has_content(value) and not _points_elsewhere(value)
-    ]
+    )
+
+
+def _meta_block(raw_meta: Mapping[str, JsonValue]) -> str:
+    lines = [f"- {label}: {value}" for label, value in meta_lines(raw_meta)]
     return "" if not lines else "게시판 필드:\n" + "\n".join(lines) + "\n"
 
 
@@ -579,6 +616,31 @@ def _enum_tuple[E: StrEnum](
         except ValueError:
             continue
     return tuple(members)
+
+
+def _enum_pairs_of[E: StrEnum](
+    decoded: Mapping[str, object], key: str, enum_type: type[E]
+) -> tuple[tuple[E, ...], tuple[str, ...]]:
+    """`[{value, evidence}]`를 값 묶음과 근거 묶음으로 가른다 — **같은 자리를 지킨다**.
+
+    허용값 밖 항목은 근거까지 함께 버린다. 한쪽만 버리면 뒤의 값이 남의 근거로 검산된다.
+    """
+    values: list[E] = []
+    evidence: list[str] = []
+    for item in _raw_sequence(decoded, key):
+        if not isinstance(item, dict):
+            raise ExtractionError(f"{key}: 항목이 객체가 아님 ({item!r})")
+        raw = item.get("value")
+        if not isinstance(raw, str):
+            raise ExtractionError(f"{key}: value가 문자열이 아님 ({raw!r})")
+        try:
+            member = enum_type(raw.strip().upper())
+        except ValueError:
+            continue
+        found = item.get("evidence")
+        values.append(member)
+        evidence.append(found.strip() if isinstance(found, str) else "")
+    return tuple(values), tuple(evidence)
 
 
 def _text_tuple(decoded: Mapping[str, object], key: str) -> tuple[str, ...]:

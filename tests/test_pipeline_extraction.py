@@ -60,11 +60,10 @@ def _answer(**overrides: object) -> str:
         "is_church_recruitment": "YES",
         "job_kind": ["MINISTRY"],
         "role": None,
-        "position": ["ASSOCIATE_PASTOR"],
+        "position": [{"value": "ASSOCIATE_PASTOR", "evidence": "전임 사역자 1명"}],
         "department": "YOUTH",
         "employment_type": "FULL_TIME",
         "qualification": "ORDAINED",
-        "position_evidence": "전임 사역자 1명",
         "department_evidence": "중고등부",
         "employment_type_evidence": "전임",
         "qualification_evidence": "안수받은 목사",
@@ -360,7 +359,6 @@ def test_the_output_contract_is_exactly_these_columns() -> None:
             "process_steps",
             "qualification",
             "qualification_evidence",
-            "position_evidence",
             "department_evidence",
             "employment_type_evidence",
             "raw_denomination",
@@ -491,7 +489,15 @@ def test_an_unknown_enum_value_is_dropped_not_failed() -> None:
 
 
 def test_unknown_items_in_a_list_are_dropped_and_the_rest_survive() -> None:
-    extraction = parse_extraction(_answer(position=["ASSOCIATE_PASTOR", "부목사", "EVANGELIST"]))
+    extraction = parse_extraction(
+        _answer(
+            position=[
+                {"value": "ASSOCIATE_PASTOR", "evidence": "부목사 1명"},
+                {"value": "부목사", "evidence": "부목사 1명"},
+                {"value": "EVANGELIST", "evidence": "전도사 1명"},
+            ]
+        )
+    )
 
     assert extraction.position == (Position.ASSOCIATE_PASTOR, Position.EVANGELIST)
 

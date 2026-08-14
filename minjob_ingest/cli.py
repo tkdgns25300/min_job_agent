@@ -70,6 +70,7 @@ from minjob_ingest.pipeline.structure import (
     Verdict,
     structure_pending,
 )
+from minjob_ingest.pipeline.verify import Dropped
 from minjob_ingest.settings import (
     ENV_VERTEX_MODEL,
     ENV_VERTEX_MODEL_LITE,
@@ -703,6 +704,12 @@ class _PreviewFile:
         # ⚠️ 공고 단위로 남겨야 "모델이 null을 줬다"와 "검산이 비웠다"를 구분할 수 있다.
         if result.verified.scrubbed:
             row["scrubbed"] = list(result.verified.scrubbed)
+            # ⚠️ **버린 값까지 남긴다.** 칸 이름만으로는 "모델이 뭐라고 답했길래 지웠나"를
+            #    알 수 없어 과검을 검수할 수 없다 — 실측에서 여기서 검수가 막혔다.
+            row["dropped"] = [
+                {"field": item.field, "value": item.value, "evidence": item.evidence}
+                for item in result.verified.dropped
+            ]
         if result.verified.unchecked:
             row["unchecked"] = dict(result.verified.unchecked_fields)
         if result.draft is not None:
@@ -797,6 +804,11 @@ def _verdict_label(verdict: Verdict) -> str:
             return "그림 대기"
         case Verdict.FAILED:
             return "실패"
+
+
+def _dropped_note(item: Dropped) -> str:
+    """버린 값 한 줄. 근거가 있으면 함께 보여준다 — 값만으로는 왜 떨어졌는지 안 보인다."""
+    return item.value if item.evidence is None else f"{item.value}  ← 근거 {item.evidence!r}"
 
 
 def _print_preview(console: Console, result: StructureResult) -> None:

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Final
@@ -80,6 +81,18 @@ def _extraction(**overrides: object) -> Extraction:
     return Extraction(**base)  # type: ignore[arg-type]
 
 
+def _department_evidence(text: str) -> Evidence:
+    return Evidence(department=text)
+
+
+def _employment_evidence(text: str) -> Evidence:
+    return Evidence(employment_type=text)
+
+
+def _qualification_evidence(text: str) -> Evidence:
+    return Evidence(qualification=text)
+
+
 # ── 원문에 있는 값은 살아남는다 ──────────────────────────────────
 
 
@@ -150,10 +163,10 @@ def test_an_aggregating_note_is_counted_not_dropped() -> None:
 
 
 def test_an_invented_text_field_becomes_empty() -> None:
-    verified, report = verify(_record(), _extraction(work_days="주 6일 근무"))
+    verified, report = verify(_record(), _extraction(start_timing="주 6일 근무"))
 
-    assert verified.work_days is None
-    assert "work_days" in report.scrubbed
+    assert verified.start_timing is None
+    assert "start_timing" in report.scrubbed
 
 
 def test_the_posting_itself_is_never_dropped() -> None:
@@ -172,7 +185,7 @@ def test_a_choice_with_grounded_evidence_survives() -> None:
         _record(),
         _extraction(
             position=(Position.ASSOCIATE_PASTOR,),
-            evidence=Evidence(position="부목사 1명"),
+            evidence=Evidence(position_items=("부목사 1명",)),
         ),
     )
 
@@ -194,7 +207,7 @@ def test_evidence_that_is_not_in_the_source_is_dropped() -> None:
         _record(),
         _extraction(
             position=(Position.SENIOR_PASTOR,),
-            evidence=Evidence(position="담임목사를 청빙합니다"),
+            evidence=Evidence(position_items=("담임목사를 청빙합니다",)),
         ),
     )
 
@@ -212,7 +225,7 @@ def test_evidence_that_does_not_support_the_value_is_dropped() -> None:
         _record(),
         _extraction(
             position=(Position.SENIOR_PASTOR,),
-            evidence=Evidence(position="부목사 1명"),
+            evidence=Evidence(position_items=("부목사 1명",)),
         ),
     )
 
@@ -224,7 +237,7 @@ def test_only_the_unsupported_value_leaves_a_multi_valued_choice() -> None:
         _record(),
         _extraction(
             position=(Position.ASSOCIATE_PASTOR, Position.SENIOR_PASTOR),
-            evidence=Evidence(position="부목사 1명"),
+            evidence=Evidence(position_items=("부목사 1명",)),
         ),
     )
 
@@ -235,31 +248,37 @@ def test_etc_needs_no_supporting_word() -> None:
     """`그 밖`이라 뒷받침할 낱말이 없다 — 근거가 원문에 있으면 통과."""
     verified, _ = verify(
         _record(),
-        _extraction(position=(Position.ETC,), evidence=Evidence(position="부목사 1명")),
+        _extraction(position=(Position.ETC,), evidence=Evidence(position_items=("부목사 1명",))),
     )
 
     assert verified.position == (Position.ETC,)
 
 
 @pytest.mark.parametrize(
-    ("field_name", "value", "evidence_text"),
+    ("field_name", "value", "evidence_text", "with_evidence"),
     [
-        ("department", Department.YOUTH, "중고등부"),
-        ("employment_type", EmploymentType.FULL_TIME, "전임"),
-        ("qualification", Qualification.SEMINARIAN, "총회인준 신학대학원 졸업자"),
+        ("department", Department.YOUTH, "중고등부", _department_evidence),
+        ("employment_type", EmploymentType.FULL_TIME, "전임", _employment_evidence),
+        (
+            "qualification",
+            Qualification.SEMINARIAN,
+            "총회인준 신학대학원 졸업자",
+            _qualification_evidence,
+        ),
     ],
     ids=["department", "employment_type", "qualification"],
 )
 def test_single_valued_choices_are_checked_the_same_way(
-    field_name: str, value: object, evidence_text: str
+    field_name: str,
+    value: object,
+    evidence_text: str,
+    with_evidence: Callable[[str], Evidence],
 ) -> None:
     grounded, _ = verify(
-        _record(),
-        _extraction(**{field_name: value}, evidence=Evidence(**{field_name: evidence_text})),
+        _record(), _extraction(**{field_name: value}, evidence=with_evidence(evidence_text))
     )
     invented, report = verify(
-        _record(),
-        _extraction(**{field_name: value}, evidence=Evidence(**{field_name: "원문에 없는 근거"})),
+        _record(), _extraction(**{field_name: value}, evidence=with_evidence("원문에 없는 근거"))
     )
 
     assert getattr(grounded, field_name) is value
@@ -331,10 +350,10 @@ def test_a_posting_with_a_poster_is_never_scrubbed() -> None:
     record = _record(image_urls=("https://e.kr/poster.png",))
 
     verified, report = verify(
-        record, _extraction(work_days="주 5일", church_name="지어낸교회"), media_sent=True
+        record, _extraction(start_timing="9월 첫 주", church_name="지어낸교회"), media_sent=True
     )
 
-    assert verified.work_days == "주 5일"
+    assert verified.start_timing == "9월 첫 주"
     assert verified.church_name == "지어낸교회"
     assert report.scrubbed == ()
     assert report.unverifiable == 2
@@ -345,9 +364,9 @@ def test_a_posting_with_a_pdf_is_never_scrubbed() -> None:
         attachments=(Attachment(name="청빙공고문.pdf", url="https://e.kr/a.pdf"),),
     )
 
-    verified, report = verify(record, _extraction(work_days="주 5일"), media_sent=True)
+    verified, report = verify(record, _extraction(start_timing="9월 첫 주"), media_sent=True)
 
-    assert verified.work_days == "주 5일"
+    assert verified.start_timing == "9월 첫 주"
     assert report.unverifiable == 1
 
 
@@ -355,10 +374,10 @@ def test_a_hwp_attachment_does_not_exempt_the_posting() -> None:
     """⚠️ HWP는 모델에 보내지 않는다 — 거기서 왔을 수가 없으니 면제 사유가 아니다."""
     record = _record(attachments=(Attachment(name="이력서양식.hwp", url="https://e.kr/a.hwp"),))
 
-    verified, report = verify(record, _extraction(work_days="주 5일"))
+    verified, report = verify(record, _extraction(start_timing="9월 첫 주"))
 
-    assert verified.work_days is None
-    assert "work_days" in report.scrubbed
+    assert verified.start_timing is None
+    assert "start_timing" in report.scrubbed
 
 
 # ── 검산하지 않는 칸 ─────────────────────────────────────────────
@@ -461,30 +480,26 @@ def test_a_value_with_no_evidence_field_is_not_blamed() -> None:
 
 
 @pytest.mark.parametrize(
-    ("value", "evidence_text"),
+    ("field_name", "value", "evidence_text", "with_evidence"),
     [
-        (Department.YOUTH, "총회인준 신학대학원 졸업자"),
-        (EmploymentType.FULL_TIME, "중고등부"),
-        (Qualification.ORDAINED, "중고등부"),
+        ("department", Department.YOUTH, "총회인준 신학대학원 졸업자", _department_evidence),
+        ("employment_type", EmploymentType.FULL_TIME, "중고등부", _employment_evidence),
+        ("qualification", Qualification.ORDAINED, "중고등부", _qualification_evidence),
     ],
     ids=["부서 ← 자격 문구", "고용형태 ← 부서 문구", "자격 ← 부서 문구"],
 )
 def test_evidence_from_the_wrong_field_does_not_support_a_choice(
-    value: object, evidence_text: str
+    field_name: str,
+    value: object,
+    evidence_text: str,
+    with_evidence: Callable[[str], Evidence],
 ) -> None:
     """⚠️ 근거가 **원문에 있기만 하면** 통과하던 구멍을 막는다.
 
     모델이 아무 문장이나 근거로 붙여도 그 칸의 낱말이 없으면 뒷받침하지 못한다.
     """
-    field_name = {
-        "Department": "department",
-        "EmploymentType": "employment_type",
-        "Qualification": "qualification",
-    }[type(value).__name__]
-
     verified, report = verify(
-        _record(),
-        _extraction(**{field_name: value}, evidence=Evidence(**{field_name: evidence_text})),
+        _record(), _extraction(**{field_name: value}, evidence=with_evidence(evidence_text))
     )
 
     assert getattr(verified, field_name) is None
@@ -553,7 +568,8 @@ def test_a_contact_line_does_not_justify_a_senior_pastor() -> None:
     verified, report = verify(
         record,
         _extraction(
-            position=(Position.SENIOR_PASTOR,), evidence=Evidence(position="담임목사: 박은제")
+            position=(Position.SENIOR_PASTOR,),
+            evidence=Evidence(position_items=("담임목사: 박은제",)),
         ),
     )
 
@@ -568,7 +584,8 @@ def test_a_real_senior_pastor_call_survives() -> None:
     verified, report = verify(
         record,
         _extraction(
-            position=(Position.SENIOR_PASTOR,), evidence=Evidence(position="담임목사를 청빙합니다")
+            position=(Position.SENIOR_PASTOR,),
+            evidence=Evidence(position_items=("담임목사를 청빙합니다",)),
         ),
     )
 
@@ -584,16 +601,21 @@ def test_a_real_senior_pastor_call_survives() -> None:
 
 #: 비운다 — 원문에서 한 조각을 그대로 옮기는 칸.
 _BLANKED: Final = (
-    "role",
     "start_timing",
-    "work_days",
     "church_name",
     "raw_denomination",
     "contact_email",
 )
 
 #: 세기만 한다 — 프롬프트가 여러 조각을 이으라고 시킨 칸.
+#: ⚠️ `role`은 조립이 아니라 **짧게 고쳐 쓴 직무명**이라 여기 있다(min_job DATA.md §3: 자유
+#: 텍스트 · 통제 목록 아님). 글자 대조로 비우면 `교회 시설관리`를 `시설·관리`로 줄인 맞는
+#: 답이 지워지고 fallback `기타`로 떨어진다(실측 CSU/1117858).
 _COUNTED: Final = (
+    "role",
+    #: ⚠️ 준전임·파트가 근무일을 따로 적는 공고가 54건이다 — 한 칸에 담으려면 이을 수밖에
+    #: 없고, 이으라고 시킨 것도 프롬프트다.
+    "work_days",
     "headcount",
     "housing_note",
     "pay_note",
@@ -683,9 +705,219 @@ def test_a_senior_pastor_line_does_not_justify_an_associate() -> None:
         record,
         _extraction(
             position=(Position.ASSOCIATE_PASTOR,),
-            evidence=Evidence(position="담임목사를 청빙합니다"),
+            evidence=Evidence(position_items=("담임목사를 청빙합니다",)),
         ),
     )
 
     assert verified.position == ()
     assert "position" in report.scrubbed
+
+
+# ── 직분마다 자기 근거 ───────────────────────────────────────────
+
+
+def test_each_position_is_checked_against_its_own_evidence() -> None:
+    """⚠️ 근거 하나로 여러 직분을 보던 때는 **맞는 직분이 통째로 지워졌다**(실측 CSU 10건 중 4건).
+
+    한 조각이 부목사·전도사·강도사를 동시에 뒷받침할 수 없어 `기타`만 남았다.
+    """
+    record = _record(
+        raw_text=(
+            "1.청빙분야 ① 전임부목사: 교구 및 청소년부 (1명)"
+            " ② 전임여전도사: 교구 및 새가족사역 (1명)"
+        )
+    )
+
+    verified, report = verify(
+        record,
+        _extraction(
+            position=(Position.ASSOCIATE_PASTOR, Position.EVANGELIST),
+            evidence=Evidence(
+                position_items=(
+                    "① 전임부목사: 교구 및 청소년부 (1명)",
+                    "② 전임여전도사: 교구 및 새가족사역 (1명)",
+                )
+            ),
+        ),
+    )
+
+    assert verified.position == (Position.ASSOCIATE_PASTOR, Position.EVANGELIST)
+    assert report.scrubbed == ()
+
+
+def test_only_the_position_whose_evidence_fails_is_dropped() -> None:
+    """맞는 값은 남고 근거 없는 값만 떨어진다 — 하나가 나머지를 끌고 내려가지 않는다."""
+    record = _record(raw_text="① 전임부목사: 교구 (1명)")
+
+    verified, report = verify(
+        record,
+        _extraction(
+            position=(Position.ASSOCIATE_PASTOR, Position.EVANGELIST),
+            evidence=Evidence(
+                position_items=("① 전임부목사: 교구 (1명)", "원문에 없는 전도사 근거")
+            ),
+        ),
+    )
+
+    assert verified.position == (Position.ASSOCIATE_PASTOR,)
+    assert report.scrubbed == ("position",)
+
+
+def test_a_position_without_its_own_evidence_is_dropped() -> None:
+    """⚠️ 근거가 값보다 적으면 남는 값은 검산되지 않은 것이다 — 통과시키면 검사가 무의미해진다."""
+    record = _record(raw_text="① 전임부목사: 교구 (1명)")
+
+    verified, report = verify(
+        record,
+        _extraction(
+            position=(Position.ASSOCIATE_PASTOR, Position.EVANGELIST),
+            evidence=Evidence(position_items=("① 전임부목사: 교구 (1명)",)),
+        ),
+    )
+
+    assert verified.position == (Position.ASSOCIATE_PASTOR,)
+    assert report.scrubbed == ("position",)
+
+
+# ── 버린 값을 남긴다 ─────────────────────────────────────────────
+
+
+def test_a_dropped_value_is_recorded_with_what_the_model_answered() -> None:
+    """⚠️ 칸 이름만 남기면 **과검을 검수할 수 없다** — 실측에서 여기서 검수가 막혔다.
+
+    전화번호·교단이 왜 지워졌는지 끝내 못 밝혔고, 원인은 모델 답을 안 남긴 것이었다.
+    """
+    _, report = verify(_record(), _extraction(church_name="원문에없는교회"))
+
+    assert [(item.field, item.value) for item in report.dropped] == [
+        ("church_name", "원문에없는교회")
+    ]
+
+
+def test_a_dropped_choice_carries_the_evidence_that_failed() -> None:
+    """근거까지 남겨야 "값이 틀렸나 근거가 틀렸나"를 가릴 수 있다."""
+    _, report = verify(
+        _record(),
+        _extraction(
+            department=Department.YOUTH, evidence=Evidence(department="원문에 없는 중고등부 근거")
+        ),
+    )
+
+    dropped = report.dropped[0]
+    assert (dropped.field, dropped.value, dropped.evidence) == (
+        "department",
+        Department.YOUTH.value,
+        "원문에 없는 중고등부 근거",
+    )
+
+
+def test_nothing_is_recorded_as_dropped_when_nothing_is_blanked() -> None:
+    """그림 공고는 비우지 않으므로 버린 값도 없다 — 세기만 한 것을 버렸다고 적지 않는다."""
+    _, report = verify(
+        _record(image_urls=("https://example.kr/poster.jpg",)),
+        _extraction(church_name="포스터에만 있는 교회"),
+        media_sent=True,
+    )
+
+    assert report.dropped == ()
+    assert report.unverifiable == 1
+
+
+def test_a_name_beside_a_phone_number_does_not_become_digits() -> None:
+    """⚠️ `목사`의 `사`가 4로, `송준영`의 `영`이 0으로 바뀌던 구멍.
+
+    한글 숫자 되돌리기는 **원문에만** 건다 — 이름을 떼지 말라고 시킨 것도 프롬프트인데
+    답에까지 걸면 전화번호가 늘 "원문에 없다"가 된다(실측 2026-08-14 · 4건 전부 이것).
+    """
+    record = _record(raw_text="문의 김준수 목사 010-2285-1151")
+
+    verified, report = verify(record, _extraction(contact_tel="010-2285-1151 (김준수 목사)"))
+
+    assert verified.contact_tel == "010-2285-1151 (김준수 목사)"
+    assert report.scrubbed == ()
+
+
+def test_a_number_hidden_in_hangul_still_matches_the_answer() -> None:
+    """원문 쪽 되돌리기는 그대로 산다 — 프롬프트가 `구육구이`를 숫자로 펴라고 시킨다."""
+    record = _record(raw_text="연락처 010-2720-구육구이")
+
+    verified, report = verify(record, _extraction(contact_tel="010-2720-9692"))
+
+    assert verified.contact_tel == "010-2720-9692"
+    assert report.scrubbed == ()
+
+
+def test_evidence_quoted_with_the_label_we_showed_the_model_is_accepted() -> None:
+    """⚠️ 모델은 **자기가 본 줄**을 오려낸다 — 게시판 칸은 `모집부서: 장년 교구`로 보여준다.
+
+    원본 값(`장년 교구`)만 대조하면 맞는 답이 지워진다(실측 CSU/1117877).
+    """
+    record = _record(raw_text="교회 소개", raw_meta={"ministry_dept": "장년 교구"})
+
+    verified, report = verify(
+        record,
+        _extraction(
+            department=Department.DISTRICT, evidence=Evidence(department="모집부서: 장년 교구")
+        ),
+    )
+
+    assert verified.department is Department.DISTRICT
+    assert report.scrubbed == ()
+
+
+def test_a_full_width_digit_in_the_source_still_matches() -> None:
+    """⚠️ `\\d`는 전각 숫자(U+FF16)도 세지만 반각과 **글자가 달라** 견주면 어긋난다.
+
+    실측 PUTS/157669: 원문 전화번호 한 자리가 전각이라 맞는 번호가 통째로 지워졌다.
+    """
+    record = _record(raw_text="5. 전화번호 : 010-94\uff160-6018(윤경원 행정목사)")
+
+    verified, report = verify(record, _extraction(contact_tel="010-9460-6018 (윤경원 행정목사)"))
+
+    assert verified.contact_tel == "010-9460-6018 (윤경원 행정목사)"
+    assert report.scrubbed == ()
+
+
+def test_a_full_width_digit_in_the_answer_still_matches() -> None:
+    """반대 방향도 막는다 — 모델이 전각으로 답해도 원문과 견줄 수 있어야 한다."""
+    record = _record(raw_text="전화 010-9460-6018")
+
+    answered = "010-94\uff160-6018"
+
+    verified, report = verify(record, _extraction(contact_tel=answered))
+
+    assert verified.contact_tel == answered
+    assert report.scrubbed == ()
+
+
+def test_a_phone_number_cannot_be_stitched_across_two_fields() -> None:
+    """⚠️ 숫자만 남기면 칸 구분자도 지워진다 — 본문 끝과 다음 칸 앞이 이어붙어 **지어낸
+    번호가 통과**한다. 칸마다 따로 봐야 막힌다."""
+    record = _record(
+        raw_text="자세한 내용은 첨부를 보세요",
+        raw_meta={"phone": "010-2285", "views": "1151"},
+    )
+
+    verified, report = verify(record, _extraction(contact_tel="010-2285-1151"))
+
+    assert verified.contact_tel is None
+    assert report.scrubbed == ("contact_tel",)
+
+
+def test_two_schedules_joined_into_one_field_are_not_blanked() -> None:
+    """⚠️ 준전임과 파트가 근무일을 따로 적는 공고가 **54건**이다.
+
+    한 문자열에 담으려면 이을 수밖에 없는데 그때 지우면 근무일이 통째로 사라진다
+    (실측 PUTS/157668).
+    """
+    record = _record(
+        raw_text=("* 준전임 또는 파트로 지원 가능합니다.\n준전임- 수, 금, 토, 주일\n파트- 토, 주일")
+    )
+
+    verified, report = verify(
+        record, _extraction(work_days="준전임- 수, 금, 토, 주일 / 파트- 토, 주일")
+    )
+
+    assert verified.work_days == "준전임- 수, 금, 토, 주일 / 파트- 토, 주일"
+    assert report.scrubbed == ()
+    assert report.unchecked_fields == {"work_days": 1}

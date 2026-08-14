@@ -28,14 +28,15 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+import unicodedata
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Final
 
 from minjob_ingest.domain import Department, EmploymentType, Position, Qualification
 from minjob_ingest.models import SourceData
-from minjob_ingest.pipeline.extraction import Extraction
+from minjob_ingest.pipeline.extraction import Extraction, meta_lines
 
 #: 근거가 그 값을 **뒷받침하나**. 값마다 (있어야 할 낱말, 있으면 안 되는 낱말)이다.
 #:
@@ -105,8 +106,13 @@ _NOT_ALNUM: Final = re.compile(r"[^0-9A-Za-z가-힣]")
 _SCHEME: Final = re.compile(r"^https?://")
 
 #: 스팸을 피하려 한글로 쓴 숫자(실측 16건 — `010-2720-구육구이`·`010-오18칠-칠칠오오`).
-#: ⚠️ 프롬프트가 이걸 숫자로 되돌리라 시키므로, **원문 쪽도 같이 되돌려야** 견줄 수 있다.
-#: 안 하면 시킨 대로 한 답이 늘 "원문에 없다"가 된다.
+#: ⚠️ 프롬프트가 이걸 숫자로 되돌리라 시키므로, **원문 쪽만** 같이 되돌린다. 안 하면 시킨
+#: 대로 한 답이 늘 "원문에 없다"가 된다.
+#:
+#: ⚠️ **모델 답에는 절대 적용하지 않는다.** 여기 글자들은 이름에 흔해서(`목사`의 `사`=4 ·
+#: `송준영`의 `영`=0) 답에 붙은 담당자 이름이 숫자로 둔갑한다 — 그런데 이름을 떼지 말라고
+#: 시킨 것도 프롬프트다. 실측 2026-08-14: 전화번호 4건이 전부 이것 때문에 지워졌고
+#: (`010-2285-1151 (김준수 목사)` → `010228511514`) 원문에는 멀쩡히 있었다.
 _KOREAN_DIGITS: Final = {
     "공": "0",
     "영": "0",
@@ -123,12 +129,29 @@ _KOREAN_DIGITS: Final = {
 
 
 @dataclass(frozen=True, slots=True)
+class Dropped:
+    """검산이 버린 값 하나. **칸 이름만으로는 과검을 검수할 수 없다**(2026-08-14 실측).
+
+    `field`는 칸, `value`는 모델이 답한 값, `evidence`는 모델이 댄 근거(대문자 값을 고르는
+    칸에만 있다). 코드가 만든 값(사례비·지역·마감)은 `value`에 **그 값을 만든 원문 조각**이
+    들어간다 — 버려진 것이 그 조각이기 때문이다.
+    """
+
+    field: str
+    value: str
+    evidence: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class VerifyReport:
     """한 공고의 검산 결과. **비운 칸을 세어 리포트로 올린다** — 조용히 지우지 않는다."""
 
     #: 비운 **값**마다 그 칸 이름. ⚠️ 칸 단위가 아니라 값 단위다 — `unverifiable`과 단위가
     #: 달라 리포트에서 그림 공고가 세 배 나빠 보이던 문제가 있었다.
     scrubbed: tuple[str, ...] = ()
+    #: 비운 값 하나하나 — **무엇을 왜 버렸나**. `scrubbed`가 개수라면 이건 내용이다.
+    #: ⚠️ `--out` 미리보기에만 실린다. 지어낸 값일 수 있으므로 `review_data`로 가지 않는다.
+    dropped: tuple[Dropped, ...] = ()
     #: 원문에서 못 찾았지만 **비우지 않은** 값의 수. 그림·PDF 공고에서만 생긴다.
     unverifiable: int = 0
     #: 조립 칸에서 원문과 어긋난 **값의 수**. ⚠️ **"잘못이 아니다"가 아니다** — 프롬프트가
@@ -172,7 +195,8 @@ def verify(
     """
     # ⚠️ 면제는 **모델이 실제로 그림을 봤을 때만**이다. URL 목록으로 정하면 `file:///C:\…`만
     #    있는 공고 5건(가져올 수 없어 아무것도 안 보냈다)까지 면제된다.
-    checker = _Checker(haystack=_haystack(record), may_scrub=not media_sent)
+    parts = _source_parts(record)
+    checker = _Checker(haystack=_BOUNDARY.join(parts), parts=parts, may_scrub=not media_sent)
     known = extraction.evidence
     # ⚠️ 코드가 만든 값(사례비·지역)은 **그 근거가 원문에 있을 때만** 남긴다 — 모델이 금액
     #    표현을 지어내면 3200이라는 숫자 자체는 멀쩡해 보여서 아래 검산으로는 안 걸린다.
@@ -181,21 +205,32 @@ def verify(
     date_grounded = checker.grounds("deadline", known.deadline)
     # ⚠️ 조립 칸은 **세기만 한다** — 어긋나는 것이 정상이라 비우면 맞는 값을 잃는다. 그래도
     #    숫자는 남겨 프롬프트를 고쳤을 때 나아졌는지가 리포트에 보이게 한다.
-    for name in ("headcount", "housing_note", "pay_note", "benefit_note", "contact_post"):
+    # ⚠️ `role`은 **원문에서 오려낸 조각이 아니라 짧게 고쳐 쓴 직무명**이다(min_job DATA.md §3:
+    #    자유 텍스트 · 통제 목록 아님). 글자 대조로 비우면 `교회 시설관리`를 `시설·관리`로 줄인
+    #    맞는 답이 지워지고 fallback `기타`로 떨어진다(실측 CSU/1117858).
+    # ⚠️ `work_days`도 조립 칸이다 — 준전임과 파트가 근무일을 따로 적는 공고가 **54건**이고
+    #    한 문자열에 담으려면 이을 수밖에 없다. 프롬프트가 이으라고 시켜놓고 벌하지 않는다.
+    for name in (
+        "role",
+        "work_days",
+        "headcount",
+        "housing_note",
+        "pay_note",
+        "benefit_note",
+        "contact_post",
+    ):
         checker.tally(name, getattr(extraction, name))
     for name in ("requirements", "preferred", "required_docs", "optional_docs", "process_steps"):
         checker.tally_items(name, getattr(extraction, name))
     verified = replace(
         extraction,
-        role=checker.text("role", extraction.role),
         start_timing=checker.text("start_timing", extraction.start_timing),
-        work_days=checker.text("work_days", extraction.work_days),
         church_name=checker.text("church_name", extraction.church_name),
         raw_denomination=checker.text("raw_denomination", extraction.raw_denomination),
         contact_email=checker.text("contact_email", extraction.contact_email),
         contact_tel=checker.digits("contact_tel", extraction.contact_tel),
         contact_link=checker.link("contact_link", extraction.contact_link),
-        position=checker.choices("position", extraction.position, known.position),
+        position=checker.choices("position", extraction.position, known.position_items),
         department=checker.choice("department", extraction.department, known.department),
         employment_type=checker.choice(
             "employment_type", extraction.employment_type, known.employment_type
@@ -242,8 +277,11 @@ class _Checker:
     """
 
     haystack: str
+    #: 칸별 원문. 숫자 대조가 칸을 넘나들지 않게 나눠 둔다(`digits`).
+    parts: tuple[str, ...]
     may_scrub: bool
     _scrubbed: list[str] = field(default_factory=list)
+    _dropped: list[Dropped] = field(default_factory=list)
     _unverifiable: int = 0
     _unchecked: int = 0
     _unchecked_fields: dict[str, int] = field(default_factory=dict)
@@ -251,7 +289,7 @@ class _Checker:
     def text(self, name: str, value: str | None) -> str | None:
         if value is None or self._found(value):
             return value
-        return None if self._note(name, 1) else value
+        return None if self._note((Dropped(name, value),)) else value
 
     def digits(self, name: str, value: str | None) -> str | None:
         """전화번호 — **숫자만** 견준다. 프롬프트가 `010-2720-구육구이`를 되돌리라 시켜서
@@ -260,9 +298,11 @@ class _Checker:
             return None
         # ⚠️ 빈 문자열은 어디에나 있다 — `없음`·`교회로 문의`가 전화번호로 통과하던 구멍.
         wanted = _digits(value)
-        if wanted and wanted in _digits(self.haystack):
+        # ⚠️ **칸마다 따로 본다.** 숫자만 남기면 칸 사이 구분자도 지워져 본문 끝 `…1151`과
+        #    다음 칸 앞 `4…`가 이어져 `11514`가 "있다"가 된다 — 지어낸 번호가 통과하는 길이다.
+        if wanted and any(wanted in _digits_of_source(part) for part in self.parts):
             return value
-        return None if self._note(name, 1) else value
+        return None if self._note((Dropped(name, value),)) else value
 
     def link(self, name: str, value: str | None) -> str | None:
         """지원 링크 — **글자와 숫자만** 견준다(`https://`·`.`·`,`를 지운다).
@@ -273,7 +313,7 @@ class _Checker:
         """
         if value is None or _alnum(_SCHEME.sub("", value)) in _alnum(self.haystack):
             return value
-        return None if self._note(name, 1) else value
+        return None if self._note((Dropped(name, value),)) else value
 
     def tally(self, name: str, value: str | None) -> None:
         """비우지 않고 **세기만** 한다.
@@ -293,19 +333,27 @@ class _Checker:
             return None
         if self._grounded(evidence) and supports(chosen, evidence or ""):
             return chosen
-        return None if self._note(name, 1) else chosen
+        return None if self._note((Dropped(name, chosen.value, evidence),)) else chosen
 
     def choices[E: StrEnum](
-        self, name: str, chosen: tuple[E, ...], evidence: str | None
+        self, name: str, chosen: tuple[E, ...], evidence: Sequence[str]
     ) -> tuple[E, ...]:
-        if not chosen:
+        """값마다 **자기 근거**로 검산한다.
+
+        ⚠️ 근거 하나로 여러 값을 보던 때는 맞는 직분이 통째로 지워졌다(실측 CSU 10건 중 4건 ·
+        `부목사·전도사·강도사·기타` → `기타`). 한 조각이 네 직분을 동시에 뒷받침할 수 없다.
+        """
+        kept: list[E] = []
+        dropped: list[Dropped] = []
+        for index, value in enumerate(chosen):
+            found = evidence[index] if index < len(evidence) else None
+            if self._grounded(found) and supports(value, found or ""):
+                kept.append(value)
+            else:
+                dropped.append(Dropped(name, value.value, found))
+        if not dropped:
             return chosen
-        if not self._grounded(evidence):
-            return () if self._note(name, len(chosen)) else chosen
-        kept = tuple(value for value in chosen if supports(value, evidence or ""))
-        if len(kept) == len(chosen):
-            return chosen
-        return kept if self._note(name, len(chosen) - len(kept)) else chosen
+        return tuple(kept) if self._note(tuple(dropped)) else chosen
 
     def grounds(self, name: str, evidence: str | None) -> bool:
         """근거가 원문에 있나. 없으면 세어 두고 거짓을 준다(부르는 쪽이 파생값을 비운다).
@@ -317,11 +365,12 @@ class _Checker:
             return True
         if self._found(evidence):
             return True
-        return not self._note(name, 1)
+        return not self._note((Dropped(name, evidence),))
 
     def report(self) -> VerifyReport:
         return VerifyReport(
             scrubbed=tuple(self._scrubbed),
+            dropped=tuple(self._dropped),
             unverifiable=self._unverifiable,
             unchecked=self._unchecked,
             unchecked_fields=dict(self._unchecked_fields),
@@ -335,31 +384,49 @@ class _Checker:
         squeezed = _squeeze(value)
         return bool(squeezed) and squeezed in self.haystack
 
-    def _note(self, name: str, dropped: int) -> bool:
-        """비울 수 있으면 이름을 적고 True. 아니면 개수만 세고 False(값을 그대로 둔다)."""
+    def _note(self, dropped: Sequence[Dropped]) -> bool:
+        """비울 수 있으면 **버린 값까지** 적고 True. 아니면 개수만 세고 False(값을 그대로 둔다).
+
+        ⚠️ 버린 값을 남기는 이유: 칸 이름만 있으면 "모델이 뭐라고 답했길래 지웠나"를 알 수
+        없어 **과검을 검수할 방법이 없다**(실측 2026-08-14 · 전화번호·교단이 왜 지워졌는지
+        끝내 못 밝혔다). 저장되는 곳은 `--out` 미리보기 파일뿐이고 `review_data`에는 안 간다.
+        """
         if not self.may_scrub:
-            self._unverifiable += dropped
+            self._unverifiable += len(dropped)
             return False
-        self._scrubbed.extend([name] * dropped)
+        self._scrubbed.extend(item.field for item in dropped)
+        self._dropped.extend(dropped)
         return True
 
 
 def _haystack(record: SourceData) -> str:
-    """대조할 원문 전부 — 본문·제목·게시판 필드·첨부 이름. 공백을 지워 한 덩어리로 둔다.
+    """`_source_parts`를 한 덩어리로 이은 것. 글자 대조가 쓴다.
+
+    ⚠️ 칸 사이를 **값에 나올 수 없는 글자**로 막는다. 공백으로 잇고 공백을 지우면 칸이 붙어,
+    본문 끝 `…1685`와 제목 앞 `성원교회`가 이어져 `1685성원교회`가 "있다"가 된다(실측).
+    """
+    return _BOUNDARY.join(_source_parts(record))
+
+
+def _source_parts(record: SourceData) -> tuple[str, ...]:
+    """대조할 원문을 **칸별로**. 공백을 지워 각각 한 덩어리로 만든다.
 
     ⚠️ 게시판 필드도 넣는다: `CSU`는 교회명·교단·사례비가 본문이 아니라 거기 있다(730건).
     ⚠️ 게시판 필드는 프롬프트가 걸러낸 것(`아래참조`류)까지 전부 넣는다 — 여기는 "모델이
     지어냈나"만 보는 자리이고, 무엇을 보여줄지는 프롬프트가 이미 정했다.
+
+    ⚠️ **프롬프트가 붙이는 한글 라벨까지 넣는다.** 모델은 자기가 본 줄을 그대로 오려내므로
+    근거가 `모집부서: 장년 교구`로 온다 — 원본 값(`장년 교구`)만 보면 "원문에 없다"가 되어
+    맞는 답이 지워진다(실측 2026-08-14 CSU/1117877 department·qualification).
     """
     parts = [
         record.raw_text,
         record.title,
         *(str(value) for value in record.raw_meta.values() if value is not None),
+        *(f"{label}: {value}" for label, value in meta_lines(record.raw_meta)),
         *(item.name for item in record.attachments),
     ]
-    # ⚠️ 칸 사이를 **값에 나올 수 없는 글자**로 막는다. 공백으로 잇고 공백을 지우면 칸이 붙어,
-    #    본문 끝 `…1685`와 제목 앞 `성원교회`가 이어져 `1685성원교회`가 "있다"가 된다(실측).
-    return _BOUNDARY.join(_squeeze(part) for part in parts)
+    return tuple(_squeeze(part) for part in parts)
 
 
 def _squeeze(text: str) -> str:
@@ -372,6 +439,17 @@ def _alnum(text: str) -> str:
 
 
 def _digits(text: str) -> str:
-    """전화번호를 견줄 숫자열. 한글로 가린 숫자를 되돌린 뒤 숫자만 남긴다."""
-    restored = "".join(_KOREAN_DIGITS.get(char, char) for char in text)
+    """모델 답에서 뽑는 숫자열. **한글은 되돌리지 않는다**(위 `_KOREAN_DIGITS` 경고)."""
+    return _DIGITS.sub("", _ascii_forms(text))
+
+
+def _digits_of_source(text: str) -> str:
+    """원문에서 뽑는 숫자열. 한글로 가린 숫자를 되돌린 **뒤** 숫자만 남긴다."""
+    restored = "".join(_KOREAN_DIGITS.get(char, char) for char in _ascii_forms(text))
     return _DIGITS.sub("", restored)
+
+
+def _ascii_forms(text: str) -> str:
+    r"""전각 숫자를 반각으로. ⚠️ `\d`는 전각도 숫자로 세지만 **글자가 달라** 견주면 어긋난다 —
+    실측 PUTS/157669는 전화번호 한 자리가 전각(U+FF16)이라 맞는 번호가 통째로 지워졌다."""
+    return unicodedata.normalize("NFKC", text)
