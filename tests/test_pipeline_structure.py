@@ -21,6 +21,7 @@ import pytest
 from minjob_ingest.clock import KST
 from minjob_ingest.domain import (
     Confidence,
+    Denomination,
     DenominationSource,
     Department,
     EmploymentType,
@@ -108,11 +109,14 @@ def _source_data(
     )
 
 
-def _extraction(gate1: IsChurchRecruitment = IsChurchRecruitment.YES) -> Extraction:
+def _extraction(
+    gate1: IsChurchRecruitment = IsChurchRecruitment.YES, **overrides: object
+) -> Extraction:
     return Extraction(
         is_church_recruitment=gate1,
         church_name="점촌제일교회",
         description="전임 사역자를 청빙합니다.",
+        **overrides,  # type: ignore[arg-type]
     )
 
 
@@ -182,13 +186,39 @@ def test_the_draft_inherits_the_collect_run() -> None:
     assert draft.source_url == record.source_url
 
 
-def test_the_first_pass_cannot_claim_a_denomination_or_confidence() -> None:
-    """1단계는 4필드뿐이라 승격 근거가 없다 — `LOW` + 교단 `unknown`이어야 한다."""
+def test_a_posting_that_never_names_its_denomination_stays_unknown() -> None:
+    """⚠️ 교단은 **명시된 것만** 확정한다(SPEC §5.3 ①). 없으면 `UNKNOWN`이고 지어내지 않는다."""
     draft = build_draft(_source_data(), _extraction())
 
     assert draft.confidence is Confidence.LOW
     assert draft.denomination_source is DenominationSource.UNKNOWN
-    assert draft.denomination is None
+    assert draft.denomination is Denomination.UNKNOWN
+    assert draft.denomination_evidence is None
+
+
+def test_a_stated_denomination_is_confirmed_with_its_evidence() -> None:
+    """원문 표기를 key로 바꾸는 것은 **코드**다 — 모델에 맡기면 같은 글자가 실행마다 갈린다."""
+    record = _source_data(raw_text="대한예수교장로회 합동 점촌제일교회에서 사역자를 청빙합니다.")
+
+    draft = build_draft(record, _extraction(raw_denomination="대한예수교장로회 합동"))
+
+    assert draft.denomination is Denomination.HAPDONG
+    assert draft.denomination_source is DenominationSource.STATED
+    assert draft.denomination_evidence == "합동"
+    assert draft.raw_denomination == "대한예수교장로회 합동", "원표기도 그대로 남는다"
+
+
+def test_a_denomination_that_is_nowhere_in_the_source_is_not_confirmed() -> None:
+    """⚠️ 근거 없는 값은 원표기만 남기고 확정하지 않는다(SPEC §5.3).
+
+    `stated`는 운영자 검토를 건너뛰므로, 아무도 확인하지 않은 값이 거기 오면 안 된다 —
+    그림을 보낸 공고는 `verify`가 값을 비우지 않고 세기만 하기 때문에 여기가 마지막 문이다.
+    """
+    draft = build_draft(_source_data(), _extraction(raw_denomination="대한예수교장로회 합동"))
+
+    assert draft.denomination is Denomination.UNKNOWN
+    assert draft.denomination_source is DenominationSource.UNKNOWN
+    assert draft.raw_denomination == "대한예수교장로회 합동", "원표기는 운영자를 위해 남긴다"
 
 
 def test_uncertain_still_becomes_a_draft(store: JsonStore, data_dir: Path) -> None:

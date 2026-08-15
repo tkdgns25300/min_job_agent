@@ -37,7 +37,6 @@ from typing import Final, Protocol, assert_never
 
 from minjob_ingest.domain import (
     Confidence,
-    DenominationSource,
     IsChurchRecruitment,
     JobKind,
     Position,
@@ -46,6 +45,7 @@ from minjob_ingest.domain import (
 )
 from minjob_ingest.lib.gemini import GeminiError
 from minjob_ingest.models import ReviewData, SourceData
+from minjob_ingest.pipeline.denomination import confirm
 from minjob_ingest.pipeline.extraction import Extraction, ExtractionError
 from minjob_ingest.pipeline.media import Media, MediaSet, MediaSource, failure_note, wanted_urls
 from minjob_ingest.pipeline.normalize import clean_title, closed_by_board
@@ -406,17 +406,20 @@ def structure_one(
 def build_draft(record: SourceData, extraction: Extraction) -> ReviewData:
     """검수 초안 조립.
 
-    ⚠️ **모델이 뽑은 값은 그대로 옮기고, 판정은 붙이지 않는다.** `confidence`·교단 확정·
-    이단·`dedup_key`는 규칙이 정한다(ROADMAP 1-2 3단계). 그때까지는 `LOW`(운영자 우선검토)와
-    `UNKNOWN`(교단 근거 없음)이다 — 게이트1 `UNCERTAIN`은 레코드 불변식이 `LOW`를 요구하기도
-    한다(SPEC §5.1).
+    ⚠️ **모델이 뽑은 값은 그대로 옮기고, 판정은 붙이지 않는다.** `confidence`·이단·`dedup_key`는
+    규칙이 정한다(ROADMAP 1-2 3단계). 그때까지는 `LOW`(운영자 우선검토)이고 — 게이트1
+    `UNCERTAIN`은 레코드 불변식이 `LOW`를 요구하기도 한다(SPEC §5.1).
 
-    ⚠️ **`raw_denomination`만 담고 `denomination`은 비운다**(SPEC §5.3). 원문 표기를
-    교단 key로 확정하는 것은 규칙의 일이고, 여기서 찍으면 근거 없는 값이 공개로 흐른다.
+    ⚠️ **교단은 규칙이 확정한다**(`pipeline/denomination.py` · SPEC §5.3 ①). 모델은 원문 표기를
+    옮기기만 하고, key로 바꾸는 것은 코드다 — 모델에게 시키면 같은 `예장 합동`이 실행마다
+    다른 key가 될 수 있다. 못 알아보면 `UNKNOWN`이고 지어내지 않는다.
 
     `run_id`는 **수집 실행**을 승계한다(SPEC §2).
     """
     classified = classify(extraction)
+    denomination, denomination_source, denomination_evidence = confirm(
+        extraction.raw_denomination, record
+    )
     pay_min, pay_max = _pay_range(extraction)
     # ⚠️ 끝난 공고는 **만들면서 거절한다**(이단과 같은 방식 · SPEC §5.4). 그대로 두면
     #    `jobs.status` 기본값이 `OPEN`이라 **이미 채워진 자리가 공개된다**(실측 110건).
@@ -431,7 +434,9 @@ def build_draft(record: SourceData, extraction: Extraction) -> ReviewData:
         source_url=record.source_url,
         is_church_recruitment=extraction.is_church_recruitment,
         confidence=Confidence.LOW,
-        denomination_source=DenominationSource.UNKNOWN,
+        denomination=denomination,
+        denomination_source=denomination_source,
+        denomination_evidence=denomination_evidence,
         job_kind=classified.job_kind,
         role=classified.role,
         # ⚠️ 모델이 아니라 **게시판 제목**이다 — 원문이 이미 있는데 다시 물으면 손질만 된다.

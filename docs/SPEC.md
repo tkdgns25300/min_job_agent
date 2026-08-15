@@ -201,7 +201,11 @@ dedup_key = 정규화교회명 : region : position : department : 라운드번�
 3. **AI 추정**(공고의 노회명·교회명·홈페이지를 근거로 Gemini가 추정) → `denomination_source=ai_guess` (**교단 신뢰도 낮음 표시** — 레코드 confidence와 별개로 이 필드가 "확정 아님"을 나타냄).
 4. 근거 없음 → **`denomination=UNKNOWN`** · `denomination_source=unknown`.
 
-- 출력: `denomination` · `denomination_source`(stated/registry/ai_guess/unknown/**operator**) · `denomination_evidence`(원문 근거).
+- 출력: `denomination` · `denomination_source`(stated/registry/ai_guess/unknown/**operator**) · `denomination_evidence`(원문 근거 — 표에서 **무엇에 걸렸나**).
+- ⚠️ **1순위(`stated`)는 "적혀 있다"가 아니라 "이 교회의 소속으로 적혀 있다"이다**(2026-08-15 · 구현 `pipeline/denomination.py`). `stated`는 운영자 검토를 건너뛰므로(위 공개 가능 판정) 여기서 틀리면 아무도 못 잡는다. 세 가지를 확정하지 않는다:
+  - **원문에 없는 표기** — 지어낸 값과 그림에만 있어 확인 못 하는 값을 코드는 구분하지 못한다(그림 공고는 `verify`가 비우지 않고 세기만 한다). 실측 730건 중 0건이 걸려 잃는 것이 없다.
+  - **자격 요건 줄에만 있는 표기** — `② 기타 교단 정규 신대원 졸업자(장신, 침신, 백석, 고신 등)`은 **받아주는 신대원 목록**이다(실측 298건 · `대신` 50 · `고신` 46 · `감리` 43). 자격 낱말은 **실측 근거가 있는 것만** 둔다(낱말 하나를 빼면 몇 건이 되살아나는지로 검증 · 막고 있는 줄이 하나도 없던 `출신`은 뺐다).
+  - **문장으로 온 값** — 게시판 교단 칸은 교회가 채우는 자유 입력 칸이라 설명을 적는 교회가 있다. `미주한인예수교장로회/ 합동교단과 교류 교단입니다.`의 교단은 KAPC다(실측 2건). ⚠️ **낱말이 아니라 모양(종결어미·마침표)을 본다** — `교류`·`협력`을 목록으로 두면 `연합`·`자매`가 뒤따라 끝나지 않고, 어느 공고가 왜 비었는지 설명할 수 없게 된다.
 - **`operator`** = 운영자가 검수에서 직접 확정한 값. 위 "승격 전 10키로 해소"가 이 근거로 남는다 — 이 값이 없으면 해소된 행이 "교단은 있는데 근거는 unknown"이 되어 되읽을 때 모순으로 걸린다.
 - **공개 가능 판정**: `stated`·`registry`·`operator`만 확정으로 본다. **`ai_guess`는 값이 있어도 운영자 확인 대상**(확정 아님).
 - **`UNKNOWN`은 "근거 없음"이다** — ⚠️ **승격 전 해소 규칙은 철회됐다**(2026-08-06). min_job이 `churches.denomination`을 nullable로 바꿨고(NULL=미상 또는 무소속), 실측 교단 명시가 **2.8%**뿐이라 교회 1,006곳을 사람이 채우는 것은 비현실적이다. **미상이면 미상으로 둔다.** 다만 크롤 공고는 `church_id=NULL`이라 지금은 `churches`에 아무것도 쓰지 않는다 — 교단은 교회가 claim한 뒤 그 교회가 채운다. `denomination_source`가 `stated`·`registry`·`operator`일 때만 확정으로 표시한다.
