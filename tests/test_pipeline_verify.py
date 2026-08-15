@@ -1195,3 +1195,45 @@ def test_one_real_address_does_not_carry_an_invented_one() -> None:
 
     assert verified.contact_email is None
     assert report.scrubbed == ("contact_email",)
+
+
+def test_a_recruitment_list_label_counts_as_hiring() -> None:
+    """⚠️ 모집 목록은 동사를 안 쓴다 — `1. 대상 : 담임목사`(KTS 양식 4건).
+
+    제목에도 모집어가 없어(`따뜻한 교회(경남 노회, 진영시찰)`) 담임 청빙이 통째로 지워졌다.
+    """
+    record = _record(
+        title="따뜻한 교회(경남 노회, 진영시찰)", raw_text="<모집 내용> 1. 대상 : 담임목사"
+    )
+
+    verified, report = _verified(
+        record,
+        _extraction(
+            church_name=None,
+            position=(Position.SENIOR_PASTOR,),
+            evidence=Evidence(position_items=("1. 대상 : 담임목사",)),
+        ),
+    )
+
+    assert verified.position == (Position.SENIOR_PASTOR,)
+    assert report.scrubbed == ()
+
+
+def test_helping_the_senior_pastor_is_not_hiring_one() -> None:
+    """⚠️ `사역분야: 담임목사 사역 협력`은 **부목사** 공고다 — 6건이 이 모양이라 `분야`는
+    모집 낱말에 넣지 않았다."""
+    record = _record(
+        title="○○교회 부목사 청빙", raw_text="∎사역분야: 담임목사 사역 협력, 청년부, 행정 등"
+    )
+
+    verified, report = _verified(
+        record,
+        _extraction(
+            church_name=None,
+            position=(Position.SENIOR_PASTOR,),
+            evidence=Evidence(position_items=("사역분야: 담임목사 사역 협력",)),
+        ),
+    )
+
+    assert verified.position == ()
+    assert report.scrubbed == ("position",)
