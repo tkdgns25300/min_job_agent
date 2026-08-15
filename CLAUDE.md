@@ -54,7 +54,7 @@
 |---|---|---|
 | **config** (소스 레지스트리) | 어디를·어떻게 접속하나 | **대부분 여기** (데이터, 코드 아님) |
 | **fetch** (`fetch/`) | 바이트 가져오기 — UA·디코드·타임아웃·재시도·rate limit·`Crawl-delay`·세션 | 없음(전 소스 공유 · UA도 동일) |
-| **parse** (`sources/adapters/`) | 목록 행·상세 본문 추출 | **게시판 1곳 = 파일 1개**(구현 29곳 · 124~213줄) |
+| **parse** (`sources/adapters/`) | 목록 행·상세 본문 추출 | **게시판 1곳 = 파일 1개**(구현 30곳 · 124~213줄) |
 
 → 신규 소스는 **config 한 칸 + 어댑터 파일 1개**다.
 
@@ -98,7 +98,10 @@ config/
 └── heresy-ref.json           이단 참고 목록 (사람이 관리 · git 이력 = 감사)
 scripts/                       일회성 이관·정리 스크립트 (CLI 명령이 아니다)
 tests/{fixtures/ ← gitignored, test_*.py}
-data/                         로컬 저장소 (gitignored)
+data/                          로컬 저장소 (gitignored)
+├── source_data.json · review_data.json · source_health.json · crawl_run.json   ★ 원장 4개
+├── preview/                  `--out` 결과·로그 (지워도 된다)
+└── backup/                   원장 백업
 ```
 
 > ⚠️ 트리는 드리프트할 수 있으니 "계약"으로 신뢰하지 말 것 — 실제 파일이 정본이다.
@@ -149,7 +152,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 - 현재 필드(= `minjob_ingest/sources/registry.py`): `key`(대문자) · `board_name` · `denomination_hint`(참고, 확정 아님·null 가능) · `enabled` · `fetch_tier` · `encoding` · `flags` · `list_url` · `detail_pattern`(`{id}` 치환) · `fetch_note`.
   - `flags`: `www_required` · `http_only` · `spoof_ua`(브라우저 UA 필수) · `insecure_tls` · `needs_session`(상세가 쿠키 요구) · `image_only`(본문이 이미지 — 빈 raw_text가 정상) · `soft_200`(잘못된 요청에도 200 → 본문으로 검증).
   - **2026-08-05 추가**: `list_has_dates`(목록에 게시일이 있나 · `false`면 컷오프를 만들지 않는다) · `list_page_limit`(날짜 없는 게시판의 범위 — CLI에 페이지 옵션이 없으므로 여기 적는다).
-  - **추가하지 않기로 한 것**: `page_param`·`notice_marker`. 29곳을 실제로 만들어 보니 페이징이 쿼리·경로·POST 본문·행 오프셋으로 갈리고 공지 표시가 클래스·아이콘·번호칸 글자로 갈려서, **한 필드로 담으면 절반이 예외가 된다**. 어댑터 상단 상수로 두는 편이 읽기 쉽다.
+  - **추가하지 않기로 한 것**: `page_param`·`notice_marker`. 30곳을 실제로 만들어 보니 페이징이 쿼리·경로·POST 본문·행 오프셋으로 갈리고 공지 표시가 클래스·아이콘·번호칸 글자로 갈려서, **한 필드로 담으면 절반이 예외가 된다**. 어댑터 상단 상수로 두는 편이 읽기 쉽다.
 - **로드 시 검증**(스타트업 assert + 테스트): key 대문자·유일 · `denomination_hint ∈ CONTRACT §1 ∪ {null}` · `flags` 키 화이트리스트 · `detail_pattern`이 있으면 `{id}` 포함. ⚠️ **예외 1곳**: `HANSEI`(비활성 — 게시판 소멸). ~~`CSU`~~는 2026-08-05에 해소됐다 — SPA라 URL이 없다고 봤지만 공유용 상세 URL(`?m1=page_ministry_detail&…&board_content_id={id}`)이 실제로 존재한다.
 - **소스 추가/제외 = 이 JSON 편집.** 제외는 삭제가 아니라 `enabled: false` + `disabled_reason`(이력 보존·재활성 대비).
 - `fetch_note`는 라이브 검증 메모(세션 필요·soft 실패·공지행·pagination)다. **지우거나 요약하지 말 것** — 재취득 불가.
@@ -196,7 +199,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 - 프로토콜에 **읽기도 포함**해야 한다: 원장 조회(가능하면 **bulk** — 페이지당 1회), `source_health` 조회(연속 실패 누적·마지막 성공 보존에 필요), 미구조화 목록(상한 있는 배치).
 - **JSON 구현 주의**: 쓰기는 **원자적**(임시파일 → rename)이어야 하고, 병렬 실행 시 **락 또는 append-only(JSONL)** 를 쓴다. 전체 배열 read-modify-write는 레코드 유실·파일 손상을 만든다.
 
-### Runner (`pipeline/run.py`) · CLI (`cli.py`)
+### Runner (`pipeline/collect.py`·`pipeline/structure.py`) · CLI (`cli.py`)
 - 소스 **간 병렬 · 소스 내 순차**(SPEC §3). **에러 격리** — 한 소스 실패가 나머지를 멈추지 않는다.
 - ⚠️ **구조화도 같은 모양이다**(`structure_pending` · `--workers`): 게시판 하나를 스레드 하나가 통째로 맡는다. 그래서 그 게시판의 접속 클라이언트(요청 간격·세션)를 아무도 같이 건드리지 않아 fetch 층에 잠금이 필요 없다. 공유되는 것은 저장(`JsonStore` 락)과 집계뿐이다.
 - ⚠️ **유료 상한(`--limit`)은 부르기 전에 자리를 잡는다** — 부르고 나서 세면 게시판 수만큼 넘겨 청구된다. Gemini를 부르지 않은 판정(빈 공고·그림 대기)은 자리를 돌려준다.

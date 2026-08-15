@@ -53,7 +53,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RET", "ARG", "PTH", "RUF", "TID", "D
 
 [tool.mypy]
 python_version = "3.12"
-files = ["minjob_ingest", "tests"]
+files = ["minjob_ingest", "tests", "scripts"]
 strict = true
 # 잘못된 상태를 타입으로 막는다(CLAUDE.md Clean Code) — Any 유입 차단.
 disallow_any_explicit = true

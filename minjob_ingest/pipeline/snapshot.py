@@ -16,9 +16,8 @@ from pathlib import Path
 from typing import Final
 
 from minjob_ingest.fetch.client import FetchError, SourceClient
-from minjob_ingest.sources.registry import SourceConfig
+from minjob_ingest.sources.registry import ID_PLACEHOLDER, SourceConfig, detail_url
 
-_ID_PLACEHOLDER: Final = "{id}"
 #: 상세 URL의 `{id}` 자리에 들어갈 수 있는 문자(글번호·hex·복합키).
 _ID_CHARS: Final = r"[A-Za-z0-9_:-]+"
 
@@ -36,10 +35,6 @@ class SnapshotResult:
     #: 어댑터 작업을 시작할 수 있고, 상세는 `--url`로 따로 받을 수 있다.
     detail_skipped: str | None = None
 
-    @property
-    def has_detail(self) -> bool:
-        return any(path.name == _DETAIL_FILE for path in self.saved)
-
 
 def fixture_dir(root: Path, source_key: str) -> Path:
     return root / source_key
@@ -51,7 +46,7 @@ def detail_url_pattern(detail_pattern: str) -> re.Pattern[str]:
     `/board/view/trXXR/{id}` → `/board/view/trXXR/<id>`를 찾는 패턴. 쿼리 파라미터 순서가
     목록 href와 다를 수 있어 **`{id}` 앞부분만** 고정하고 뒤는 느슨하게 둔다.
     """
-    head, _, _tail = detail_pattern.partition(_ID_PLACEHOLDER)
+    head, _, _tail = detail_pattern.partition(ID_PLACEHOLDER)
     # `?`·`&` 등 정규식 특수문자가 그대로 있으므로 escape 필수.
     return re.compile(re.escape(head) + f"({_ID_CHARS})")
 
@@ -72,12 +67,10 @@ def find_detail_url(list_html: str, source: SourceConfig) -> str | None:
     found = detail_url_pattern(source.detail_pattern).findall(list_html)
     if not found:
         return None
-    return source.detail_pattern.replace(_ID_PLACEHOLDER, found[-1])
+    return detail_url(source, found[-1])
 
 
-def snapshot_source(
-    source: SourceConfig, client: SourceClient, target: Path, *, want_detail: bool = True
-) -> SnapshotResult:
+def snapshot_source(source: SourceConfig, client: SourceClient, target: Path) -> SnapshotResult:
     """목록 1페이지(+ 상세 표본 1건)를 받아 저장한다. 요청은 **최대 2회**다."""
     target.mkdir(parents=True, exist_ok=True)
     saved: list[Path] = []
@@ -85,10 +78,6 @@ def snapshot_source(
     list_html = client.get(source.list_url).text
     saved.append(_write(target / _LIST_FILE, list_html))
 
-    if not want_detail:
-        return SnapshotResult(
-            source_key=source.key, saved=tuple(saved), detail_skipped="요청 안 함"
-        )
     if source.detail_pattern is None:
         return SnapshotResult(
             source_key=source.key,

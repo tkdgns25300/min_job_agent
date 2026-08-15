@@ -15,7 +15,6 @@ from minjob_ingest.paths import (
 )
 from minjob_ingest.settings import (
     DEFAULT_VERTEX_LOCATION,
-    DEFAULT_VERTEX_MODEL,
     ENV_DATA_DIR,
     ENV_SOURCES,
     ENV_VERTEX_CLIENT_EMAIL,
@@ -143,6 +142,8 @@ def _set_vertex(monkeypatch: pytest.MonkeyPatch, **overrides: str) -> None:
         ENV_VERTEX_PROJECT: "test-project",
         ENV_VERTEX_CLIENT_EMAIL: "crawler@test.iam.gserviceaccount.com",
         ENV_VERTEX_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\\nAAA\\n-----END PRIVATE KEY-----\\n",
+        # 모델 ID는 폴백이 없다 — 없으면 멈춘다(아래 테스트).
+        ENV_VERTEX_MODEL: "gemini-test-flash",
         **overrides,
     }
     for name, value in values.items():
@@ -177,7 +178,19 @@ def test_require_vertex_applies_defaults(monkeypatch: pytest.MonkeyPatch) -> Non
     _set_vertex(monkeypatch)
     vertex = _load().require_vertex()
     assert vertex.location == DEFAULT_VERTEX_LOCATION
-    assert vertex.model == DEFAULT_VERTEX_MODEL
+
+
+def test_a_missing_model_id_halts_instead_of_guessing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⚠️ 모델 ID에 폴백을 두면 `VERTEX_MODEL` 오타 하나에 **낡은 모델로 조용히 청구**된다.
+
+    운영자가 최신 Flash로 갈아끼우는 값이라 코드가 기억하고 있으면 안 된다(CLAUDE.md).
+    `--lite`가 멈추는 것과 같은 이유이고, 이제 기본 경로도 같이 멈춘다.
+    """
+    _set_vertex(monkeypatch)
+    monkeypatch.delenv(ENV_VERTEX_MODEL, raising=False)
+
+    with pytest.raises(VertexConfigError, match=ENV_VERTEX_MODEL):
+        _load().require_vertex()
 
 
 def test_require_vertex_restores_pem_newlines(monkeypatch: pytest.MonkeyPatch) -> None:

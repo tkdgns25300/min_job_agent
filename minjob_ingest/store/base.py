@@ -32,6 +32,17 @@ class StoreError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class RequeueResult:
+    """되돌리기 결과. **건너뛴 것을 함께 돌려준다** — 숫자만 주면 운영자가 왜 덜 되돌려졌는지
+    알 수 없고, 그때 손으로 파일을 고치게 된다."""
+
+    #: 미판정으로 되돌린 공고 수.
+    requeued: int = 0
+    #: 운영자가 손대 건너뛴 공고(`source_key/external_id`).
+    skipped: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class LedgerEntry:
     """원장에 이미 있는 글의 식별 정보. `external_id`가 여전히 같은 글을 가리키는지 확인용.
 
@@ -122,6 +133,22 @@ class Store(Protocol):
           낡은 레코드로 부르는 사고를 막는다 — 판정이 지워지면 Gemini 재과금이고, 시도 횟수가
           줄면 상한에 영원히 도달하지 못해 영구 실패 공고를 무한 재호출한다(SPEC §4).
           운영자의 시도 리셋은 이 경로가 아니라 전용 메서드로 들어온다(ROADMAP 1-6).
+        """
+        ...
+
+    def requeue_for_structure(self, *, source_key: str | None = None) -> RequeueResult:
+        """판정을 지워 그 공고를 **다시 구조화할 수 있게** 되돌린다.
+
+        `structured_at`은 앞으로만 가므로(위 `update_structure_state`) 되돌리는 길이 따로
+        있어야 한다. ⚠️ **전량 저장 전에 이게 있어야 한다** — 저장한 뒤 프롬프트 문제를
+        발견하면 고친 것을 적용할 방법이 없다(ROADMAP 1-2).
+
+        ⚠️ **운영자가 손댄 초안은 되돌리지 않는다**(`ReviewData.is_safe_to_replace`). 승인된
+        행을 지우면 `published_job_id`가 사라져 이미 공개한 공고를 한 번 더 승격하게 된다.
+
+        ⚠️ **저장은 판정 → 초안 순서**다(위 `upsert_review_data`의 역순). 초안을 먼저 지우면
+        중간에 죽었을 때 "판정 완료 + 초안 없음"이 남는데, SPEC §4가 그 상태를 재시도 기준으로
+        쓰지 않아 사후 탐지가 불가능하다.
         """
         ...
 

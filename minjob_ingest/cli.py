@@ -86,7 +86,7 @@ from minjob_ingest.sources.registry import (
     find_source,
     load_sources,
 )
-from minjob_ingest.store.base import StoreError
+from minjob_ingest.store.base import Store, StoreError
 from minjob_ingest.store.json_store import JsonStore
 from minjob_ingest.store.serde import to_row
 
@@ -253,7 +253,7 @@ _ABORTED: Final = "_aborted"
 
 
 def _finish(
-    store: JsonStore,
+    store: Store,
     run: CrawlRun,
     sources: Sequence[SourceConfig],
     failures: Mapping[str, str],
@@ -1055,7 +1055,7 @@ def _build_parser() -> argparse.ArgumentParser:
     structure.add_argument(
         "--out",
         default=None,
-        help="결과를 JSON 파일로 (프롬프트 비교용 · ⚠️ 연락처가 담긴다 — data/ 아래로)",
+        help="결과를 JSON 파일로 (프롬프트 비교용 · ⚠️ 연락처가 담긴다 — data/preview/ 아래로)",
     )
     structure.add_argument(
         "--workers",

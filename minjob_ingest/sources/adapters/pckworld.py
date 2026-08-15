@@ -66,9 +66,10 @@ _UPLOAD_STAMP: Final = re.compile(r"/(\d{4})(\d{2})(\d{2})\d{6}\.")
 #: 파일명에서 읽은 값을 게시일로 인정할 연도 범위. 밖이면 파일명 관례가 바뀐 것이다.
 _PLAUSIBLE_YEARS: Final = range(2000, 2101)
 #: 상세는 포스터 이미지 한 장뿐이라 본문 컨테이너가 따로 없다.
-#: 포스터 이미지. 목록 썸네일과 상세 본문에 같은 경로를 쓴다 — 게시판이 아이콘·뱃지 `img`를
-#: 넣어도 **그 파일명이 게시일이 되는 일**이 없도록 목록에서도 이걸로 좁힌다.
-_POSTER_IMAGE: Final = "img[src*='/upimg/adsearch/']"
+#: 포스터가 올라가는 경로. 목록 썸네일도 상세 본문도 같은 곳을 쓴다 — 게시판이 아이콘·뱃지
+#: `img`를 넣어도 그 파일이 **게시일이 되거나 공고 내용으로 실리는 일**이 없게 이걸로 가른다.
+_POSTER_PATH: Final = "/upimg/adsearch/"
+_POSTER_IMAGE: Final = f"img[src*='{_POSTER_PATH}']"
 _CLOSE_BUTTON_TEXT: Final = "창닫기"
 
 
@@ -97,10 +98,12 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     이미지가 없으면 실패다 — 그때는 증거가 하나도 없는 레코드가 된다.
     """
     soup = parse_html(html)
-    images = image_urls_in(soup, base_url=ref.url)
+    # ⚠️ **포스터인지 경로로 확인한다** — `img` 아무거나 세면 아이콘·뱃지 한 장짜리 페이지가
+    #    포스터가 있는 것으로 통과한다. 이 게시판은 그림이 곧 공고라 그때 내용이 통째로 빈다.
+    images = tuple(url for url in image_urls_in(soup, base_url=ref.url) if _POSTER_PATH in url)
     if not images:
         raise ParseError(
-            f"{SOURCE_KEY} {ref.external_id}: 포스터 이미지가 없음 — 셀렉터 `{_POSTER_IMAGE}` 확인"
+            f"{SOURCE_KEY} {ref.external_id}: 포스터 이미지가 없음 — 경로 `{_POSTER_PATH}` 확인"
         )
     # ⚠️ `raw_html`을 담지 않는다 — 이 게시판 상세는 포스터 `<img>` 한 장뿐이고 본문
     # 컨테이너가 없다(내용은 이미지에만 있다 · config `image_only`). 페이지 전체를

@@ -137,10 +137,6 @@ class Response:
     status: int
     text: str
 
-    @property
-    def is_json_content(self) -> bool:
-        return self.text.lstrip()[:1] in {"{", "["}
-
 
 @dataclass(frozen=True, slots=True)
 class Binary:

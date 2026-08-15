@@ -1266,3 +1266,45 @@ class _SometimesBrokenStore:
             for record in self.inner.list_unstructured(1000)
             if record.external_id in self.failing
         }
+
+
+def test_a_broken_ledger_halts_even_when_the_model_also_fails(store: JsonStore) -> None:
+    """⚠️ 모델 실패와 저장 실패가 겹치면 멈춤이 영원히 안 걸리던 구멍(2026-08-15 검수).
+
+    프롬프트가 깨져 전건이 `ExtractionError`인데 원장까지 손상되면, 실패를 기록하는 저장도
+    실패한다 — 그 사실을 흘리면 3,188번 과금하고 아무것도 저장하지 못한다. `structure_attempts`
+    도 저장이라 시도 상한조차 안 올라가 다음 실행이 그대로 반복한다.
+    """
+    _fill(store, {"DAESHIN": 20})
+    extractor = _FakeExtractor(result=ExtractionError("빈 응답"))
+
+    report = structure_pending(
+        _BrokenStore(store),  # type: ignore[arg-type]
+        extractor,
+        StructureOptions(limit=None),
+        workers=1,
+    )
+
+    assert report.halted is not None
+    assert len(extractor.calls) == STORE_FAILURE_LIMIT
+
+
+def test_the_overshoot_is_bounded_by_the_worker_count(store: JsonStore) -> None:
+    """⚠️ 게시판이 여럿이면 멈춤을 알아채기 전에 각자 한 건씩 더 부른다.
+
+    상한은 `LIMIT + workers - 1`이다(실측 workers=8 → 12건). 이 검사가 없으면 `halted` 확인을
+    `budget.take()` 뒤로 옮기는 것 같은 변경이 조용히 이 경계를 넓힌다.
+    """
+    workers = 8
+    _fill(store, dict.fromkeys(("CSU", "PUTS", "YTUS", "BPU", "HTUS", "SJS", "KTS", "PCK"), 10))
+    extractor = _FakeExtractor()
+
+    report = structure_pending(
+        _BrokenStore(store),  # type: ignore[arg-type]
+        extractor,
+        StructureOptions(limit=None),
+        workers=workers,
+    )
+
+    assert report.halted is not None
+    assert len(extractor.calls) <= STORE_FAILURE_LIMIT + workers - 1

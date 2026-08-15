@@ -37,6 +37,7 @@ from typing import Final
 from minjob_ingest.domain import Department, EmploymentType, Position, Qualification
 from minjob_ingest.models import SourceData
 from minjob_ingest.pipeline.extraction import Extraction, meta_lines
+from minjob_ingest.pipeline.normalize import squeeze
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,7 +322,7 @@ def supports(value: StrEnum, evidence: str, *, title: str = "") -> bool:
     entry = _SUPPORTING_WORDS.get(value)
     if entry is None:
         return True
-    squeezed = _squeeze(evidence).lower()
+    squeezed = squeeze(evidence).lower()
     if any(word in squeezed for word in entry.excluded):
         return False
     if not any(word in squeezed for word in entry.required):
@@ -337,7 +338,7 @@ def _recruits(text: str) -> bool:
 
 def _title_recruits(title: str, required: tuple[str, ...]) -> bool:
     """제목이 "이 직분을 뽑는다"고 말하나. **괄호 안은 보지 않는다**(사람 이름 자리)."""
-    bare = _squeeze(_PARENTHESES.sub("", title))
+    bare = squeeze(_PARENTHESES.sub("", title))
     return any(word in bare for word in required) and _recruits(bare)
 
 
@@ -480,7 +481,7 @@ class _Checker:
         return bool(evidence) and self._found(evidence or "")
 
     def _found(self, value: str) -> bool:
-        squeezed = _squeeze(value)
+        squeezed = squeeze(value)
         return bool(squeezed) and squeezed in self.haystack
 
     def _scrubbed_away(self, dropped: Sequence[Dropped]) -> bool:
@@ -516,11 +517,7 @@ def _source_parts(record: SourceData) -> tuple[str, ...]:
         *(f"{label}: {value}" for label, value in meta_lines(record.raw_meta)),
         *(item.name for item in record.attachments),
     ]
-    return tuple(_squeeze(part) for part in parts)
-
-
-def _squeeze(text: str) -> str:
-    return _WHITESPACE.sub("", text)
+    return tuple(squeeze(part) for part in parts)
 
 
 def _alnum(text: str) -> str:

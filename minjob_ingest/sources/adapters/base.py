@@ -24,7 +24,7 @@ from bs4.element import NavigableString
 
 from minjob_ingest.clock import board_today, parse_iso_date
 from minjob_ingest.models import Attachment, JsonValue, as_json_value
-from minjob_ingest.sources.registry import SourceConfig
+from minjob_ingest.sources.registry import ID_PLACEHOLDER, SourceConfig
 
 #: `lxml`을 쓴다 — 깨진 마크업(닫히지 않은 `<td>` 등)에서 표준 파서보다 관대하다.
 HTML_PARSER: Final = "lxml"
@@ -54,8 +54,6 @@ _BLOCK_TAGS: Final = (
     "table",
 )
 
-#: `detail_pattern`의 치환 자리(레지스트리와 같은 값).
-_ID_PLACEHOLDER: Final = "{id}"
 
 _SPACES: Final = re.compile("[ \\t\\u00a0]+")
 _BLANK_LINES: Final = re.compile(r"\n{3,}")
@@ -594,7 +592,7 @@ def external_id_from_url(url: str, *, detail_pattern: str, what: str) -> str:
 
     캡처는 `/?&#`을 만나면 멈추므로 뒤에 무엇이 붙어도 영향받지 않는다.
     """
-    prefix, _, _suffix = detail_pattern.partition(_ID_PLACEHOLDER)
+    prefix, _, _suffix = detail_pattern.partition(ID_PLACEHOLDER)
     found = re.search(re.escape(prefix) + r"([^/?&#]+)", url)
     if found is None:
         raise ParseError(f"{what}: 상세 URL에서 id를 찾지 못함 ({url}) — 링크 형태가 바뀌었다")

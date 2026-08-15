@@ -17,7 +17,7 @@ from datetime import date, timedelta
 from typing import Final
 from uuid import UUID
 
-from minjob_ingest.clock import board_today, kst_now
+from minjob_ingest.clock import kst_now
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.models import SourceData
 from minjob_ingest.sources.adapters.base import ParseError, PostingRef, RawPosting
@@ -185,6 +185,10 @@ class CollectOptions:
             raise ValueError("months와 days는 함께 쓸 수 없다 — 범위는 하나로 정한다")
         if self.days is not None and self.days < 1:
             raise ValueError(f"days는 1 이상이어야 함 ({self.days})")
+        # ⚠️ `months=0`은 만들 수 있는 상태였고 실패가 수집 도중(`cutoff_date`)에야 났다.
+        #    경계에서 막는다 — 범위를 안 두려면 `None`이다.
+        if self.months is not None and self.months < 1:
+            raise ValueError(f"months는 1 이상이어야 함 ({self.months})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,7 +306,7 @@ def collect_source(
                         continue
                 else:
                     assert run_id is not None  # 위에서 검증
-                    record = _record(source, adapter, client, ref, run_id)
+                    record = _record(source, adapter, client, ref, run_id, today=today)
                     tally.note_saved(record, inserted=store.save_source_data(record))
             # `ValueError`도 잡는다 — 표준 라이브러리가 **망가진 외부 입력**에 내는 예외다
             # (`urljoin`이 교회의 잘못된 주소에 `Invalid IPv6 URL`을 던져 수집 전체를 죽였다).
@@ -387,9 +391,19 @@ def _require_dates_for_cutoff(source_key: str, plan: PagePlan, *, cutoff: date |
 
 
 def _record(
-    source: SourceConfig, adapter: Adapter, client: SourceClient, ref: PostingRef, run_id: UUID
+    source: SourceConfig,
+    adapter: Adapter,
+    client: SourceClient,
+    ref: PostingRef,
+    run_id: UUID,
+    *,
+    today: date,
 ) -> SourceData:
-    """상세를 받아 저장 레코드로. 여기가 원문 증거가 만들어지는 유일한 곳이다."""
+    """상세를 받아 저장 레코드로. 여기가 원문 증거가 만들어지는 유일한 곳이다.
+
+    ⚠️ `today`는 **넘겨받는다** — 실행이 하루를 넘길 수 있고, 시계를 안에서 읽으면 그 값이
+    테스트에서도 벽시계를 타 어제 통과한 것이 오늘 깨진다(이 리포 관례 · `gnuboard_list_date`).
+    """
     detail_html = client.get(ref.url).text if needs_detail_request(adapter) else ""
     raw = adapter.parse_detail(detail_html, ref)
     return SourceData(
@@ -400,7 +414,7 @@ def _record(
         # ⚠️ 어댑터가 채우는 것이 원칙이다(`PCKWORLD`는 썸네일 파일명에서 읽는다). 여기 오는
         #    것은 게시판이 날짜를 안 주고 어댑터도 못 찾은 경우뿐이라, **오늘 처음 봤다**는
         #    우리가 아는 유일한 사실을 쓴다 — 없는 과거 날짜를 지어내는 것보다 낫다.
-        posted_on=ref.posted_on or board_today(),
+        posted_on=ref.posted_on or today,
         run_id=run_id,
         fetched_at=kst_now(),
         raw_text=raw.raw_text,

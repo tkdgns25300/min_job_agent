@@ -65,7 +65,7 @@ def _discover() -> dict[str, Adapter]:
 
 
 def _package_path() -> list[str]:
-    """이 패키지 디렉터리. 를 직접 쓰면 mypy가 모듈 속성으로 좁히지 못한다."""
+    """이 패키지 디렉터리. `__path__`를 직접 쓰면 mypy가 모듈 속성으로 좁히지 못한다."""
     return [str(Path(__file__).parent)]
 
 

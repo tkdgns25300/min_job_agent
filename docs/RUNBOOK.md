@@ -46,6 +46,8 @@ minjob-ingest structure --limit 20 --source YTUS              💰  한 게시�
 minjob-ingest structure --all --workers 8                     💰  전량 (게시판 8곳씩 동시)
 ```
 
+⚠️ **저장이 연속 5번 실패하면 실행이 스스로 멈춘다.** 원장이 통째로 깨지면 글 단위 격리가 독이 되어 공고마다 부른 뒤 저장에 실패한다 — 그대로 두면 3,188번 과금하고 아무것도 안 남는다. 흩어진 손상 행 몇 개로는 멈추지 않는다(성공 한 번이 누적을 지운다).
+
 ⚠️ **`--limit N` 또는 `--all` 이 없으면 실행을 거부한다.** 유료 호출이 옵션 없이 전량으로 도는 경로를 두지 않았다.
 
 `structure` 옵션 — **`--limit N`**(판정할 건수 = 유료 호출 상한) · **`--all`**(남은 전부) · **`--dry-run`**(호출은 하되 저장 안 함) · `--source KEY` · **`--workers N`**(동시에 돌릴 게시판 수 · 기본 4) · `--verbose`(호출 로그) · **`--out FILE`**(결과를 JSON으로 — 모델 비교용) · **`--lite`**(값싼 모델로)
@@ -73,7 +75,14 @@ minjob-ingest structure --all --workers 8     # 나머지 28곳
 
 ⚠️ **`--source`를 주면 게시판이 하나라 `--workers`는 아무 일도 하지 않는다.** 그때는 셸에서 게시판별로 나눠 띄운다(위 예시).
 
-⚠️ **`--out`은 연락처가 담긴다.** 커밋되지 않는 `data/` 아래에 쓴다(`--out data/preview.json`).
+⚠️ **`--out`은 연락처가 담긴다.** 커밋되지 않는 **`data/preview/` 아래**에 쓴다(`--out data/preview/오늘/CSU.json`). ⚠️ `data/` 루트에는 **원장 4개만** 둔다 — 미리보기가 섞이면 어느 파일이 진짜 데이터인지 알 수 없다.
+
+```
+data/
+├── source_data.json · review_data.json · source_health.json · crawl_run.json   ← 원장
+├── preview/   `--out` 결과·로그 (아무 때나 지워도 된다)
+└── backup/    원장 백업
+```
 
 ### 모델 두 개 — 기본과 `--lite`
 
@@ -93,12 +102,12 @@ minjob-ingest structure --all --workers 8     # 나머지 28곳
 ```bash
 # 게시판 3곳 × 10건 × 모델 2개 — ⚠️ --dry-run 이라 판정이 안 남아 두 모델이 같은 공고를 본다
 for K in PCKWORLD CSU PUTS; do
-  minjob-ingest structure --source $K --limit 10 --dry-run        --out data/flash-$K.json
-  minjob-ingest structure --source $K --limit 10 --dry-run --lite --out data/lite-$K.json
+  minjob-ingest structure --source $K --limit 10 --dry-run        --out data/preview/flash-$K.json
+  minjob-ingest structure --source $K --limit 10 --dry-run --lite --out data/preview/lite-$K.json
 done
 
 for K in PCKWORLD CSU PUTS; do
-  .venv/bin/python scripts/compare_models.py data/lite-$K.json data/flash-$K.json
+  .venv/bin/python scripts/compare_models.py data/preview/lite-$K.json data/preview/flash-$K.json
 done
 ```
 
@@ -197,6 +206,7 @@ minjob-ingest check-gemini --lite   # 💰 VERTEX_MODEL_LITE 도 실제로 부�
 | `command not found: collect` | 하위 명령이다 — `minjob-ingest collect` |
 | `one of the arguments --limit --all is required` | `structure`는 범위를 반드시 받는다(유료) |
 | 구조화가 `처리할 공고가 없습니다` | 전부 판정됐거나 · 시도 상한(3) 초과 · `--source`에 남은 것 없음 |
+| 구조화가 `⛔ 저장이 연속 …번 실패해 멈췄다` | **원장 파일이 깨졌다.** 그 상태로 계속 돌면 공고마다 유료 호출을 하고 저장은 못 한다 → 실행이 스스로 멈춘 것이다. `data/*.json`을 확인하고(백업은 `data/backup/`) 고친 뒤 다시 돌린다 — 남은 공고는 다음 실행이 다시 잡는다 |
 | `command not found: minjob-ingest` | venv 활성화 · 또는 `pip install -e ".[dev]"` 재실행 |
 | Vertex 설정·PRIVATE_KEY 오류 | `.env` 값과 개행(`\n`) — 메시지가 빠진 변수명을 알려준다 |
 | 한 게시판만 0건·실패 | 셀렉터 깨짐 또는 로그인벽. **우회 금지** — 비활성화 후 보고 |

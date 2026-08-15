@@ -16,12 +16,15 @@ from collections.abc import Sequence
 from dataclasses import MISSING, dataclass, fields
 from enum import StrEnum
 from pathlib import Path
+from typing import Final
 from urllib.parse import SplitResult, urlsplit
 
 from minjob_ingest.domain import Denomination, Encoding, FetchTier, normalize_source_key
 from minjob_ingest.paths import DEFAULT_SOURCES_PATH
 
-_ID_PLACEHOLDER = "{id}"
+#: `detail_pattern`의 치환 자리. **레지스트리가 소유한다** — 형식을 검증하는 곳이 여기뿐이라
+#: (`_parse_detail_pattern`) 다른 층이 각자 적어두면 조용히 갈라진다.
+ID_PLACEHOLDER: Final = "{id}"
 _PLACEHOLDER_PATTERN = re.compile(r"\{[^}]*\}")
 
 
@@ -144,7 +147,7 @@ def detail_url(source: SourceConfig, external_id: str) -> str:
     """
     if source.detail_pattern is None:
         raise ValueError(f"{source.key}: detail_pattern이 없어 URL을 만들 수 없음(목록 링크 사용)")
-    filled = source.detail_pattern.replace(_ID_PLACEHOLDER, external_id)
+    filled = source.detail_pattern.replace(ID_PLACEHOLDER, external_id)
     if filled.startswith(("http://", "https://")):
         return filled
     origin = urlsplit(source.list_url)
@@ -296,9 +299,9 @@ def _parse_detail_pattern(value: object, what: str) -> str | None:
             f"{what}.detail_pattern: '/' 또는 http(s)로 시작해야 함 (받은 값 {pattern!r})"
         )
     placeholders = set(_PLACEHOLDER_PATTERN.findall(pattern))
-    if placeholders != {_ID_PLACEHOLDER}:
+    if placeholders != {ID_PLACEHOLDER}:
         raise ConfigError(
-            f"{what}.detail_pattern: 자리표시자는 {_ID_PLACEHOLDER} 하나여야 함 "
+            f"{what}.detail_pattern: 자리표시자는 {ID_PLACEHOLDER} 하나여야 함 "
             f"(받은 값 {sorted(placeholders)})"
         )
     return pattern

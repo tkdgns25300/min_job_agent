@@ -28,7 +28,7 @@ from typing import Final
 from minjob_ingest.clock import kst_now
 from minjob_ingest.domain import CrawlMode, normalize_source_key
 from minjob_ingest.models import CrawlRun, ReviewData, SourceData, SourceHealth
-from minjob_ingest.store.base import LedgerEntry, StoreError
+from minjob_ingest.store.base import LedgerEntry, RequeueResult, StoreError
 from minjob_ingest.store.serde import (
     Row,
     SerdeError,
@@ -55,10 +55,21 @@ _REVIEW_DATA_FILE: Final = "review_data.json"
 _SOURCE_HEALTH_FILE: Final = "source_health.json"
 _CRAWL_RUN_FILE: Final = "crawl_run.json"
 
+#: 되돌릴 때 처리 상태를 이 값으로 되돌린다. ⚠️ `_MUTABLE_STATE_FIELDS`와 **같은 집합**이어야
+#: 한다 — 넷째 상태 칸이 생겼을 때 여기만 모르면 그 값이 남아 재구조화가 조용히 달라진다.
+_REQUEUED_STATE: Final[Row] = {
+    "structured_at": None,
+    "structure_attempts": 0,
+    "last_structure_error": None,
+}
+
 #: `update_structure_state`가 갱신할 수 있는 **유일한** 필드들(SPEC §6 ① 처리 상태).
 #: 나머지 전부가 자동으로 write-once가 된다 — 증거 필드를 나열하는 방식이면 `SourceData`에
 #: 필드가 추가될 때마다 보호에서 빠져(예: `content_hash`) 갱신 경로로 새는 걸 못 막는다.
 _MUTABLE_STATE_FIELDS: Final = ("structured_at", "structure_attempts", "last_structure_error")
+
+if set(_REQUEUED_STATE) != set(_MUTABLE_STATE_FIELDS):  # pragma: no cover - 임포트 시 계약 검사
+    raise RuntimeError(f"되돌리기 상태가 갱신 허용 칸과 다르다: {set(_MUTABLE_STATE_FIELDS)}")
 
 #: 손상 행 보고 훅 — (파일명, 예외). 기본은 경고 로그.
 type CorruptRowHandler = Callable[[str, SerdeError], None]
@@ -147,6 +158,59 @@ class JsonStore:
             rows[index] = to_row(record)
             self._write_rows(_SOURCE_DATA_FILE, rows)
 
+    def requeue_for_structure(self, *, source_key: str | None = None) -> RequeueResult:
+        with self._write_lock:
+            review_rows = self._read_rows(_REVIEW_DATA_FILE)
+            protected = self._protected_ids(review_rows)
+            wanted = None if source_key is None else normalize_source_key(source_key)
+            source_rows = self._read_rows(_SOURCE_DATA_FILE)
+
+            requeued: set[str] = set()
+            skipped: list[str] = []
+            # ⚠️ 행을 고치지 않고 **바꿔 끼운다**(`Row`는 읽기 전용 계약 · `update_structure_state`와
+            #    같은 방식) — 제자리 수정은 읽는 쪽이 들고 있는 값을 몰래 바꾼다.
+            rewritten: list[Row] = []
+            for row in source_rows:
+                record = row_to_source_data(row)
+                if record.structured_at is None or (
+                    wanted is not None and record.source_key != wanted
+                ):
+                    rewritten.append(row)
+                    continue
+                if str(record.id) in protected:
+                    skipped.append(record.label)
+                    rewritten.append(row)
+                    continue
+                requeued.add(str(record.id))
+                rewritten.append({**row, **_REQUEUED_STATE})
+
+            if not requeued:
+                return RequeueResult(skipped=tuple(skipped))
+            # ⚠️ 판정을 먼저 되돌린다(`Store.requeue_for_structure` 계약) — 반대로 하면
+            #    "판정 완료 + 초안 없음"이 남고 그 상태는 사후 탐지가 불가능하다.
+            self._write_rows(_SOURCE_DATA_FILE, rewritten)
+            self._write_rows(
+                _REVIEW_DATA_FILE,
+                [row for row in review_rows if str(row.get("source_data_id")) not in requeued],
+            )
+            return RequeueResult(requeued=len(requeued), skipped=tuple(skipped))
+
+    def _protected_ids(self, review_rows: list[Row]) -> set[str]:
+        """되돌리면 안 되는 초안의 `source_data_id`.
+
+        ⚠️ 읽을 수 없는 행이 하나라도 있으면 **멈춘다** — 승인된 행인지 알 수 없는데 지우면
+        되돌릴 방법이 없다. 손상 행을 건너뛰는 다른 조회들과 여기가 다른 이유다.
+        """
+        protected: set[str] = set()
+        for row in review_rows:
+            try:
+                draft = row_to_review_data(row)
+            except SerdeError as err:
+                raise StoreError(f"읽을 수 없는 초안이 있어 되돌리지 않았다: {err}") from err
+            if not draft.is_safe_to_replace:
+                protected.add(str(draft.source_data_id))
+        return protected
+
     def upsert_review_data(self, record: ReviewData) -> bool:
         with self._write_lock:
             rows = self._read_rows(_REVIEW_DATA_FILE)
@@ -217,6 +281,8 @@ class JsonStore:
             text = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return []
+        except OSError as err:
+            raise StoreError(f"{path}: 읽지 못함 ({err})") from err
         try:
             document: object = json.loads(text)
         except json.JSONDecodeError as err:
@@ -258,10 +324,14 @@ class JsonStore:
                 # 빈/잘린 파일이 원장을 대체할 수 있다.
                 os.fsync(handle.fileno())
             temp.replace(path)
-        except OSError:
+        except OSError as err:
             # 부분 기록된 임시파일을 남기지 않는다(본 파일은 rename 전이라 온전하다).
             temp.unlink(missing_ok=True)
-            raise
+            # ⚠️ **`StoreError`로 바꿔 던진다**(`store/base.py` 계약). 디스크가 차거나 읽기
+            #    전용이 되는 것은 "이 공고가 이상하다"가 아니라 "원장을 못 쓴다"이고, 그대로
+            #    올리면 글 단위 격리도 연속 실패 중단도 지나쳐 배치가 통째로 죽는다 —
+            #    운영자는 리포트도 미리보기 파일도 못 받는다.
+            raise StoreError(f"{path}: 쓰지 못함 ({err})") from err
 
     # ── 공통 헬퍼 ───────────────────────────────────────────────
 

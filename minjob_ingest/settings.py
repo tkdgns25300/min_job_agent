@@ -29,10 +29,6 @@ ENV_VERTEX_MODEL = "VERTEX_MODEL"
 ENV_VERTEX_MODEL_LITE = "VERTEX_MODEL_LITE"
 
 DEFAULT_VERTEX_LOCATION = "global"
-#: 운영자가 실사용 가능함을 확인한 모델(2026-07-29). ⚠️ 모델 ID는 env에서 읽고
-#: 하드코딩하지 않는다(CLAUDE.md) — 이 값은 env가 비었을 때의 마지막 안전망일 뿐이다.
-DEFAULT_VERTEX_MODEL = "gemini-2.5-flash"
-
 _MASKED = "***"
 
 
@@ -129,9 +125,10 @@ class Settings:
             # `.env`는 개행을 한 줄로 넣으려고 `\n`(리터럴 백슬래시+n)으로 이스케이프한다 →
             # PEM으로 복원한다. 이미 실제 개행이면 이 치환은 아무 일도 하지 않는다.
             private_key=_require_env(ENV_VERTEX_PRIVATE_KEY).replace("\\n", "\n"),
-            model=_require_env(ENV_VERTEX_MODEL_LITE)
-            if lite
-            else (env_str(ENV_VERTEX_MODEL) or DEFAULT_VERTEX_MODEL),
+            # ⚠️ **양쪽 다 env가 없으면 멈춘다.** 기본 모델에만 폴백을 두면 `VERTEX_MODEL`
+            #    오타 하나에 낡은 모델 ID로 조용히 청구된다 — `--lite`가 멈추는 것과 같은
+            #    이유다(CLAUDE.md: "모델 ID는 env에서 읽고 하드코딩하지 않는다").
+            model=_require_env(ENV_VERTEX_MODEL_LITE if lite else ENV_VERTEX_MODEL),
         )
 
 

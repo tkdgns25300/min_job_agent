@@ -618,6 +618,7 @@ def _note_failure(
     빼주므로 영구 실패가 무한 재호출되지 않는다(SPEC §4).
     """
     reason = _reason(err)
+    store_failed = False
     if not dry_run:
         try:
             store.update_structure_state(record.with_failed_attempt(reason))
@@ -625,8 +626,17 @@ def _note_failure(
             # ⚠️ 저장 실패로 **원인을 덮지 않는다**. 운영자가 봐야 하는 것은 첫 번째 실패다
             # (`last_structure_error`가 존재하는 이유이기도 하다) — 둘 다 남긴다.
             reason = f"{reason} · 실패 기록도 실패({_reason(store_err)})"
+            # ⚠️ **여기서도 원장이 깨진 것을 알린다.** 안 하면 모델 실패와 저장 실패가 겹칠 때
+            #    (프롬프트가 깨져 전건이 `ExtractionError` + 원장 손상) 멈춤이 영원히 안 걸려
+            #    3,188번 과금하고 아무것도 저장하지 못한다. `structure_attempts`도 저장이라
+            #    시도 상한조차 올라가지 않아 다음 실행이 그대로 반복한다.
+            store_failed = True
     return StructureResult(
-        record=record, verdict=Verdict.FAILED, error=reason, media_note=media_note
+        record=record,
+        verdict=Verdict.FAILED,
+        error=reason,
+        media_note=media_note,
+        store_failed=store_failed,
     )
 
 

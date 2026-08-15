@@ -574,7 +574,12 @@ def test_write_leaves_no_temp_file(store: JsonStore, data_dir: Path) -> None:
 def test_failed_write_keeps_the_old_file_and_cleans_up(
     store: JsonStore, data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """쓰기 도중 실패(디스크 풀 등) — 기존 원장은 온전하고 부분 파일은 남지 않아야 한다."""
+    """쓰기 도중 실패(디스크 풀 등) — 기존 원장은 온전하고 부분 파일은 남지 않아야 한다.
+
+    ⚠️ **`StoreError`로 올린다**(`store/base.py` 계약). 날 `OSError`로 던지면 구조화가 글 단위
+    격리도 연속 실패 중단도 지나쳐 배치가 통째로 죽는다 — 운영자는 리포트도 미리보기도 못
+    받고, 그 사이 다른 게시판은 계속 유료 호출을 낸다(2026-08-15 검수에서 재현).
+    """
     store.save_source_data(_source_data("1"))
     before = (data_dir / "source_data.json").read_text(encoding="utf-8")
 
@@ -582,7 +587,7 @@ def test_failed_write_keeps_the_old_file_and_cleans_up(
         raise OSError("디스크가 꽉 찼다")
 
     monkeypatch.setattr("minjob_ingest.store.json_store.os.fsync", disk_full)
-    with pytest.raises(OSError, match="디스크"):
+    with pytest.raises(StoreError, match="디스크"):
         store.save_source_data(_source_data("2"))
 
     assert list(data_dir.glob("*.tmp")) == []
@@ -652,3 +657,68 @@ def test_a_state_update_does_not_drop_a_concurrent_insert(tmp_path: Path) -> Non
     assert len(rows) == 21
     stored = {row["external_id"]: row for row in rows}
     assert stored["100"]["structured_at"] is not None
+
+
+# ── 되돌리기 ─────────────────────────────────────────────────────
+
+
+def _structured(store: JsonStore, record: SourceData) -> SourceData:
+    store.save_source_data(record)
+    done = record.with_verdict_recorded()
+    store.update_structure_state(done)
+    return done
+
+
+def test_requeue_clears_the_verdict_and_the_draft(store: JsonStore, data_dir: Path) -> None:
+    """⚠️ `structured_at`은 앞으로만 간다 — 되돌리는 길이 없으면 전량 저장이 외길이 된다."""
+    record = _structured(store, _source_data("1"))
+    store.upsert_review_data(_review_data(record.id))
+
+    result = store.requeue_for_structure()
+
+    assert (result.requeued, result.skipped) == (1, ())
+    assert [row.external_id for row in store.list_unstructured(10)] == ["1"]
+    assert _read_raw(data_dir, "review_data.json") == []
+
+
+def test_requeue_keeps_a_draft_the_operator_touched(store: JsonStore, data_dir: Path) -> None:
+    """⚠️ 승인된 초안을 지우면 `published_job_id`가 사라져 **이미 공개한 공고를 다시 승격**한다.
+
+    판정 기준은 저장 쪽과 같은 `is_safe_to_replace` 하나여야 한다(2026-08-14 검수).
+    """
+    record = _structured(store, _source_data("1"))
+    approved = replace(_review_data(record.id), review_status=ReviewStatus.APPROVED)
+    store.upsert_review_data(approved)
+
+    result = store.requeue_for_structure()
+
+    assert result.requeued == 0
+    assert result.skipped == (record.label,)
+    assert store.list_unstructured(10) == (), "판정이 그대로 남는다"
+    assert len(_read_raw(data_dir, "review_data.json")) == 1, "초안도 그대로 남는다"
+
+
+def test_requeue_can_be_narrowed_to_one_board(store: JsonStore) -> None:
+    _structured(store, _source_data("1"))
+    other = replace(_source_data("2"), source_key="CSU")
+    _structured(store, other)
+
+    result = store.requeue_for_structure(source_key="CSU")
+
+    assert result.requeued == 1
+    assert [row.source_key for row in store.list_unstructured(10)] == ["CSU"]
+
+
+def test_requeue_refuses_when_a_draft_cannot_be_read(store: JsonStore, data_dir: Path) -> None:
+    """⚠️ 그 행이 승인된 것인지 모르는 채로 지우면 되돌릴 방법이 없다 — 멈추는 쪽이 맞다."""
+    record = _structured(store, _source_data("1"))
+    store.upsert_review_data(_review_data(record.id))
+    path = data_dir / "review_data.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    del document["records"][0]["confidence"]
+    path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(StoreError, match="되돌리지 않았다"):
+        store.requeue_for_structure()
+
+    assert store.list_unstructured(10) == (), "아무것도 바뀌지 않았다"

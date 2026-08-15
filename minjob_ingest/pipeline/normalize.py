@@ -269,7 +269,7 @@ def _without_marker(title: str) -> str | None:
 
 def _marker(text: str) -> str:
     """표시를 견줄 꼴로. 공백·쉼표는 표기 차이일 뿐이다(`수정, 끌어올림` = `수정 끌어올림`)."""
-    return _squeeze(text).replace(",", "").lower()
+    return squeeze(text).replace(",", "").lower()
 
 
 def closed_by_board(title: str, raw_meta: Mapping[str, JsonValue]) -> bool:
@@ -278,13 +278,15 @@ def closed_by_board(title: str, raw_meta: Mapping[str, JsonValue]) -> bool:
     ⚠️ 상태 필드와 제목은 **어휘가 다르다**. 상태 필드는 표시라 `완료` 한 단어로 충분하지만,
     제목은 문장이라 `조기 마감 될 수 있습니다`처럼 마감이 아닌 말이 섞인다.
     """
-    status = _squeeze(" ".join(str(raw_meta.get(key) or "") for key in _STATUS_KEYS))
+    status = squeeze(" ".join(str(raw_meta.get(key) or "") for key in _STATUS_KEYS))
     if any(marker in status for marker in _CLOSED_MARKERS):
         return True
-    return any(marker in _squeeze(title) for marker in _CLOSED_TITLE_MARKERS)
+    return any(marker in squeeze(title) for marker in _CLOSED_TITLE_MARKERS)
 
 
-def _squeeze(text: str) -> str:
+def squeeze(text: str) -> str:
+    """공백을 전부 없앤다. **원문과 답을 견줄 때 쓰는 단일 창구**(`verify`도 이걸 쓴다) —
+    게시판이 넣는 공백은 줄바꿈·전각·연속이 뒤섞여 있어 그대로 비교하면 늘 어긋난다."""
     return "".join(text.split())
 
 
