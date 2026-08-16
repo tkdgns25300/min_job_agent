@@ -44,6 +44,7 @@ from minjob_ingest.models import (
 )
 from minjob_ingest.pipeline import structure
 from minjob_ingest.pipeline.extraction import Extraction, ExtractionError
+from minjob_ingest.pipeline.heresy import HeresyEntry, HeresyRef, screen
 from minjob_ingest.pipeline.media import BoardMediaSource, Media, MediaSet
 from minjob_ingest.pipeline.structure import (
     STORE_FAILURE_LIMIT,
@@ -58,6 +59,10 @@ from minjob_ingest.pipeline.structure import (
 from minjob_ingest.store.base import StoreError
 from minjob_ingest.store.json_store import JsonStore
 from minjob_ingest.store.serde import row_to_review_data
+
+#: 이단 대조를 **하지 않는** 목록. 이 파일은 구조화 배선을 보는 곳이고, 대조 규칙 자체는
+#: `test_pipeline_heresy.py`가 본다. ⚠️ 실제 목록(실명 122건)은 커밋되지 않으므로 쓸 수 없다.
+_NO_HERESY: Final = HeresyRef.of(())
 
 _NOW: Final = datetime(2026, 8, 10, 9, 0, tzinfo=KST)
 _RUN_ID: Final = new_id()
@@ -143,7 +148,7 @@ def test_a_draft_is_written_and_the_verdict_is_recorded(store: JsonStore, data_d
     record = _source_data()
     store.save_source_data(record)
 
-    result = structure_one(record, store, _FakeExtractor())
+    result = structure_one(record, store, _FakeExtractor(), heresy=_NO_HERESY)
 
     assert result.verdict is Verdict.DRAFTED
     assert store.list_unstructured(10) == ()  # 판정이 찍혀 재구조화 대상에서 빠졌다
@@ -227,7 +232,7 @@ def test_uncertain_still_becomes_a_draft(store: JsonStore, data_dir: Path) -> No
     store.save_source_data(record)
 
     result = structure_one(
-        record, store, _FakeExtractor(_extraction(IsChurchRecruitment.UNCERTAIN))
+        record, store, _FakeExtractor(_extraction(IsChurchRecruitment.UNCERTAIN)), heresy=_NO_HERESY
     )
 
     assert result.verdict is Verdict.DRAFTED
@@ -242,7 +247,9 @@ def test_gate1_no_records_the_verdict_without_a_draft(store: JsonStore, data_dir
     record = _source_data()
     store.save_source_data(record)
 
-    result = structure_one(record, store, _FakeExtractor(_extraction(IsChurchRecruitment.NO)))
+    result = structure_one(
+        record, store, _FakeExtractor(_extraction(IsChurchRecruitment.NO)), heresy=_NO_HERESY
+    )
 
     assert result.verdict is Verdict.EXCLUDED
     assert _drafts(data_dir) == []
@@ -255,7 +262,7 @@ def test_an_empty_posting_never_reaches_the_model(store: JsonStore) -> None:
     store.save_source_data(record)
     extractor = _FakeExtractor()
 
-    result = structure_one(record, store, extractor)
+    result = structure_one(record, store, extractor, heresy=_NO_HERESY)
 
     assert result.verdict is Verdict.EMPTY
     assert extractor.calls == []
@@ -270,7 +277,7 @@ def test_an_attachment_only_posting_is_not_empty(store: JsonStore) -> None:
     store.save_source_data(record)
     extractor = _FakeExtractor()
 
-    result = structure_one(record, store, extractor)
+    result = structure_one(record, store, extractor, heresy=_NO_HERESY)
 
     assert result.verdict is Verdict.DRAFTED
     assert extractor.calls == [record.external_id]
@@ -290,7 +297,7 @@ def test_a_failure_leaves_the_posting_for_the_next_run(
     record = _source_data()
     store.save_source_data(record)
 
-    result = structure_one(record, store, _FakeExtractor(failure))
+    result = structure_one(record, store, _FakeExtractor(failure), heresy=_NO_HERESY)
 
     assert result.verdict is Verdict.FAILED
     assert result.error is not None and type(failure).__name__ in result.error
@@ -310,7 +317,7 @@ def test_repeated_failure_stops_at_the_attempt_cap(store: JsonStore) -> None:
     for _ in range(MAX_STRUCTURE_ATTEMPTS):
         pending = store.list_unstructured(10)
         assert pending, "상한 전에는 계속 재시도 대상이어야 한다"
-        structure_one(pending[0], store, extractor)
+        structure_one(pending[0], store, extractor, heresy=_NO_HERESY)
 
     assert store.list_unstructured(10) == ()
     assert len(extractor.calls) == MAX_STRUCTURE_ATTEMPTS
@@ -330,7 +337,7 @@ def test_the_draft_is_written_before_the_verdict(store: JsonStore) -> None:
     tracked = _OrderTrackingStore(store)
 
     with pytest.raises(RuntimeError, match="초안 직후 중단"):
-        structure_one(record, tracked, _FakeExtractor())  # type: ignore[arg-type]
+        structure_one(record, tracked, _FakeExtractor(), heresy=_NO_HERESY)  # type: ignore[arg-type]
 
     assert tracked.order == ["upsert_review_data"]
     assert len(store.list_unstructured(10)) == 1, "판정이 남으면 이 공고는 영영 초안 없이 끝난다"
@@ -367,7 +374,9 @@ def test_the_batch_isolates_one_failure_from_the_rest(store: JsonStore) -> None:
     store.save_source_data(good)
     store.save_source_data(bad)
 
-    report = structure_pending(store, _SelectiveExtractor({"2"}), StructureOptions(limit=10))
+    report = structure_pending(
+        store, _SelectiveExtractor({"2"}), StructureOptions(limit=10), heresy=_NO_HERESY
+    )
 
     assert report.scanned == 2
     assert report.drafted == 1
@@ -381,7 +390,9 @@ def test_dry_run_writes_nothing(store: JsonStore, data_dir: Path) -> None:
     store.save_source_data(record)
     extractor = _FakeExtractor()
 
-    report = structure_pending(store, extractor, StructureOptions(limit=10, dry_run=True))
+    report = structure_pending(
+        store, extractor, StructureOptions(limit=10, dry_run=True), heresy=_NO_HERESY
+    )
 
     assert report.drafted == 1
     assert extractor.calls == [record.external_id]  # 호출은 한다
@@ -397,7 +408,7 @@ def test_the_source_filter_bounds_the_sample(store: JsonStore, data_dir: Path) -
     )
 
     report = structure_pending(
-        store, _FakeExtractor(), StructureOptions(limit=1, source_key="YTUS")
+        store, _FakeExtractor(), StructureOptions(limit=1, source_key="YTUS"), heresy=_NO_HERESY
     )
 
     assert report.scanned == 1
@@ -422,6 +433,7 @@ def test_results_reach_the_sink_in_order(store: JsonStore) -> None:
         on_result=lambda result, progress: seen.append(
             (result.record.external_id, progress.scanned)
         ),
+        heresy=_NO_HERESY,
     )
 
     # 누적을 파이프라인이 함께 넘긴다 — 받는 쪽이 따로 세면 두 숫자가 갈라진다.
@@ -454,13 +466,15 @@ def test_dry_run_still_assembles_the_draft(
     store.save_source_data(record)
     monkeypatch.setattr(structure, "build_draft", _refuses_to_build)
 
-    result = structure_one(record, store, _FakeExtractor(), dry_run=True)
+    result = structure_one(record, store, _FakeExtractor(), dry_run=True, heresy=_NO_HERESY)
 
     assert result.verdict is Verdict.FAILED, "미리보기가 조립을 건너뛰면 여기서 안 걸린다"
     assert len(store.list_unstructured(10)) == 1, "미리보기는 시도 횟수도 남기지 않는다"
 
 
-def _refuses_to_build(_record: SourceData, _extraction: Extraction) -> ReviewData:
+def _refuses_to_build(
+    _record: SourceData, _extraction: Extraction, **_kwargs: object
+) -> ReviewData:
     """레코드 불변식이 거부하는 상황의 대역.
 
     ⚠️ 지금은 모델 답 때문에 조립이 실패하지 않는다(`classify`·`_pay_range`가 다 맞춘다) —
@@ -478,7 +492,7 @@ def test_a_draft_that_cannot_be_stored_is_a_failure(
     store.save_source_data(record)
     monkeypatch.setattr(structure, "build_draft", _refuses_to_build)
 
-    result = structure_one(record, store, _FakeExtractor())
+    result = structure_one(record, store, _FakeExtractor(), heresy=_NO_HERESY)
 
     assert result.verdict is Verdict.FAILED
     assert len(store.list_unstructured(10)) == 1
@@ -512,7 +526,7 @@ def test_a_posting_with_images_is_left_untouched(
     store.save_source_data(record)
     extractor = _FakeExtractor()
 
-    result = structure_one(record, store, extractor)  # 그림 소스 없이
+    result = structure_one(record, store, extractor, heresy=_NO_HERESY)  # 그림 소스 없이
 
     assert result.verdict is Verdict.DEFERRED
     assert extractor.calls == [], "이미지를 못 보내면서 돈을 쓸 이유가 없다"
@@ -525,7 +539,9 @@ def test_a_posting_with_images_is_left_untouched(
 def test_deferred_postings_are_counted_in_the_report(store: JsonStore) -> None:
     store.save_source_data(_source_data("1", image_urls=("https://e.kr/p.png",)))
 
-    report = structure_pending(store, _FakeExtractor(), StructureOptions(limit=10))
+    report = structure_pending(
+        store, _FakeExtractor(), StructureOptions(limit=10), heresy=_NO_HERESY
+    )
 
     assert report.deferred == 1
     assert report.scanned == 1
@@ -546,7 +562,12 @@ def test_a_broken_store_row_does_not_abort_the_batch(store: JsonStore) -> None:
     store.save_source_data(second)
     broken = _BrokenOnFirstStore(store, poisoned="1")
 
-    report = structure_pending(broken, _FakeExtractor(), StructureOptions(limit=10))  # type: ignore[arg-type]
+    report = structure_pending(
+        broken,  # type: ignore[arg-type]
+        _FakeExtractor(),
+        StructureOptions(limit=10),
+        heresy=_NO_HERESY,
+    )
 
     assert report.failed == 1
     assert report.drafted == 1, "뒤의 공고는 정상 처리돼야 한다"
@@ -589,8 +610,13 @@ def test_the_store_is_always_asked_for_everything() -> None:
             return ()
 
     recording = _RecordingStore()
-    structure_pending(recording, _FakeExtractor(), StructureOptions(limit=None))  # type: ignore[arg-type]
-    structure_pending(recording, _FakeExtractor(), StructureOptions(limit=7, source_key="YTUS"))  # type: ignore[arg-type]
+    structure_pending(recording, _FakeExtractor(), StructureOptions(limit=None), heresy=_NO_HERESY)  # type: ignore[arg-type]
+    structure_pending(
+        recording,  # type: ignore[arg-type]
+        _FakeExtractor(),
+        StructureOptions(limit=7, source_key="YTUS"),
+        heresy=_NO_HERESY,
+    )
 
     assert asked[0][0] > 3_188, "수집한 3,188건이 한 번에 들어가야 한다"
     assert asked[1][0] == asked[0][0], "limit이 조회를 자르지 않는다"
@@ -603,7 +629,13 @@ def test_a_failure_to_record_the_failure_keeps_the_original_cause(store: JsonSto
     store.save_source_data(record)
     broken = _BrokenStateStore(store)
 
-    result = structure_one(record, broken, _FakeExtractor(GeminiError("안전 차단")), dry_run=False)  # type: ignore[arg-type]
+    result = structure_one(
+        record,
+        broken,  # type: ignore[arg-type]
+        _FakeExtractor(GeminiError("안전 차단")),
+        dry_run=False,
+        heresy=_NO_HERESY,
+    )
 
     assert result.verdict is Verdict.FAILED
     assert result.error is not None
@@ -620,6 +652,7 @@ def test_a_verdict_that_cannot_be_stored_does_not_abort_the_batch(store: JsonSto
         _BrokenStateStore(store),  # type: ignore[arg-type]
         _FakeExtractor(_extraction(IsChurchRecruitment.NO)),
         StructureOptions(limit=10),
+        heresy=_NO_HERESY,
     )
 
     assert report.failed == 2, "두 건 모두 실패로 세되 배치는 끝까지 돈다"
@@ -662,7 +695,9 @@ def test_limit_counts_paid_judgements_not_rows_scanned(store: JsonStore) -> None
         _source_data("real", fetched_at=datetime(2026, 8, 10, 10, 0, tzinfo=KST))
     )
 
-    report = structure_pending(store, _FakeExtractor(), StructureOptions(limit=1))
+    report = structure_pending(
+        store, _FakeExtractor(), StructureOptions(limit=1), heresy=_NO_HERESY
+    )
 
     assert report.drafted == 1, "대기 공고를 지나 실제 공고에 도달해야 한다"
     assert report.deferred == 5
@@ -676,7 +711,7 @@ def test_limit_stops_as_soon_as_it_is_reached(store: JsonStore) -> None:
         )
     extractor = _FakeExtractor()
 
-    report = structure_pending(store, extractor, StructureOptions(limit=2))
+    report = structure_pending(store, extractor, StructureOptions(limit=2), heresy=_NO_HERESY)
 
     assert report.drafted == 2
     assert len(extractor.calls) == 2, "상한을 넘겨 호출하면 그만큼 돈이 나간다"
@@ -704,7 +739,7 @@ def test_a_poster_posting_is_judged_once_images_can_be_fetched(store: JsonStore)
     extractor = _FakeExtractor()
     images = _FakeImages(MediaSet(items=(Media(media_type="image/png", data=b"x" * 5_000),)))
 
-    result = structure_one(record, store, extractor, images=images)
+    result = structure_one(record, store, extractor, images=images, heresy=_NO_HERESY)
 
     assert result.verdict is Verdict.DRAFTED
     assert extractor.image_counts == [1], "그림이 모델에 실제로 넘어가야 한다"
@@ -717,7 +752,7 @@ def test_a_text_posting_never_asks_for_images(store: JsonStore) -> None:
     store.save_source_data(record)
     images = _FakeImages()
 
-    structure_one(record, store, _FakeExtractor(), images=images)
+    structure_one(record, store, _FakeExtractor(), images=images, heresy=_NO_HERESY)
 
     assert images.asked == []
 
@@ -729,7 +764,7 @@ def test_a_posting_still_gets_judged_when_its_images_cannot_be_read(store: JsonS
     extractor = _FakeExtractor()
     images = _FakeImages(MediaSet(failures=("p.png: HTTP 404",)))
 
-    result = structure_one(record, store, extractor, images=images)
+    result = structure_one(record, store, extractor, images=images, heresy=_NO_HERESY)
 
     assert result.verdict is Verdict.DRAFTED
     assert extractor.image_counts == [0]
@@ -855,7 +890,7 @@ def test_every_contradictory_classification_is_reconciled(
         role=role,
     )
 
-    result = structure_one(record, store, _FakeExtractor(answer))
+    result = structure_one(record, store, _FakeExtractor(answer), heresy=_NO_HERESY)
 
     assert result.verdict is Verdict.DRAFTED, "맞춰서 저장해야 한다 — 실패시키면 공고를 잃는다"
     draft = result.draft
@@ -886,7 +921,9 @@ def test_a_failed_posting_still_reports_its_unread_images(store: JsonStore) -> N
     store.save_source_data(record)
     images = _FakeImages(MediaSet(failures=("p.png: HTTP 404",)))
 
-    result = structure_one(record, store, _FakeExtractor(GeminiError("429")), images=images)
+    result = structure_one(
+        record, store, _FakeExtractor(GeminiError("429")), images=images, heresy=_NO_HERESY
+    )
 
     assert result.verdict is Verdict.FAILED
     assert result.media_note is not None and "못 읽음" in result.media_note
@@ -897,7 +934,9 @@ def test_the_report_counts_and_samples_unread_images(store: JsonStore) -> None:
     store.save_source_data(_source_data("1", image_urls=("https://e.kr/p.png",)))
     images = _FakeImages(MediaSet(failures=("p.png: HTTP 404",)))
 
-    report = structure_pending(store, _FakeExtractor(), StructureOptions(limit=5), images=images)
+    report = structure_pending(
+        store, _FakeExtractor(), StructureOptions(limit=5), images=images, heresy=_NO_HERESY
+    )
 
     assert report.text_only == 1
     assert report.media_failures[0].posting == "DAESHIN/1"
@@ -913,7 +952,11 @@ def test_an_excluded_posting_keeps_its_image_reason(store: JsonStore) -> None:
     images = _FakeImages(MediaSet(failures=("p.png: HTTP 404",)))
 
     result = structure_one(
-        record, store, _FakeExtractor(_extraction(IsChurchRecruitment.NO)), images=images
+        record,
+        store,
+        _FakeExtractor(_extraction(IsChurchRecruitment.NO)),
+        images=images,
+        heresy=_NO_HERESY,
     )
 
     assert result.verdict is Verdict.EXCLUDED
@@ -968,7 +1011,7 @@ def test_a_closed_posting_is_rejected_on_creation(store: JsonStore, data_dir: Pa
         description="부교역자를 청빙합니다.",
     )
 
-    result = structure_one(record, store, _FakeExtractor(extraction))
+    result = structure_one(record, store, _FakeExtractor(extraction), heresy=_NO_HERESY)
 
     assert result.verdict is Verdict.DRAFTED, "레코드는 남긴다 — 없애는 게 아니다"
     draft = _drafts(data_dir)[0]
@@ -994,7 +1037,7 @@ def test_a_body_that_merely_mentions_completion_is_not_closed(
         description="부교역자를 청빙합니다.",
     )
 
-    structure_one(record, store, _FakeExtractor(extraction))
+    structure_one(record, store, _FakeExtractor(extraction), heresy=_NO_HERESY)
 
     assert _drafts(data_dir)[0].review_status is ReviewStatus.PENDING
 
@@ -1060,7 +1103,9 @@ def test_two_boards_reach_the_model_at_the_same_time(store: JsonStore) -> None:
     _fill(store, {"DAESHIN": 1, "YTUS": 1})
     extractor = _BarrierExtractor(threading.Barrier(2))
 
-    report = structure_pending(store, extractor, StructureOptions(limit=10), workers=2)
+    report = structure_pending(
+        store, extractor, StructureOptions(limit=10), workers=2, heresy=_NO_HERESY
+    )
 
     assert report.drafted == 2
     assert sorted(extractor.seen) == ["DAESHIN/0", "YTUS/0"]
@@ -1075,7 +1120,7 @@ def test_one_board_never_has_two_postings_in_flight(store: JsonStore) -> None:
     _fill(store, {"DAESHIN": 4, "YTUS": 4})
     probe = _ConcurrencyProbe()
 
-    structure_pending(store, probe, StructureOptions(limit=20), workers=8)
+    structure_pending(store, probe, StructureOptions(limit=20), workers=8, heresy=_NO_HERESY)
 
     assert probe.peak == {"DAESHIN": 1, "YTUS": 1}
 
@@ -1104,7 +1149,7 @@ def test_a_board_keeps_the_oldest_first_inside(store: JsonStore) -> None:
         )
     probe = _ConcurrencyProbe(delay=0)
 
-    structure_pending(store, probe, StructureOptions(limit=10), workers=4)
+    structure_pending(store, probe, StructureOptions(limit=10), workers=4, heresy=_NO_HERESY)
 
     assert probe.calls == ["D0", "D1", "D2"]
 
@@ -1117,7 +1162,9 @@ def test_the_paid_limit_holds_when_boards_run_together(store: JsonStore) -> None
     _fill(store, {"CSU": 4, "PUTS": 4, "YTUS": 4, "BPU": 4, "HTUS": 4, "SJS": 4})
     probe = _ConcurrencyProbe()
 
-    report = structure_pending(store, probe, StructureOptions(limit=5), workers=6)
+    report = structure_pending(
+        store, probe, StructureOptions(limit=5), workers=6, heresy=_NO_HERESY
+    )
 
     assert len(probe.calls) == 5, "게시판이 각자 한 건씩 더 보냈다"
     assert report.drafted == 5
@@ -1135,7 +1182,9 @@ def test_a_posting_the_model_never_saw_does_not_spend_the_limit(store: JsonStore
         )
     extractor = _FakeExtractor()
 
-    report = structure_pending(store, extractor, StructureOptions(limit=2), workers=4)
+    report = structure_pending(
+        store, extractor, StructureOptions(limit=2), workers=4, heresy=_NO_HERESY
+    )
 
     assert report.empty == 3
     assert len(extractor.calls) == 2
@@ -1155,7 +1204,9 @@ def test_only_the_verdicts_that_called_the_model_spend_the_limit() -> None:
 
 def test_workers_must_be_at_least_one(store: JsonStore) -> None:
     with pytest.raises(ValueError, match="workers"):
-        structure_pending(store, _FakeExtractor(), StructureOptions(limit=1), workers=0)
+        structure_pending(
+            store, _FakeExtractor(), StructureOptions(limit=1), workers=0, heresy=_NO_HERESY
+        )
 
 
 # ── 집계·표시 ────────────────────────────────────────────────────
@@ -1166,7 +1217,11 @@ def test_the_tally_loses_nothing_when_boards_finish_together(store: JsonStore) -
     _fill(store, dict.fromkeys(("CSU", "PUTS", "YTUS", "BPU", "HTUS", "SJS"), 5))
 
     report = structure_pending(
-        store, _ConcurrencyProbe(delay=0), StructureOptions(limit=None), workers=6
+        store,
+        _ConcurrencyProbe(delay=0),
+        StructureOptions(limit=None),
+        workers=6,
+        heresy=_NO_HERESY,
     )
 
     assert report.scanned == 30
@@ -1195,6 +1250,7 @@ def test_the_progress_sink_never_runs_twice_at_once(store: JsonStore) -> None:
         StructureOptions(limit=None),
         on_result=sink,
         workers=3,
+        heresy=_NO_HERESY,
     )
 
     assert peak == 1
@@ -1235,6 +1291,7 @@ def test_a_broken_ledger_stops_the_run_instead_of_burning_the_budget(store: Json
         extractor,
         StructureOptions(limit=None),
         workers=1,
+        heresy=_NO_HERESY,
     )
 
     assert report.halted is not None
@@ -1263,6 +1320,7 @@ def test_scattered_broken_rows_do_not_stop_the_run(store: JsonStore) -> None:
         _FakeExtractor(),
         StructureOptions(limit=None),
         workers=1,
+        heresy=_NO_HERESY,
     )
 
     assert report.halted is None
@@ -1313,6 +1371,7 @@ def test_a_broken_ledger_halts_even_when_the_model_also_fails(store: JsonStore) 
         extractor,
         StructureOptions(limit=None),
         workers=1,
+        heresy=_NO_HERESY,
     )
 
     assert report.halted is not None
@@ -1334,7 +1393,146 @@ def test_the_overshoot_is_bounded_by_the_worker_count(store: JsonStore) -> None:
         extractor,
         StructureOptions(limit=None),
         workers=workers,
+        heresy=_NO_HERESY,
     )
 
     assert report.halted is not None
     assert len(extractor.calls) <= STORE_FAILURE_LIMIT + workers - 1
+
+
+# ── 이단 대조 배선 ───────────────────────────────────────────────
+
+
+#: 이 파일의 이단 대조 테스트가 쓰는 **가짜 교회명**. ⚠️ 실존 교회 이름을 쓰지 않는다 —
+#: 목록을 커밋하지 않는 이유(실명 자료)가 테스트로 새면 그 조치가 무의미해지고, 무고한
+#: 실존 교회가 공개 리포에서 "이단 목록 항목"으로 읽힌다.
+_LISTED_NAME: Final = "○○교회"
+
+
+def _listed(name: str = _LISTED_NAME, region: Region | None = None) -> HeresyRef:
+    return HeresyRef.of((HeresyEntry("아무개", (name,), ("합신",), region),))
+
+
+def test_a_listed_church_is_rejected_as_it_is_built() -> None:
+    """⚠️ 만들면서 거절한다 — 레코드 불변식이 "REJECTED면 이유가 있어야 한다"라
+    처음부터 맞춰 만들어야 생성된다(SPEC §5.4)."""
+    draft = build_draft(
+        _source_data(),
+        _extraction(),
+        heresy=screen(_LISTED_NAME, None, None, _listed()),
+    )
+
+    assert draft.review_status is ReviewStatus.REJECTED
+    assert draft.reject_reason is RejectReason.HERESY
+    assert draft.heresy_flag is True
+    assert draft.heresy_evidence is not None and _LISTED_NAME in draft.heresy_evidence
+
+
+def test_heresy_outranks_a_closed_posting() -> None:
+    """⚠️ `reject_reason`은 한 칸뿐이다. 마감은 **그 공고**의 사실이고 이단은 **그 교회**의
+    사실이라, 뒤에 올 공고에도 그대로 적용되는 쪽을 남긴다."""
+    record = replace(_source_data(), title=f"[청빙완료] {_LISTED_NAME} 부목사")
+
+    draft = build_draft(record, _extraction(), heresy=screen(_LISTED_NAME, None, None, _listed()))
+
+    assert draft.reject_reason is RejectReason.HERESY
+
+
+def test_a_posting_that_is_not_listed_keeps_its_clean_record() -> None:
+    draft = build_draft(_source_data(), _extraction(), heresy=None)
+
+    assert draft.review_status is ReviewStatus.PENDING
+    assert draft.heresy_flag is False
+    assert draft.heresy_evidence is None
+
+
+def test_the_screening_runs_on_the_verified_extraction(store: JsonStore, data_dir: Path) -> None:
+    """⚠️ 검산 **뒤에** 대조해야 한다 — `verify`가 지어낸 교회명을 비우므로, 없는 이름
+    때문에 무고한 공고가 거절되는 일이 없다."""
+    record = _source_data(raw_text=f"{_LISTED_NAME}에서 사역자를 청빙합니다.")
+    store.save_source_data(record)
+
+    result = structure_one(
+        record,
+        store,
+        _FakeExtractor(replace(_extraction(), church_name=_LISTED_NAME)),
+        heresy=_listed(),
+    )
+
+    assert result.verdict is Verdict.DRAFTED
+    drafts = _drafts(data_dir)
+    assert drafts[0].reject_reason is RejectReason.HERESY, "저장된 초안까지 거절이 실려야 한다"
+
+
+def test_a_listed_name_in_another_region_is_left_alone(store: JsonStore, data_dir: Path) -> None:
+    """지역이 다른 같은 이름은 다른 교회다 — 목록 항목에 지역이 있을 때만 갈라진다."""
+    record = _source_data(raw_text=f"{_LISTED_NAME}에서 사역자를 청빙합니다.")
+    store.save_source_data(record)
+
+    result = structure_one(
+        record,
+        store,
+        _FakeExtractor(replace(_extraction(region=Region.GYEONGBUK), church_name=_LISTED_NAME)),
+        heresy=_listed(region=Region.SEOUL),
+    )
+
+    assert result.verdict is Verdict.DRAFTED
+    assert _drafts(data_dir)[0].review_status is ReviewStatus.PENDING
+
+
+def test_a_church_name_the_model_invented_does_not_reject_the_posting(
+    store: JsonStore, data_dir: Path
+) -> None:
+    """⚠️ **검산 뒤에 대조한다.** 모델이 원문에 없는 교회명을 답했을 때 그 이름이 하필 목록에
+    있으면, 검산 전에 대조하는 순간 **무고한 공고가 이단으로 거절된다.**
+
+    `verify`가 그런 값을 이미 비우므로(`church_name=None`) 대조할 것이 남지 않는다.
+    """
+    record = _source_data(raw_text="사역자를 청빙합니다. 문의는 아래로 주세요.")
+    store.save_source_data(record)
+
+    result = structure_one(
+        record,
+        store,
+        _FakeExtractor(replace(_extraction(), church_name=_LISTED_NAME)),
+        heresy=_listed(),
+    )
+
+    assert result.verdict is Verdict.DRAFTED
+    draft = _drafts(data_dir)[0]
+    assert draft.church_name is None, "원문에 없는 이름은 검산이 비운다"
+    assert draft.review_status is ReviewStatus.PENDING, "비워진 이름으로 거절하면 안 된다"
+
+
+def test_the_report_counts_automatic_rejections(store: JsonStore) -> None:
+    """⚠️ 거절된 초안은 **검수 큐에 뜨지 않는다** — 실행 요약에도 안 보이면 아무도 모른다.
+
+    `drafted`에 포함되므로 따로 세지 않으면 "초안 10건"이 전부 검수 대기처럼 읽힌다.
+    """
+    record = _source_data(raw_text=f"{_LISTED_NAME}에서 사역자를 청빙합니다.")
+    store.save_source_data(record)
+    tally = structure._Tally()
+
+    tally.add(
+        structure_one(
+            record,
+            store,
+            _FakeExtractor(replace(_extraction(), church_name=_LISTED_NAME)),
+            heresy=_listed(),
+        )
+    )
+    report = tally.report()
+
+    assert report.drafted == 1
+    assert report.rejected == 1
+    assert report.rejected_reasons == {RejectReason.HERESY.value: 1}
+
+
+def test_a_clean_draft_is_not_counted_as_rejected(store: JsonStore) -> None:
+    record = _source_data()
+    store.save_source_data(record)
+    tally = structure._Tally()
+
+    tally.add(structure_one(record, store, _FakeExtractor(), heresy=_NO_HERESY))
+
+    assert tally.report().rejected == 0

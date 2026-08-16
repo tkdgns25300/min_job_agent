@@ -47,6 +47,7 @@ from minjob_ingest.lib.gemini import GeminiError
 from minjob_ingest.models import ReviewData, SourceData
 from minjob_ingest.pipeline.denomination import confirm
 from minjob_ingest.pipeline.extraction import Extraction, ExtractionError
+from minjob_ingest.pipeline.heresy import HeresyMatch, HeresyRef, screen
 from minjob_ingest.pipeline.media import Media, MediaSet, MediaSource, failure_note, wanted_urls
 from minjob_ingest.pipeline.normalize import clean_title, closed_by_board
 from minjob_ingest.pipeline.verify import VerifyReport, verify
@@ -177,6 +178,11 @@ class StructureReport:
     empty: int = 0
     deferred: int = 0
     failed: int = 0
+    #: 만들면서 거절한 초안 수와 사유별 횟수(이단·마감 · SPEC §5.4·§5.4b). ⚠️ **초안 수에
+    #: 포함된다** — 초안은 만들어졌고 검수 큐에 안 뜰 뿐이다. 이 숫자가 안 보이면
+    #: "잘못 걸러도 영원히 드러나지 않는다"가 그대로 일어난다.
+    rejected: int = 0
+    rejected_reasons: Mapping[str, int] = field(default_factory=dict)
     #: 그림을 하나라도 못 읽고 텍스트만으로 판정한 공고 수. **실패가 아니지만 조용히
     #: 넘기면 안 된다** — 포스터 공고가 그렇게 판정되면 되돌릴 수 없다.
     text_only: int = 0
@@ -214,6 +220,7 @@ class _Tally:
     deferred: int = 0
     failed: int = 0
     text_only: int = 0
+    rejected_reasons: Counter[str] = field(default_factory=Counter)
     scrubbed_fields: Counter[str] = field(default_factory=Counter)
     unverifiable: int = 0
     unchecked_fields: Counter[str] = field(default_factory=Counter)
@@ -242,6 +249,8 @@ class _Tally:
         match result.verdict:
             case Verdict.DRAFTED:
                 self.drafted += 1
+                if result.draft is not None and result.draft.reject_reason is not None:
+                    self.rejected_reasons[result.draft.reject_reason.value] += 1
             case Verdict.EXCLUDED:
                 self.excluded += 1
             case Verdict.EMPTY:
@@ -279,6 +288,8 @@ class _Tally:
             deferred=self.deferred,
             failed=self.failed,
             text_only=self.text_only,
+            rejected=sum(self.rejected_reasons.values()),
+            rejected_reasons=dict(self.rejected_reasons),
             scrubbed=sum(self.scrubbed_fields.values()),
             scrubbed_fields=dict(self.scrubbed_fields),
             unverifiable=self.unverifiable,
@@ -339,6 +350,7 @@ def structure_pending(
     extractor: Extractor,
     options: StructureOptions,
     *,
+    heresy: HeresyRef,
     on_result: ResultSink | None = None,
     images: MediaSource | None = None,
     workers: int = DEFAULT_WORKERS,
@@ -367,7 +379,9 @@ def structure_pending(
         for record in records:
             if tally.halted is not None or not budget.take():
                 return
-            result = structure_one(record, store, extractor, dry_run=options.dry_run, images=images)
+            result = structure_one(
+                record, store, extractor, heresy=heresy, dry_run=options.dry_run, images=images
+            )
             if result.verdict in _FREE_VERDICTS:
                 budget.give_back()
             with tally_lock:
@@ -388,12 +402,13 @@ def structure_one(
     store: Store,
     extractor: Extractor,
     *,
+    heresy: HeresyRef,
     dry_run: bool = False,
     images: MediaSource | None = None,
 ) -> StructureResult:
     """공고 1건을 판정하고 저장한다. 예외를 밖으로 던지지 않는다 — 실패도 결과다."""
     try:
-        return _judge(record, store, extractor, dry_run=dry_run, images=images)
+        return _judge(record, store, extractor, heresy=heresy, dry_run=dry_run, images=images)
     except (StoreError, SerdeError) as err:
         # ⚠️ 저장이 깨진 행 **하나** 때문에 배치가 멈추면 뒤의 수천 건에 영원히 도달하지
         # 못한다(SPEC §4 글 단위 격리). 시도 횟수도 못 올리므로(그 기록 역시 저장이다)
@@ -403,12 +418,18 @@ def structure_one(
         )
 
 
-def build_draft(record: SourceData, extraction: Extraction) -> ReviewData:
+def build_draft(
+    record: SourceData, extraction: Extraction, *, heresy: HeresyMatch | None = None
+) -> ReviewData:
     """검수 초안 조립.
 
-    ⚠️ **모델이 뽑은 값은 그대로 옮기고, 판정은 붙이지 않는다.** `confidence`·이단·`dedup_key`는
+    ⚠️ **모델이 뽑은 값은 그대로 옮기고, 판정은 붙이지 않는다.** `confidence`·`dedup_key`는
     규칙이 정한다(ROADMAP 1-2 3단계). 그때까지는 `LOW`(운영자 우선검토)이고 — 게이트1
     `UNCERTAIN`은 레코드 불변식이 `LOW`를 요구하기도 한다(SPEC §5.1).
+
+    ⚠️ **이단은 목록이 아니라 판정 결과를 받는다**(`heresy`). 여기서 목록을 뒤지면 이 함수가
+    파일을 알아야 하고, 기본값이 "목록 없음"이 되어 **조용히 아무도 안 걸리는** 길이 생긴다.
+    `None`은 "목록에 없다"는 **참인 값**이다 — 목록을 못 읽은 경우는 CLI가 먼저 멈춘다.
 
     ⚠️ **교단은 규칙이 확정한다**(`pipeline/denomination.py` · SPEC §5.3 ①). 모델은 원문 표기를
     옮기기만 하고, key로 바꾸는 것은 코드다 — 모델에게 시키면 같은 `예장 합동`이 실행마다
@@ -428,6 +449,9 @@ def build_draft(record: SourceData, extraction: Extraction) -> ReviewData:
     # ⚠️ **모델에게 묻지 않는다** — 게시판 상태 필드와 제목의 `청빙완료`·`마감` 표시를 보는
     #    일이라 글자만 보면 되고, 유료 호출과 실행별 흔들림 없이 코드가 판정한다.
     closed = closed_by_board(record.title, record.raw_meta)
+    # ⚠️ **이단이 마감보다 우선한다.** `reject_reason`은 한 칸뿐인데, 마감은 그 공고에 관한
+    #    사실이고 이단은 그 교회에 관한 사실이라 뒤에 올 공고에도 그대로 적용된다.
+    reject_reason = _reject_reason(heresy, closed)
     return ReviewData(
         source_data_id=record.id,
         run_id=record.run_id,
@@ -474,9 +498,17 @@ def build_draft(record: SourceData, extraction: Extraction) -> ReviewData:
         contact_tel=extraction.contact_tel,
         contact_link=extraction.contact_link,
         contact_post=extraction.contact_post,
-        review_status=ReviewStatus.REJECTED if closed else ReviewStatus.PENDING,
-        reject_reason=RejectReason.CLOSED if closed else None,
+        heresy_flag=heresy is not None,
+        heresy_evidence=heresy.evidence if heresy else None,
+        review_status=ReviewStatus.REJECTED if reject_reason else ReviewStatus.PENDING,
+        reject_reason=reject_reason,
     )
+
+
+def _reject_reason(heresy: HeresyMatch | None, closed: bool) -> RejectReason | None:
+    if heresy is not None:
+        return RejectReason.HERESY
+    return RejectReason.CLOSED if closed else None
 
 
 def waits_for_media(record: SourceData, images: MediaSource | None) -> bool:
@@ -496,6 +528,7 @@ def _judge(
     store: Store,
     extractor: Extractor,
     *,
+    heresy: HeresyRef,
     dry_run: bool,
     images: MediaSource | None,
 ) -> StructureResult:
@@ -532,7 +565,15 @@ def _judge(
     try:
         # ⚠️ `--dry-run`에서도 **만들어 본다**. 조립을 건너뛰면 리허설은 통과하고 본 실행만
         # 터진다 — 미리보기의 목적이 "이대로 저장해도 되는가"를 보는 것이라 무의미해진다.
-        draft = build_draft(record, extraction)
+        # ⚠️ **검산이 끝난 값으로 대조한다** — `verify`가 지어낸 교회명을 이미 비웠으므로,
+        #    없는 교회 이름 때문에 거절되는 일이 없다.
+        draft = build_draft(
+            record,
+            extraction,
+            heresy=screen(
+                extraction.church_name, extraction.raw_denomination, extraction.region, heresy
+            ),
+        )
     except ValueError as err:
         # 모델 값이 레코드 불변식과 어긋났다(SPEC §5.1·§6). 저장할 수 없는 초안이므로 실패다.
         return _note_failure(record, store, err, dry_run=dry_run, media_note=note)

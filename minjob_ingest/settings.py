@@ -15,10 +15,16 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from minjob_ingest.paths import DEFAULT_DATA_DIR, DEFAULT_DOTENV_PATH, DEFAULT_SOURCES_PATH
+from minjob_ingest.paths import (
+    DEFAULT_DATA_DIR,
+    DEFAULT_DOTENV_PATH,
+    DEFAULT_HERESY_PATH,
+    DEFAULT_SOURCES_PATH,
+)
 
 ENV_DATA_DIR = "MINJOB_DATA_DIR"
 ENV_SOURCES = "MINJOB_SOURCES"
+ENV_HERESY = "MINJOB_HERESY_REF"
 
 ENV_VERTEX_PROJECT = "VERTEX_AI_PROJECT_ID"
 ENV_VERTEX_LOCATION = "VERTEX_AI_LOCATION"
@@ -79,6 +85,8 @@ class Settings:
     data_dir: Path
     #: 소스 레지스트리 config 경로.
     sources_path: Path
+    #: 이단 참고 목록 경로(커밋 금지 · 사람이 관리).
+    heresy_path: Path
 
     @classmethod
     def load(
@@ -86,6 +94,7 @@ class Settings:
         *,
         data_dir: Path | None = None,
         sources_path: Path | None = None,
+        heresy_path: Path | None = None,
         dotenv_path: Path | None = DEFAULT_DOTENV_PATH,
     ) -> Settings:
         """`.env`(있으면) + 환경변수에서 읽는다. 인자로 준 값이 최우선(CLI 플래그).
@@ -100,6 +109,7 @@ class Settings:
         return cls(
             data_dir=_first_path(data_dir, env_str(ENV_DATA_DIR), DEFAULT_DATA_DIR),
             sources_path=_first_path(sources_path, env_str(ENV_SOURCES), DEFAULT_SOURCES_PATH),
+            heresy_path=_first_path(heresy_path, env_str(ENV_HERESY), DEFAULT_HERESY_PATH),
         )
 
     def require_vertex(self, *, lite: bool = False) -> VertexSettings:

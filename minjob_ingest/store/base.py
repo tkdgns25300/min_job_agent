@@ -38,7 +38,10 @@ class RequeueResult:
 
     #: 미판정으로 되돌린 공고 수.
     requeued: int = 0
-    #: 운영자가 손대 건너뛴 공고(`source_key/external_id`).
+    #: 초안을 지킬 이유가 있어 건너뛴 공고(`source_key/external_id`).
+    #: ⚠️ **"운영자가 손댔다"는 뜻이 아니다** — 기준은 `ReviewData.is_safe_to_replace`이고,
+    #: 거기에는 코드가 만든 거절(`HERESY`·`CLOSED`)도 걸린다. 그런 행은 목록·규칙을 고쳐도
+    #: 되돌아오지 않으므로, 세는 쪽이 이유를 단정하지 않는다.
     skipped: tuple[str, ...] = ()
 
 

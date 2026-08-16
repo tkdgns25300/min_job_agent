@@ -54,6 +54,7 @@ from minjob_ingest.pipeline.health import (
     record_failure,
     record_success,
 )
+from minjob_ingest.pipeline.heresy import HeresyRefError, load_ref
 from minjob_ingest.pipeline.media import board_media
 from minjob_ingest.pipeline.snapshot import (
     SnapshotResult,
@@ -126,6 +127,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except VertexConfigError as err:
         print(f"[{_PROGRAM}] Vertex 설정 오류: {err}", file=sys.stderr)
+        return 1
+    except HeresyRefError as err:
+        # ⚠️ 목록 없이 돌면 이단으로 규정된 교회의 공고가 검수 큐에 그대로 올라간다.
+        #    유료 호출을 시작하기 전에 여기서 멈춘다(SPEC §5.4).
+        print(f"[{_PROGRAM}] 이단 참고 목록 오류: {err}", file=sys.stderr)
         return 1
     except GeminiError as err:
         print(f"[{_PROGRAM}] Gemini 호출 실패: {err}", file=sys.stderr)
@@ -622,6 +628,9 @@ def _run_structure(
     console = Console()
     settings = Settings.load()
     store = JsonStore(settings.data_dir)
+    # ⚠️ **유료 호출을 시작하기 전에** 이단 목록을 읽는다. 뒤로 미루면 3,000건을 부른 뒤
+    #    목록이 없다는 것을 알게 되고, 그때는 이미 이단 교회 공고가 검수 큐에 들어가 있다.
+    heresy = load_ref(settings.heresy_path)
     client = GeminiClient(settings.require_vertex(lite=lite))
     extractor = GeminiExtractor(client)
 
@@ -631,6 +640,7 @@ def _run_structure(
     # ⚠️ 모델 이름을 **실행마다 찍는다** — 두 모델을 견주는 실행에서 어느 쪽 결과인지
     #    화면으로 확인할 수 없으면 `--out` 파일이 뒤바뀐 것을 알아낼 방법이 없다.
     console.field("모델", client.model, note="--lite" if lite else ENV_VERTEX_MODEL)
+    console.field("이단 목록", str(settings.heresy_path.name), note=f"{len(heresy.entries)}건")
     line = console.progress()
     preview = None if out is None else _PreviewFile(out, model=client.model)
     sinks: list[ResultSink] = [_structure_renderer(console, line, dry_run=dry_run)]
@@ -638,7 +648,13 @@ def _run_structure(
         sinks.append(preview.add)
     with _console_logging(console, verbose=verbose), board_media(_open_source_client) as images:
         report = structure_pending(
-            store, extractor, options, on_result=_fan_out(sinks), images=images, workers=workers
+            store,
+            extractor,
+            options,
+            heresy=heresy,
+            on_result=_fan_out(sinks),
+            images=images,
+            workers=workers,
         )
     line.clear()
     if preview is not None:
@@ -901,6 +917,13 @@ def _note_unfilled_columns(console: Console, draft: ReviewData) -> None:
     )
 
 
+def _draft_note(report: StructureReport, *, dry_run: bool) -> str:
+    if dry_run:
+        return "저장하지 않음(미리보기)"
+    pending = report.drafted - report.rejected
+    return f"검수 대기 {pending}건(PENDING)" if report.rejected else "검수 대기(PENDING)"
+
+
 def _print_structure_report(console: Console, report: StructureReport, *, dry_run: bool) -> None:
     console.line()
     if not report.scanned:
@@ -917,8 +940,17 @@ def _print_structure_report(console: Console, report: StructureReport, *, dry_ru
     console.field(
         "초안",
         console.paint(f"{report.drafted}건", "green", "bold"),
-        note="저장하지 않음(미리보기)" if dry_run else "검수 대기(PENDING)",
+        note=_draft_note(report, dry_run=dry_run),
     )
+    if report.rejected:
+        # ⚠️ **거절을 화면에 내놓는다.** 초안은 만들어졌지만 검수 큐에 뜨지 않는다 —
+        #    여기서 안 보이면 잘못 걸러도 아무도 모른다(SPEC §5.4).
+        breakdown = " · ".join(f"{name} {count}" for name, count in report.rejected_reasons.items())
+        console.field(
+            "  ↳ 자동 거절",
+            console.paint(f"{report.rejected}건", "yellow"),
+            note=f"{breakdown} — 검수 큐에 뜨지 않는다",
+        )
     if report.excluded:
         console.field("제외", f"{report.excluded}건", note="개교회 채용이 아님 — 초안 없음")
     if report.empty:

@@ -56,7 +56,8 @@ def main() -> int:
     print(f"{scope_label}: {result.requeued}건을 미판정으로 되돌렸다")
     if result.skipped:
         names = ", ".join(result.skipped[:_SKIPPED_SAMPLE])
-        print(f"⚠️ 운영자가 손대 건너뜀 {len(result.skipped)}건: {names}")
+        print(f"⚠️ 초안을 지켜 건너뜀 {len(result.skipped)}건: {names}")
+        print("   (검수 상태가 PENDING이 아닌 행 — 운영자 승인·거절과 코드가 만든 거절 둘 다 포함)")
     return 0
 
 

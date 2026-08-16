@@ -15,6 +15,9 @@ PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 #: 소스 레지스트리 config(커밋 대상).
 DEFAULT_SOURCES_PATH: Path = PROJECT_ROOT / "config" / "sources.json"
 
+#: 이단 참고 목록(**커밋 금지** — 실명 자료 · `.gitignore`). 사람이 관리한다.
+DEFAULT_HERESY_PATH: Path = PROJECT_ROOT / "config" / "heresy-ref.json"
+
 #: 로컬 JSON 저장소(gitignored). Supabase 전환 후에는 쓰이지 않는다.
 DEFAULT_DATA_DIR: Path = PROJECT_ROOT / "data"
 

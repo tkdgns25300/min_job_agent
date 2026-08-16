@@ -22,6 +22,7 @@ from minjob_ingest.models import SourceData, new_id
 from minjob_ingest.pipeline.collect import CollectReport
 from minjob_ingest.pipeline.extraction import Extraction
 from minjob_ingest.pipeline.health import EMPTY_RUNS_ALARM
+from minjob_ingest.pipeline.heresy import HeresyEntry, HeresyRef
 from minjob_ingest.pipeline.structure import (
     DEFAULT_WORKERS,
     StructureOptions,
@@ -40,6 +41,10 @@ from minjob_ingest.settings import (
     Settings,
 )
 from minjob_ingest.store.json_store import JsonStore
+
+#: `structure` 명령이 시작하자마자 읽는 이단 목록의 대역. 실제 파일은 실명 122건이 담겨
+#: **커밋되지 않으므로**(`.gitignore`) 테스트가 그것에 기대면 새로 받은 리포에서 전부 깨진다.
+_FAKE_HERESY = HeresyRef.of((HeresyEntry("아무개", ("○○교회",), ("합신",)),))
 
 
 def _write_config(tmp_path: Path, *, enabled: bool = True) -> Path:
@@ -438,9 +443,14 @@ class _FakeGemini:
 
 
 def _stub_gemini(monkeypatch: pytest.MonkeyPatch, *, asked: list[bool] | None = None) -> None:
-    """Vertex를 통째로 대역으로 바꾼다 — 이 테스트들은 유료 호출을 하지 않는다.
+    """Vertex와 이단 목록을 대역으로 바꾼다 — 이 테스트들은 유료 호출도 실명 파일 읽기도 안 한다.
 
     `asked`를 주면 `--lite`가 설정 층까지 실제로 닿았는지 기록한다.
+
+    ⚠️ **이단 목록을 함께 대역으로 둔다.** `structure`는 시작하자마자 `config/heresy-ref.json`을
+    읽는데, 그 파일은 실명 122건이 담겨 **커밋되지 않는다**(`.gitignore`). 대역이 없으면 이
+    테스트들이 운영자 컴퓨터에서만 통과하고 새로 받은 리포에서는 통째로 실패한다
+    (CLAUDE.md "pytest — fixture만 사용 · 네트워크 금지"와 같은 취지).
     """
 
     def require_vertex(_self: Settings, *, lite: bool = False) -> object:
@@ -450,6 +460,7 @@ def _stub_gemini(monkeypatch: pytest.MonkeyPatch, *, asked: list[bool] | None = 
 
     monkeypatch.setattr(cli, "GeminiClient", lambda _settings: _FakeGemini())
     monkeypatch.setattr(cli, "GeminiExtractor", lambda _client: object())
+    monkeypatch.setattr(cli, "load_ref", lambda _path: _FAKE_HERESY)
     monkeypatch.setattr(Settings, "require_vertex", require_vertex)
 
 
@@ -817,3 +828,61 @@ def test_a_halted_run_reports_failure(
     assert main(["structure", "--all"]) == 1
 
     assert "저장이 연속 5번 실패해 멈췄다" in capsys.readouterr().out
+
+
+def _no_vertex(_self: Settings, **_kwargs: object) -> object:
+    """Vertex 설정 검증을 건너뛴다 — 이 테스트들은 GCP 계정 없이 돌아야 한다."""
+    return object()
+
+
+def test_structure_stops_when_the_heresy_list_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ **목록 없이 돌면 이단으로 규정된 교회의 공고가 검수 큐에 그대로 올라간다**(SPEC §5.4).
+
+    조용히 넘어가면 아무도 그 사실을 모르므로, 유료 호출을 시작하기 전에 멈춘다.
+    """
+    called: list[bool] = []
+
+    def refuse(_settings: object) -> object:
+        called.append(True)
+        raise AssertionError("여기 오면 안 된다")
+
+    monkeypatch.setattr(cli, "GeminiClient", refuse)
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path / "data"))
+    monkeypatch.setenv("MINJOB_HERESY_REF", str(tmp_path / "없는목록.json"))
+
+    assert main(["structure", "--limit", "1"]) == 1
+
+    assert called == [], "Gemini 클라이언트를 만들기도 전에 멈춰야 한다"
+    assert "이단 참고 목록 오류" in capsys.readouterr().err
+
+
+def test_the_heresy_list_is_read_before_the_first_paid_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⚠️ 순서가 계약이다 — 뒤로 미루면 3,000건을 부른 뒤에야 목록이 없다는 것을 안다."""
+    order: list[str] = []
+
+    def note_heresy(_path: Path) -> HeresyRef:
+        order.append("heresy")
+        return _FAKE_HERESY
+
+    def note_gemini(_settings: object) -> _FakeGemini:
+        order.append("gemini")
+        return _FakeGemini()
+
+    monkeypatch.setattr(cli, "load_ref", note_heresy)
+    monkeypatch.setattr(cli, "GeminiClient", note_gemini)
+
+    def no_pipeline(*_args: object, **_kwargs: object) -> StructureReport:
+        return StructureReport()
+
+    monkeypatch.setattr(cli, "GeminiExtractor", lambda _client: object())
+    monkeypatch.setattr(Settings, "require_vertex", _no_vertex)
+    monkeypatch.setattr(cli, "structure_pending", no_pipeline)
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path / "data"))
+
+    assert main(["structure", "--limit", "1", "--dry-run"]) == 0
+
+    assert order == ["heresy", "gemini"], "--dry-run 도 유료 호출을 한다 — 같은 순서여야 한다"

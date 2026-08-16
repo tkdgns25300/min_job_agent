@@ -91,12 +91,12 @@ minjob_ingest/                 ★ 패키지 (= import 이름)
 │                                              (+ supabase_store.py 예정 = 1-6)
 ├── lib/gemini.py             Vertex 클라이언트 (재시도는 SDK 설정)
 └── pipeline/                collect·structure·extraction(프롬프트·스키마)·normalize(변환)·
-                            verify(원문 대조)·denomination(교단 확정)·media(그림·PDF 바이트)·
-                            health·snapshot
-                            (+ heresy·dedup 예정 = ROADMAP 1-2 규칙 후처리·1-3)
+                            verify(원문 대조)·denomination(교단 확정)·heresy(이단 대조)·
+                            media(그림·PDF 바이트)·health·snapshot
+                            (+ dedup 예정 = ROADMAP 1-3)
 config/
 ├── sources.json              ★ 소스 레지스트리 (전송 정본 · 라이브 검증값)
-└── heresy-ref.json           이단 참고 목록 (사람이 관리 · git 이력 = 감사)
+└── heresy-ref.json           이단 참고 목록 (**커밋 금지** — 실명 자료 · 사람이 관리)
 scripts/                       일회성 이관·정리 스크립트 (CLI 명령이 아니다)
 tests/{fixtures/ ← gitignored, test_*.py}
 data/                          로컬 저장소 (gitignored)
