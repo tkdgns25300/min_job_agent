@@ -168,13 +168,14 @@ def test_non_image_attachment_comes_from_the_related_section() -> None:
     if not path.exists():
         pytest.skip("detail_file.html 없음 — `snapshot --url https://na.or.kr/ccall/78`")
     raw = nazarene.parse_detail(path.read_text(encoding="utf-8"), _flagged("78"))
-    assert [(a.name, a.url) for a in raw.attachments] == [
-        (
-            "예산산성교회 실행제직회 회의록 박상민목사 청빙.pdf",
-            "https://na.or.kr/bbs/download.php?bo_table=ccall&wr_id=78&no=0",
-        )
-    ]
-    assert raw.attachments[0].is_image is False
+    assert len(raw.attachments) == 1
+    attachment = raw.attachments[0]
+    # ⚠️ 파일명에 목사 실명이 들어 있어 그대로 단언하지 않는다(공개 리포 · fixture 마스킹 규칙).
+    #    확인할 것은 **앵커 첫 텍스트 노드만 읽었나**이므로 앞뒤와 길이로 충분하다.
+    assert attachment.name.startswith("예산산성교회 실행제직회 회의록")
+    assert attachment.name.endswith("청빙.pdf"), "`파일크기 (3.5M) …` 꼬리가 붙으면 안 된다"
+    assert attachment.url == "https://na.or.kr/bbs/download.php?bo_table=ccall&wr_id=78&no=0"
+    assert attachment.is_image is False
 
 
 def test_image_attachment_keeps_the_full_size_url() -> None:
