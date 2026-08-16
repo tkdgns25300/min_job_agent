@@ -72,6 +72,7 @@
 | `source_key` | 어댑터 id (예: `ytus`, `kts`, `kehc`) |
 | `source_url` | 공고 원문 URL (min_job `jobs.source_url`로 승계) |
 | `source_board` | 게시판 식별 |
+| `address` | 교회 위치 상세(도로명·지번) — **지도 연동용**(2026-08-16 · SPEC §5.5b). ⚠️ `contact_post`(서류 접수처)와 다른 칸이다. ⚠️ min_job `jobs`에 `city`·`address` 칸이 생기기 전까지는 `review_data`에만 쌓인다 |
 | `fetched_at` | 수집 시각 |
 | `dedup_key` | 중복 판정 키 (§5) |
 | `review_status` | `PENDING`/`APPROVED`/`REJECTED` (운영자 검토) |

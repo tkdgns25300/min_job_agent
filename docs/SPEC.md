@@ -238,8 +238,38 @@ dedup_key = 정규화교회명 : region : position : department : 라운드번�
 - 본문에 우연히 있는 **무관한 제3자 개인정보는 추출하지 않는다**(프라이버시 취지 유지).
 - ⚠️ 이는 min_job의 기존 방침(개인 담당자 연락처 노출 금지)을 **정제**한 것이다 — "교회가 지원받으려 공개한 연락처는 공개"로 갱신(min_job 스키마·정책 변경 pending §8).
 
+### 5.5b 위치 (`region`·`city`·`address`) — **모델이 셋을 함께 낸다**(2026-08-16 변경)
+
+- **왜 모델인가.** 이전에는 모델이 `location` 글자만 내고 코드가 광역 이름을 글자로 찾아 enum으로 바꿨다(`normalize.place_of`). 게시판 지역 칸에서는 100% 맞았지만 **글자만으로는 안 되는 경우가 실측된다**:
+  - `안동시`·`부안군`처럼 **도시만 적힌** 공고는 광역이 빈다(표본 132건 중 14건 = 11%).
+  - `전남광주통합특별시 북구 오치동`(실측 12건)은 `전남`이 먼저 걸려 **JEONNAM으로 오판**한다. 정답은 `GWANGJU`이고, `북구`는 광주·대구·부산·울산에 다 있어 **시·군·구 표로도 못 푼다**. 동 이름까지 담으면 3,500줄짜리 표가 된다.
+  - → 교단(`예장 합동` → `HAPDONG`, 글자 대응)과 달리 **지리 지식**이 필요하다. 표로 담을 수 있는 종류가 아니다.
+- **모델 출력**: `region`(우리 `Region` key) · `city`(시·군·구 표기) · `address`(도로명·지번 상세) + 각각의 근거.
+- **코드 검산**(`pipeline/verify.py`): 근거가 원문에 있나 · 근거가 그 값을 뒷받침하나 — 교단·직분의 대문자 값과 같은 방식. 없으면 **그 칸만 비운다**.
+- ⚠️ **`address`는 모양도 본다.** `1층 사무실`·`219`·`구례중앙교회`는 원문에 **실제로 있어서** 존재 검사를 통과한다(게시판 주소 칸 730건 중 196건 = 27%가 이 모양). **도로명(`…로/길 + 번호`) 또는 지번(`…동/리 + 번지`)** 일 때만 남긴다 — 교단의 "문장이면 이름이 아니다"와 같은 방어다.
+- ⚠️ **`address`와 `contact_post`는 다른 칸이다.** 전자는 교회가 있는 곳(지도에 찍을 곳), 후자는 서류를 보낼 곳이다. 노회 사무실로 서류를 받는 교회가 있어 둘이 갈린다 — 어느 쪽인지는 문맥을 읽어야 알아서 모델이 가른다.
+- ⚠️ **세 조각을 우리가 잇지 않는다.** 게시판 주소 칸 실측 534건 중 **279건이 도로명만** 있어(`신월로 57번길7`) 그것만으로는 좌표가 안 나온다. 한국 도로명주소는 **시·군·구 안에서만 유일**하기 때문이다. 이으려면 없는 도시 이름을 보태야 하고 그건 지어낸 값이다 → **세 칸을 따로 넘기고 합치는 것은 min_job**(지도 조회)이 한다.
+- ⚠️ **min_job 의존**: 승격 대상 `jobs`에 **`city`·`address` 칸이 없다**(2026-08-16 확인). `churches`에는 `city`가 있지만 크롤 공고는 `church_id=NULL`이라 JOIN이 안 된다 — `region`이 `jobs`에 비정규화된 것과 **같은 이유**다. 두 칸이 생기기 전까지 `city`·`address`는 `review_data`에만 쌓인다(§8 스키마 거버넌스).
+
+### 5.5c 검산이 닿지 않던 칸 — 사택(2026-08-16)
+
+⚠️ **사택은 근거로 검산한다.** `housing_provided`는 참·거짓이라 원문에서 찾을 글자가 없어 **그동안 통째로 무검증**이었다(`verify.py`가 스스로 "남은 구멍"이라 적어 둔 자리). 실측: `사택 있다` 43건 중 **8건(19%)이 원문에 사택·주거·숙소 같은 말이 하나도 없다.** → 그런 말이 없으면 `housing_provided`와 `housing_note`를 **비운다**. 자동 승인(§5.7)이 붙으면 이 8건이 사람 눈을 거치지 않고 공개되므로 그전에 막는다.
+
+⚠️ **끝까지 검산할 수 없는 칸**: `description`(모델이 새로 쓰는 글) · `job_kind`·`is_church_recruitment`(글 전체를 읽는 판단). 대조할 원문 조각이 없다 — **운영자 결정(2026-08-16): 이 셋은 AI를 믿는다.**
+
 ### 5.6 나머지 필드
 min_job `jobs` 미러(title·position·role·department·employment_type·qualification·headcount·start_timing·housing_provided·housing_note·pay_*·benefit_note·work_days·requirements[]·preferred[]·required_docs[]·optional_docs[]·process_steps[]·description·posted_at·deadline·**연락처 4컬럼**) + 교회 초안(church_name·region·city)을 raw에서 추출. `raw_text`(원문 전체)는 항상 보존.
+
+### 5.7 자동 승인 (`confidence`) — **결정 2026-08-16 · 미구현**
+
+> ⚠️ **`review_data`의 종착지가 `PENDING`이 아니게 된다.** 지금까지의 "크롤러는 절대 바로 공개하지 않는다"(§0)를 운영자가 개정한 것이다. 검수는 **사람이 봐야 답이 나오는 것만** 남긴다.
+
+- **검수 대상 3가지만** — ① 포스터 공고(그림을 열어야 안다) ② 그림을 못 받은 공고 ③ 승격 6칸이 빈 공고. 실측 표본 132건 기준 약 20%.
+- **나머지는 `review_status=APPROVED`** 로 만든다. 근거: 지어낸 값은 `verify`가 이미 비우고(§5.5c), 변환은 코드가 하며(모델에 맡기지 않는다), 이단·마감은 자동 거절된다(§5.4·§5.4b).
+- **검수로 넘기지 않고 코드가 처리하는 것**: 사택 근거 없음 → 비운다(§5.5c) · 지역 없음 → 그대로 공개한다(실측 28건 중 22건은 **원문에 지역이 아예 없어 사람이 봐도 못 채운다**).
+- ⚠️ **전량 저장은 dedup(§4.1) 뒤에만.** 안 그러면 같은 자리가 최대 26번 공개된다(실측 재게시 42%).
+- ⚠️ **`high`는 "값이 맞다"는 뜻이 아니다.** `verify`는 *그 글자가 원문에 있나*를 보지 *올바른 곳에서 가져왔나*를 보지 않는다. 원문에 전화번호가 둘이면 엉뚱한 쪽을 골라도 통과한다 — 코드로는 막을 수 없다(운영자가 알고 내린 결정).
+- ⚠️ **대표 선정은 dedup과 맞물린다**(§4.1). 같은 공고 7건 중 3건이 포스터이면, 대표를 "최신"으로 고를 때와 "가장 충실한 것"으로 고를 때 검수량이 달라진다.
 
 ---
 
@@ -280,7 +310,7 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 | 분류(게이트) | `is_church_recruitment`(YES/NO/UNCERTAIN — NO는 여기 안 옴) · `job_kind`(MINISTRY/GENERAL) · `role`(GENERAL용) |
 | 공고(jobs 미러) | `title`·`position`·`department`·`employment_type`·`qualification`·`headcount`·`start_timing`·`housing_provided`·`housing_note`·`pay_min`·`pay_max`·`pay_note`·`pay_period`·`benefit_note`·`work_days`·`requirements[]`·`preferred[]`·`required_docs[]`·`optional_docs[]`·`process_steps[]`·`description`·`posted_at`·`deadline` |
 | 지원 연락처 | `contact_email`·`contact_tel`·`contact_link`·`contact_post` — **방법별 4컬럼**(min_job `APPLY_METHODS`가 `ETC` 없는 닫힌 4키라 1:1 대응 · 승격이 파싱 없이 INSERT). ⚠️ 대표 문자열 `contact` 하나로 두던 설계는 철회됐다(2026-08-05) |
-| 교회 초안 | `church_name`·`region`·`city` |
+| 교회 초안 | `church_name`·`region`·`city`·**`address`**(2026-08-16 추가 · 지도 연동 · §5.5b) |
 | 교단 | `denomination`(`UNKNOWN` 가능·임시) · `denomination_source`(stated/registry/ai_guess/unknown) · `denomination_evidence` · `raw_denomination`(원표기) |
 | 이단 | `heresy_flag`·`heresy_evidence` |
 | 검수 메타 | `confidence`(high/medium/low) · **`dedup_key`**(§4.1) · `review_status`(PENDING/APPROVED/REJECTED) + **`reject_reason`**(DUPLICATE/HERESY/**CLOSED**/OPERATOR) · **`published_job_id`** FK→jobs(승격 결과 · §4.2가 이걸로 끌어올림을 찾는다) · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
