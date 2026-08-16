@@ -1536,3 +1536,12 @@ def test_a_clean_draft_is_not_counted_as_rejected(store: JsonStore) -> None:
     tally.add(structure_one(record, store, _FakeExtractor(), heresy=_NO_HERESY))
 
     assert tally.report().rejected == 0
+
+
+def test_the_draft_carries_the_address() -> None:
+    """⚠️ 지도 연동용 칸이다(SPEC §5.5b) — 배선이 빠지면 뽑아 놓고 버리는 셈이다."""
+    record = _source_data(raw_text="점촌제일교회는 점촌로 30에 있습니다.")
+
+    draft = build_draft(record, replace(_extraction(), address="점촌로 30"))
+
+    assert draft.address == "점촌로 30"

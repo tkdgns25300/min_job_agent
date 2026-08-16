@@ -85,6 +85,7 @@ def _answer(**overrides: object) -> str:
         "deadline": "2026-08-31",
         "church_name": "점촌제일교회",
         "location": "경북 문경시 점촌동",
+        "address": "점촌로 30",
         "raw_denomination": "예장통합",
         "contact_email": "church@example.kr",
         "contact_tel": "054-000-0000",
@@ -362,6 +363,7 @@ def test_the_output_contract_is_exactly_these_columns() -> None:
             "is_church_recruitment",
             "job_kind",
             "location",
+            "address",
             "optional_docs",
             "pay_amount",
             "pay_note",
@@ -741,3 +743,13 @@ def test_the_posting_date_is_not_sent_to_the_model() -> None:
 
     assert "2026.08.05" not in prompt
     assert "글쓴이: 이관석" in prompt, "이름은 맥락으로 계속 보낸다(운영자 결정)"
+
+
+def test_an_address_that_is_not_an_address_never_reaches_the_draft() -> None:
+    """⚠️ 모양 검사를 **파싱 시점에** 건다 — `verify`에 두면 포스터 공고에서 면제돼 살아남는다.
+
+    게시판 주소 칸 730건 중 196건(27%)이 `1층 사무실`류이고, 그 글자는 원문에 있으므로
+    `verify`의 존재 검사를 그대로 통과한다.
+    """
+    assert parse_extraction(_answer(address="1층 사무실")).address is None
+    assert parse_extraction(_answer(address="도작로 61")).address == "도작로 61"

@@ -431,6 +431,9 @@ class ReviewData:
     church_name: str | None = None
     region: Region | None = None
     city: str | None = None
+    #: 교회 위치 상세(도로명·지번) — 지도 연동용(SPEC §5.5b). ⚠️ `contact_post`(서류 접수처)와
+    #: 다른 칸이다. min_job `jobs`에 칸이 생기기 전까지는 여기에만 쌓인다.
+    address: str | None = None
 
     # 교단 — UNKNOWN은 여기서만 허용되는 임시값(승격 전 운영자가 해소)
     denomination: Denomination | None = None

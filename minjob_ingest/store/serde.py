@@ -169,6 +169,7 @@ def row_to_review_data(row: Row) -> ReviewData:
             church_name=_optional_str(row, "church_name"),
             region=_optional_enum(row, "region", Region),
             city=_optional_str(row, "city"),
+            address=_optional_str(row, "address"),
             denomination=_optional_enum(row, "denomination", Denomination),
             denomination_evidence=_optional_str(row, "denomination_evidence"),
             raw_denomination=_optional_str(row, "raw_denomination"),

@@ -12,6 +12,7 @@ import pytest
 from minjob_ingest.domain import Region, StipendPeriod
 from minjob_ingest.models import JsonValue
 from minjob_ingest.pipeline.normalize import (
+    address_or_none,
     clean_title,
     closed_by_board,
     pay_of,
@@ -450,3 +451,52 @@ def test_a_mid_sized_bare_number_is_still_won() -> None:
     500,000처럼 **두 후보 경계 사이**에 있는 값이어야 100,000이 맞는 경계임을 보인다.
     """
     assert pay_of("사례비 500000") == (50, None)
+
+
+# ── 주소 모양 ────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        "전북 김제시 도작로 61",
+        "신월로 57번길7",
+        "지축동 911",
+        "평택시 안중읍 837-13",
+        "국사봉1 길 87",
+    ],
+    ids=["도로명", "번길", "지번", "읍번지", "길앞공백"],
+)
+def test_an_address_shaped_value_is_kept(given: str) -> None:
+    """실측 게시판 주소 칸 730건 중 534건이 이 모양이고, 남긴 것은 전부 정상이었다."""
+    assert address_or_none(given) == given
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        "1층 사무실",
+        "219",
+        "구례중앙교회",
+        "481-13",
+        "인평1길 북삼교회",
+        "카림애비뉴 214호",
+        "  ",
+        None,
+    ],
+    ids=["층", "숫자만", "교회명", "동없는번지", "번호없는길", "건물호수", "공백", "없음"],
+)
+def test_what_is_not_an_address_is_blanked(given: str | None) -> None:
+    """⚠️ 이 값들은 **원문에 실제로 있어서** `verify`의 존재 검사를 그대로 통과한다.
+
+    게시판 주소 칸 730건 중 196건(27%)이 이 모양이다 — 모양을 봐야 걸린다.
+    """
+    assert address_or_none(given) is None
+
+
+def test_a_foreign_address_is_dropped_on_purpose() -> None:
+    """⚠️ 한국 도로명·지번 모양만 본다 — 해외 주소 5건이 함께 버려진다(실측).
+
+    지도 연동이 국내용이라 그대로 둔다. 넣으려면 라틴 주소 분기를 따로 만들어야 한다.
+    """
+    assert address_or_none("67 Cutler Road Jandakot WA 6164, Australia") is None

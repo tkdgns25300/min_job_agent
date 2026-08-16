@@ -42,7 +42,7 @@ from minjob_ingest.domain import (
 from minjob_ingest.lib.gemini import GeminiClient
 from minjob_ingest.models import JsonValue, SourceData
 from minjob_ingest.pipeline.media import Media
-from minjob_ingest.pipeline.normalize import pay_of, period_of, place_of
+from minjob_ingest.pipeline.normalize import address_or_none, pay_of, period_of, place_of
 
 #: 본문이 비었을 때 프롬프트에 넣는 자리표시자. 빈 칸을 그냥 두면 모델이 앞 문단을 본문으로
 #: 오해한다. ⚠️ 본문이 없는 것은 실패가 아니다 — 포스터 한 장이거나 첨부에 내용이 있다.
@@ -234,6 +234,8 @@ _PROPERTIES: Final[Mapping[str, types.Schema]] = {
     "church_name": _text(),
     #: 지역 **표기**만 받는다 — 광역·시군구는 `normalize.place_of`가 가른다.
     "location": _text(),
+    #: 교회가 **있는 곳**의 도로명·지번. ⚠️ `contact_post`(서류 보낼 곳)와 다른 칸이다.
+    "address": _text(),
     "raw_denomination": _text(),
     # 지원 연락처 (SPEC §5.5)
     "contact_email": _text(),
@@ -313,6 +315,9 @@ _PROMPT_TEMPLATE: Final = """\
 - benefit_note: 사례비·사택 **말고** 그 밖 처우(`4대보험`·`상여금 200%`·`연차 15일`).
 - location: 지역 표기 **원문에 있는 글자만**(`전북 전주시 완산구`). ⚠️ 광역으로 바꾸지도,
   없는 도·시 이름을 보태지도 않는다(`춘천새순교회` → `춘천`이지 `강원 춘천시`가 아니다).
+- address: **교회가 있는 곳**의 도로명·지번만 원문 글자 그대로(`도작로 61`·`지축동 911`).
+  ⚠️ 서류를 보낼 곳(`contact_post`)과 **다른 칸**이다 — 노회 사무실로 받는 교회가 있다.
+  ⚠️ 층·호수만 있거나 건물 이름뿐이면 비운다(`1층 사무실`·`카림애비뉴 214호`).
 - raw_denomination: 교단 표기 그대로. 없고 노회·연회 이름만 있으면 그것(`경청노회`).
 - preferred: `우대`라고 적힌 것만. / optional_docs: `선택`·`해당자에 한함`이라고 적힌 것만.
   required_docs: 그 표시가 없는 제출 서류 전부. 목록은 한 항목에 한 가지씩.
@@ -414,6 +419,8 @@ class Extraction:
     church_name: str | None = None
     region: Region | None = None
     city: str | None = None
+    #: 교회 위치 상세(도로명·지번). 지도 연동용이고 `contact_post`와 다르다(SPEC §5.5b).
+    address: str | None = None
     raw_denomination: str | None = None
     contact_email: str | None = None
     contact_tel: str | None = None
@@ -499,6 +506,7 @@ def parse_extraction(payload: str) -> Extraction:
         church_name=_short_text(decoded, "church_name"),
         region=region,
         city=city,
+        address=address_or_none(_short_text(decoded, "address")),
         raw_denomination=_short_text(decoded, "raw_denomination"),
         contact_email=_short_text(decoded, "contact_email"),
         contact_tel=_short_text(decoded, "contact_tel"),

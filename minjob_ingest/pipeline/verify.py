@@ -193,6 +193,16 @@ _KOREAN_DIGITS: Final = {
 }
 
 
+#: 사택 이야기가 원문에 있다고 말해 주는 낱말. `housing_provided`는 참·거짓이라 원문에서
+#: 찾을 글자가 없어 **여기가 유일한 근거**다.
+#:
+#: ⚠️ **낱말마다 실측 근거가 있다**(표본 132건 중 `사택 있다` 43건 기준 · 지지/그 낱말만이 지지):
+#: `사택` 32/25 · `아파트` 5/0 · `숙소` 4/3 · `거주` 2/1. **`주거`·`원룸`·`주택`·`기숙`·`관사`는
+#: 0/0이라 뺐다** — 짐작으로 늘리면 표가 끝없이 자라고 어느 공고가 왜 비었는지 설명하지 못한다
+#: (`denomination.py`의 자격 낱말과 같은 규칙).
+_HOUSING_WORDS: Final = ("사택", "숙소", "아파트", "거주")
+
+
 @dataclass(frozen=True, slots=True)
 class Dropped:
     """검산이 버린 값 하나. **칸 이름만으로는 과검을 검수할 수 없다**(2026-08-14 실측).
@@ -252,9 +262,12 @@ def verify(
 
     **아예 보지 않는다**
     `is_church_recruitment`·`job_kind`(글 전체를 읽는 판단이라 가리킬 한 곳이 없다) ·
-    `description`(새로 쓰는 글) · `housing_provided`(참·거짓이라 대조할 글자가 없다).
-    ⚠️ `housing_provided`와 `housing_note`가 둘 다 안 걸러진다 — **사택 이야기 전체가 무검증**이다.
-    `confidence` 규칙이 붙을 때까지 남는 구멍이다.
+    `description`(새로 쓰는 글). ⚠️ 이 셋은 **AI를 믿기로 한 칸**이다(운영자 결정 2026-08-16 ·
+    SPEC §5.5c) — 대조할 원문 조각이 없다.
+
+    **사택은 2026-08-16에 막았다** — `housing_provided`는 참·거짓이라 대조할 글자가 없지만
+    원문에 **사택 이야기가 있나**로 볼 수 있다(`_HOUSING_WORDS`). 근거가 없으면 `housing_note`도
+    함께 비운다.
 
     `region`·`city`·`pay_*`·`deadline`은 **코드가 만든 값이지만 검산한다** — 그 값을 만든 원문
     조각(`Evidence`)이 원문에 있어야 남긴다. 숫자·날짜만 보면 지어낸 값도 멀쩡해 보인다.
@@ -274,6 +287,15 @@ def verify(
     pay_grounded = checker.grounds("pay_amount", known.pay_amount)
     place_grounded = checker.grounds("location", known.location)
     date_grounded = checker.grounds("deadline", known.deadline)
+    # ⚠️ 사택은 **참·거짓이라 대조할 글자가 없다** — 원문에 사택 이야기가 있나로 본다.
+    #    ⚠️ **한 번만 부른다** — 두 번 부르면 같은 값이 리포트에 두 번 실려 그림 공고가 실제보다
+    #    나빠 보인다(`VerifyReport.scrubbed`가 같은 이유로 단위를 값으로 맞춘 자리다).
+    #    ⚠️ 표본에서 이 규칙이 실제로 비우는 값은 0건이다(근거 없는 7건이 전부 그림 공고라
+    #    면제된다) — 텍스트 공고에서 앞으로 생길 환각을 막는 장치다(SPEC §5.5c).
+    housing = checker.supported("housing_provided", extraction.housing_provided, _HOUSING_WORDS)
+    # ⚠️ **`True`가 비워졌을 때만** note를 함께 버린다. `None`(이야기 없음)은 정상 답이라
+    #    (프롬프트가 그렇게 시킨다) 그때 note를 지우면 근거가 있는 값도 흔적 없이 사라진다.
+    housing_denied = extraction.housing_provided is True and housing is None
     # ⚠️ 조립 칸은 **세기만 한다** — 어긋나는 것이 정상이라 비우면 맞는 값을 잃는다. 그래도
     #    숫자는 남겨 프롬프트를 고쳤을 때 나아졌는지가 리포트에 보이게 한다.
     # ⚠️ `role`은 **원문에서 오려낸 조각이 아니라 짧게 고쳐 쓴 직무명**이다(min_job DATA.md §3:
@@ -288,12 +310,15 @@ def verify(
         "start_timing",
         "work_days",
         "headcount",
-        "housing_note",
         "pay_note",
         "benefit_note",
         "contact_post",
     ):
         checker.tally(name, getattr(extraction, name))
+    # ⚠️ 비워질 `housing_note`는 세지 않는다 — 같은 값이 `scrubbed`와 `unchecked` 양쪽에
+    #    잡히면 리포트가 두 번 나쁘게 보인다.
+    if not housing_denied:
+        checker.tally("housing_note", extraction.housing_note)
     for name in ("requirements", "preferred", "required_docs", "optional_docs", "process_steps"):
         checker.tally_items(name, getattr(extraction, name))
     verified = replace(
@@ -316,6 +341,11 @@ def verify(
         pay_period=extraction.pay_period if pay_grounded else None,
         region=extraction.region if place_grounded else None,
         city=extraction.city if place_grounded else None,
+        # ⚠️ 주소는 **모양 검사를 이미 통과한 값**이다(`normalize.address_or_none` · 파싱
+        #    시점). 여기서는 원문에 그 글자가 있나만 본다 — 교회명·연락처와 같은 취급이다.
+        address=checker.text("address", extraction.address),
+        housing_provided=housing,
+        housing_note=None if housing_denied else extraction.housing_note,
         deadline=extraction.deadline if date_grounded else None,
     )
     return verified, checker.report()
@@ -479,6 +509,17 @@ class _Checker:
         if self._found(evidence):
             return True
         return not self._scrubbed_away((Dropped(name, evidence),))
+
+    def supported(self, name: str, claimed: bool | None, words: Sequence[str]) -> bool | None:
+        """참·거짓 값을 **원문에 그 이야기가 있나**로 검산한다. 없으면 비운다.
+
+        ⚠️ 대조할 글자가 없는 칸이라 다른 방법이 없다 — `housing_provided`가 그동안 통째로
+        무검증이었던 이유다(SPEC §5.5c). `false`는 보지 않는다: "없다"는 원문에 근거가 없어도
+        해롭지 않고, 실측에서도 1건뿐이다.
+        """
+        if claimed is not True or any(word in self.haystack for word in words):
+            return claimed
+        return None if self._scrubbed_away((Dropped(name, "true", None),)) else claimed
 
     def report(self) -> VerifyReport:
         return VerifyReport(

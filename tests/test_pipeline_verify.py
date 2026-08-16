@@ -621,11 +621,13 @@ _COUNTED: Final = (
     #: 없고, 이으라고 시킨 것도 프롬프트다.
     "work_days",
     "headcount",
-    "housing_note",
     "pay_note",
     "benefit_note",
     "contact_post",
 )
+
+#: ⚠️ `housing_note`는 2026-08-16에 이 목록에서 빠졌다 — 사택 근거가 원문에 없으면
+#: `housing_provided`와 **함께 비운다**(SPEC §5.5c). 근거가 있으면 예전처럼 세기만 한다.
 
 #: 세기만 한다 — 목록 칸(`항목 하나에 한 가지씩`이라 표와 문장을 항목으로 편다).
 _COUNTED_LISTS: Final = (
@@ -1237,3 +1239,128 @@ def test_helping_the_senior_pastor_is_not_hiring_one() -> None:
 
     assert verified.position == ()
     assert report.scrubbed == ("position",)
+
+
+# ── 사택 — 참·거짓이라 대조할 글자가 없는 칸 ─────────────────────
+
+
+def test_housing_is_blanked_when_the_source_never_mentions_it() -> None:
+    """⚠️ `housing_provided`는 참·거짓이라 원문에서 찾을 글자가 없어 **그동안 무검증**이었다.
+
+    원문에 사택 이야기가 하나도 없는데 `있다`면 지어낸 것이다 — `housing_note`까지 함께
+    비운다(낱말이 없는데 note가 있으면 그 note도 지어낸 것이다 · SPEC §5.5c).
+    """
+    verified, report = _verified(
+        _record(raw_text="성원교회가 부목사를 청빙합니다. 문의는 아래로."),
+        _extraction(housing_provided=True, housing_note="사택 제공"),
+    )
+
+    assert verified.housing_provided is None
+    assert verified.housing_note is None
+    assert "housing_provided" in report.scrubbed
+
+
+def test_housing_survives_when_the_source_talks_about_it() -> None:
+    """실측 43건 중 35건이 이 경우다 — 근거가 있으면 건드리지 않는다."""
+    verified, _ = _verified(
+        _record(raw_text="성원교회가 부목사를 청빙합니다. 사택을 제공합니다."),
+        _extraction(housing_provided=True, housing_note="사택 제공"),
+    )
+
+    assert verified.housing_provided is True
+    assert verified.housing_note == "사택 제공"
+
+
+def test_housing_words_are_found_in_board_fields_too() -> None:
+    """⚠️ `CSU`는 처우를 본문이 아니라 게시판 필드에 담는다(730건 · 23%).
+
+    본문만 보면 그 공고들의 사택이 통째로 비워진다.
+    """
+    verified, _ = _verified(
+        _record(raw_meta={"gratuity": "월 250만원, 아파트 사택 제공"}),
+        _extraction(housing_provided=True),
+    )
+
+    assert verified.housing_provided is True
+
+
+def test_housing_said_to_be_absent_is_left_alone() -> None:
+    """⚠️ `false`는 보지 않는다 — "없다"는 원문에 근거가 없어도 해롭지 않다(실측 1건)."""
+    verified, _ = _verified(
+        _record(raw_text="성원교회가 부목사를 청빙합니다."),
+        _extraction(housing_provided=False),
+    )
+
+    assert verified.housing_provided is False
+
+
+def test_a_poster_posting_keeps_its_housing_and_is_counted() -> None:
+    """⚠️ 그림을 보낸 공고는 포스터가 원문이라 본문에 없는 것이 정상이다.
+
+    실측: 근거 없는 `사택 있다` 8건이 **전부 이 경우**라, 지금 이 규칙이 실제로 비우는 값은
+    0건이다(장래 텍스트 공고 방어용 · SPEC §5.5c).
+    """
+    verified, report = _verified(
+        _record(raw_text="성원교회 청빙"),
+        _extraction(housing_provided=True),
+        media_sent=True,
+    )
+
+    assert verified.housing_provided is True, "포스터 공고는 비우지 않는다"
+    assert report.unverifiable == 1, "⚠️ 한 값은 한 번만 센다 — 두 번 세면 포스터가 더 나빠 보인다"
+
+
+def test_the_housing_note_is_only_counted_once() -> None:
+    """⚠️ 비워진 `housing_note`를 조립 칸으로도 세면 같은 값이 두 번 나쁘게 잡힌다."""
+    _, report = _verified(
+        _record(raw_text="성원교회 청빙"),
+        _extraction(housing_provided=True, housing_note="원문에없는사택말"),
+    )
+
+    assert report.unchecked_fields.get("housing_note") is None
+
+
+# ── 주소 ─────────────────────────────────────────────────────────
+
+
+def test_an_address_that_is_not_in_the_source_is_blanked() -> None:
+    """지도에 찍을 값이라 지어낸 주소가 나가면 엉뚱한 곳이 표시된다."""
+    verified, report = _verified(_record(), _extraction(address="없는길 99"))
+
+    assert verified.address is None
+    assert "address" in report.scrubbed
+
+
+def test_an_address_in_the_source_survives() -> None:
+    verified, _ = _verified(
+        _record(raw_text="성원교회는 점촌로 30에 있습니다."), _extraction(address="점촌로 30")
+    )
+
+    assert verified.address == "점촌로 30"
+
+
+def test_a_blanked_housing_claim_is_reported_once() -> None:
+    """⚠️ 검산을 두 번 부르면 같은 값이 리포트에 두 번 실린다.
+
+    `scrubbed`의 단위를 값으로 맞춘 것과 같은 이유다 — 숫자가 부풀면 프롬프트를 고쳤을 때
+    나아졌는지를 그 숫자로 판단할 수 없다.
+    """
+    _, report = _verified(_record(raw_text="성원교회 청빙"), _extraction(housing_provided=True))
+
+    assert report.scrubbed == ("housing_provided",)
+    assert len(report.dropped) == 1
+
+
+def test_housing_not_mentioned_keeps_a_note_that_is_in_the_source() -> None:
+    """⚠️ `None`은 "이야기가 없다"는 **정상 답**이다(프롬프트가 그렇게 시킨다).
+
+    그때 note까지 지우면 원문에 있는 `사택 협의 가능`이 흔적 없이 사라진다 — 비우는 것은
+    **`있다`고 해놓고 근거가 없을 때**뿐이다.
+    """
+    verified, report = _verified(
+        _record(raw_text="성원교회 청빙. 사택 협의 가능."),
+        _extraction(housing_provided=None, housing_note="사택 협의 가능"),
+    )
+
+    assert verified.housing_note == "사택 협의 가능"
+    assert "housing_note" not in report.scrubbed

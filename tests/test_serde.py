@@ -117,6 +117,7 @@ def _full_review_data() -> ReviewData:
         church_name="오천중앙교회",
         region=Region.GYEONGBUK,
         city="포항시",
+        address="중앙로 12",
         denomination=Denomination.TONGHAP,
         denomination_evidence="대한예수교장로회(통합) / 전남노회",
         raw_denomination="예장통합",

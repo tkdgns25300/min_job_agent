@@ -493,6 +493,7 @@ def build_draft(
         church_name=extraction.church_name,
         region=extraction.region,
         city=extraction.city,
+        address=extraction.address,
         raw_denomination=extraction.raw_denomination,
         contact_email=extraction.contact_email,
         contact_tel=extraction.contact_tel,
