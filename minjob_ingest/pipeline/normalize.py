@@ -12,9 +12,9 @@
 그래서 변환은 이 모듈이 한다. 얻는 것은 값이 흔들리지 않는 것과, **Gemini 없이 검증되는
 것**이다.
 
-⚠️ **지역은 예외가 됐다**(2026-08-16 · SPEC §5.5b). `안동시`가 어느 광역인지는 글자가 아니라
-지리 지식이라, 표로 담으려면 동 이름까지 3,500줄이 된다 → 모델이 답하고 코드는 검산만 한다.
-여기 남은 `place_of`는 그 교체를 유료 표본으로 검증할 때까지의 현행 경로다(ROADMAP 1-2).
+⚠️ **지역은 여기 없다**(2026-08-16 · SPEC §5.5b). `안동시`가 어느 광역인지는 글자가 아니라
+지리 지식이라 표로 담으려면 동 이름까지 3,500줄이 된다 → **모델이 답하고 `verify`가 검산한다.**
+광역 이름을 글자로 찾던 `place_of`는 그래서 삭제됐다.
 """
 
 from __future__ import annotations
@@ -24,39 +24,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
 
-from minjob_ingest.domain import Region, StipendPeriod
+from minjob_ingest.domain import StipendPeriod
 from minjob_ingest.models import JsonValue
-
-#: 광역 표기 → `Region`. **긴 이름을 먼저** 둔다 — `충청북도`가 `충북`보다 앞서야 한다.
-_WIDE: Final = (
-    ("서울", Region.SEOUL),
-    ("경기", Region.GYEONGGI),
-    ("인천", Region.INCHEON),
-    ("강원", Region.GANGWON),
-    ("충청북도", Region.CHUNGBUK),
-    ("충북", Region.CHUNGBUK),
-    ("충청남도", Region.CHUNGNAM),
-    ("충남", Region.CHUNGNAM),
-    ("대전", Region.DAEJEON),
-    ("세종", Region.SEJONG),
-    ("경상북도", Region.GYEONGBUK),
-    ("경북", Region.GYEONGBUK),
-    ("경상남도", Region.GYEONGNAM),
-    ("경남", Region.GYEONGNAM),
-    ("대구", Region.DAEGU),
-    ("울산", Region.ULSAN),
-    ("부산", Region.BUSAN),
-    ("전라북도", Region.JEONBUK),
-    ("전북", Region.JEONBUK),
-    ("전라남도", Region.JEONNAM),
-    ("전남", Region.JEONNAM),
-    ("광주", Region.GWANGJU),
-    ("제주", Region.JEJU),
-)
-
-#: 광역 이름만 모은 것. 시·군·구를 고를 때 **광역과 겹치는 토막을 걸러내는** 데 쓴다
-#: (`대구 수성구`에서 `대구`가 `~구`로 잡히면 도시가 광역이 된다).
-_WIDE_NAMES: Final = frozenset(name for name, _ in _WIDE)
 
 #: 주소로 볼 수 있는 모양. **원문에 있다고 주소인 것은 아니다** — 게시판 주소 칸 730건 중
 #: 196건(27%)이 `1층 사무실`·`219`·`구례중앙교회`처럼 주소가 아닌 값이고, 그 글자는 원문에
@@ -73,12 +42,6 @@ _ROAD: Final = re.compile(r"[가-힣A-Za-z0-9]+\s?(?:로|길)\s*\d")
 #: ⚠️ **`가`·`면`은 뺐다 — 살려낸 것이 0건인데 남의 말을 주소로 읽는다**: `휴가 10일`·
 #: `지원하시면 50만원`이 걸린다(원문에 있는 글자라 `verify`의 존재 검사도 통과한다).
 _JIBUN: Final = re.compile(r"[가-힣]+(?:동|리|읍)\s*\d")
-
-#: 시·군. `전라북도`가 걸리지 않게 `도`가 뒤따르는 경우를 뺀다.
-_CITY: Final = re.compile(r"([가-힣]{2,10}(?:시|군))(?![도])")
-
-#: 자치구. 시·군이 없을 때만 쓴다(`서울 관악구`).
-_DISTRICT: Final = re.compile(r"([가-힣]{1,6}구)(?![가-힣])")
 
 #: 금액 하나 — **앞의 말 · 숫자 · 뒤의 단위**를 함께 잡는다. 세 조각이 다 필요하다:
 #: 앞말이 주기를 정하고(`월 250만원`), 뒷단위가 돈인지 아닌지를 정한다(`24평`은 돈이 아니다).
@@ -171,19 +134,6 @@ _TITLE_SUFFIX: Final = re.compile(r"\s*[(\[<]\s*([^)\]>]{1,16})\s*[)\]>]\s*$")
 #:
 #: ⚠️ 견줄 때 공백과 쉼표를 지운다 — `수정, 끌어올림`·`수정 끌어올림`이 둘 다 쓰인다.
 _LIFT_MARKERS: Final = frozenset({"끌어올림", "답글", "수정끌어올림", "끌어올림및수정"})
-
-
-def place_of(text: str | None) -> tuple[Region | None, str | None]:
-    """지역 표기 → (광역, 시·군·구). 게시판 지역 필드 730건에서 둘 다 100% 나온다.
-
-    ⚠️ **시·군이 구보다 앞선다** — `전주시 완산구`는 `전주시`다. 구 이름만으로는 어느 광역인지
-    알 수 없어서(`중구`가 여러 곳에 있다) 도시로서 쓸모가 적다.
-    """
-    if not text:
-        return None, None
-    stripped = text.strip()
-    region = next((value for name, value in _WIDE if name in stripped), None)
-    return region, _city_of(stripped)
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,20 +280,6 @@ def squeeze(text: str) -> str:
     """공백을 전부 없앤다. **원문과 답을 견줄 때 쓰는 단일 창구**(`verify`도 이걸 쓴다) —
     게시판이 넣는 공백은 줄바꿈·전각·연속이 뒤섞여 있어 그대로 비교하면 늘 어긋난다."""
     return "".join(text.split())
-
-
-def _city_of(text: str) -> str | None:
-    for pattern in (_CITY, _DISTRICT):
-        for found in pattern.findall(text):
-            name = str(found)
-            if not _overlaps_wide(name):
-                return name
-    return None
-
-
-def _overlaps_wide(name: str) -> bool:
-    """광역 이름을 품은 토막인가. `대구`(→`~구`)·`전남광주통합특별시`(→`~시`) 같은 것들이다."""
-    return any(wide in name for wide in _WIDE_NAMES)
 
 
 def _amounts(text: str) -> list[_Money]:

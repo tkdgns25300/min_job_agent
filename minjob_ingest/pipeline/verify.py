@@ -250,7 +250,8 @@ def verify(
 
     **비운다 — 원문에서 한 조각을 그대로 옮기는 칸**
     `church_name`·`raw_denomination`·`contact_email`·`contact_tel`·`contact_link`, 그리고
-    근거로 검산하는 대문자 값 넷과 코드가 만든 값들. 실측 20건에서 42개 중 **1개만 비웠고
+    근거로 검산하는 대문자 값 다섯(`region` 포함)과 코드가 만든 값들.
+    실측 20건에서 42개 중 **1개만 비웠고
     그 1개가 진짜 오류**였다(`raw_denomination = "DAESHIN"` — 게시판 키가 교단 칸에 들어갔다).
 
     **세기만 한다 — 프롬프트가 여러 조각을 이으라고 시킨 칸**
@@ -269,8 +270,11 @@ def verify(
     원문에 **사택 이야기가 있나**로 볼 수 있다(`_HOUSING_WORDS`). 근거가 없으면 `housing_note`도
     함께 비운다.
 
-    `region`·`city`·`pay_*`·`deadline`은 **코드가 만든 값이지만 검산한다** — 그 값을 만든 원문
-    조각(`Evidence`)이 원문에 있어야 남긴다. 숫자·날짜만 보면 지어낸 값도 멀쩡해 보인다.
+    `pay_*`·`deadline`은 **코드가 만든 값이지만 검산한다** — 그 값을 만든 원문 조각
+    (`Evidence`)이 원문에 있어야 남긴다. 숫자·날짜만 보면 지어낸 값도 멀쩡해 보인다.
+
+    `region`·`city`는 **모델이 판정한 값**이다(2026-08-16). `region`은 근거가 원문에 있나까지,
+    `city`는 그 글자가 원문에 있나를 본다.
     """
     # ⚠️ 면제는 **모델이 실제로 그림을 봤을 때만**이다. URL 목록으로 정하면 `file:///C:\…`만
     #    있는 공고 5건(가져올 수 없어 아무것도 안 보냈다)까지 면제된다.
@@ -285,7 +289,14 @@ def verify(
     # ⚠️ 코드가 만든 값(사례비·지역)은 **그 근거가 원문에 있을 때만** 남긴다 — 모델이 금액
     #    표현을 지어내면 3200이라는 숫자 자체는 멀쩡해 보여서 아래 검산으로는 안 걸린다.
     pay_grounded = checker.grounds("pay_amount", known.pay_amount)
-    place_grounded = checker.grounds("location", known.location)
+    # ⚠️ 지역은 **모델이 판정한 값**이라 다른 대문자 값과 같은 길(`choice`)로 검산한다.
+    #    ⚠️ `grounds`를 쓰면 안 된다 — 그건 "근거가 없으면 파생값도 이미 비어 있다"를 전제하는데
+    #    (사례비·마감이 그렇다) 지역은 더 이상 파생값이 아니라 모델이 따로 답하는 칸이라,
+    #    **근거 없는 `SEOUL`이 검산 없이 통과한다**(실측 재현 2026-08-16).
+    #    ⚠️ 교단·직분처럼 "근거가 그 값을 뒷받침하나"는 못 본다 — `GYEONGBUK`을 뒷받침하는
+    #    낱말표를 만들려면 도시를 열거해야 하고, 그건 없애려는 지리표를 여기 되살리는 것이다
+    #    (`supports`는 `Region`에 낱말이 없어 그냥 통과한다).
+    #    → **"근거는 원문에 있는데 값이 틀린" 오류는 코드가 잡지 못한다.**
     date_grounded = checker.grounds("deadline", known.deadline)
     # ⚠️ 사택은 **참·거짓이라 대조할 글자가 없다** — 원문에 사택 이야기가 있나로 본다.
     #    ⚠️ **한 번만 부른다** — 두 번 부르면 같은 값이 리포트에 두 번 실려 그림 공고가 실제보다
@@ -339,8 +350,10 @@ def verify(
         pay_min=extraction.pay_min if pay_grounded else None,
         pay_max=extraction.pay_max if pay_grounded else None,
         pay_period=extraction.pay_period if pay_grounded else None,
-        region=extraction.region if place_grounded else None,
-        city=extraction.city if place_grounded else None,
+        region=checker.choice("region", extraction.region, known.region),
+        # ⚠️ `city`는 제 글자로 검산한다 — 광역 근거가 없다고 도시까지 버리면 아까운 값이
+        #    사라진다(`서울 소재`처럼 광역만 적힌 공고가 있다).
+        city=checker.text("city", extraction.city),
         # ⚠️ 주소는 **모양 검사를 이미 통과한 값**이다(`normalize.address_or_none` · 파싱
         #    시점). 여기서는 원문에 그 글자가 있나만 본다 — 교회명·연락처와 같은 취급이다.
         address=checker.text("address", extraction.address),

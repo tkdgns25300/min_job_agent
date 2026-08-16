@@ -43,7 +43,7 @@ from minjob_ingest.models import (
     new_id,
 )
 from minjob_ingest.pipeline import structure
-from minjob_ingest.pipeline.extraction import Extraction, ExtractionError
+from minjob_ingest.pipeline.extraction import Evidence, Extraction, ExtractionError
 from minjob_ingest.pipeline.heresy import HeresyEntry, HeresyRef, screen
 from minjob_ingest.pipeline.media import BoardMediaSource, Media, MediaSet
 from minjob_ingest.pipeline.structure import (
@@ -1466,13 +1466,20 @@ def test_the_screening_runs_on_the_verified_extraction(store: JsonStore, data_di
 
 def test_a_listed_name_in_another_region_is_left_alone(store: JsonStore, data_dir: Path) -> None:
     """지역이 다른 같은 이름은 다른 교회다 — 목록 항목에 지역이 있을 때만 갈라진다."""
-    record = _source_data(raw_text=f"{_LISTED_NAME}에서 사역자를 청빙합니다.")
+    record = _source_data(raw_text=f"경북 문경시의 {_LISTED_NAME}에서 사역자를 청빙합니다.")
     store.save_source_data(record)
 
     result = structure_one(
         record,
         store,
-        _FakeExtractor(replace(_extraction(region=Region.GYEONGBUK), church_name=_LISTED_NAME)),
+        # ⚠️ 지역도 근거가 있어야 살아남는다 — 없으면 검산이 비우고, 지역 미상은 거절된다.
+        _FakeExtractor(
+            replace(
+                _extraction(region=Region.GYEONGBUK),
+                church_name=_LISTED_NAME,
+                evidence=Evidence(region="경북 문경시"),
+            )
+        ),
         heresy=_listed(region=Region.SEOUL),
     )
 

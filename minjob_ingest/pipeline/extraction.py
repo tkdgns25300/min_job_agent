@@ -42,7 +42,7 @@ from minjob_ingest.domain import (
 from minjob_ingest.lib.gemini import GeminiClient
 from minjob_ingest.models import JsonValue, SourceData
 from minjob_ingest.pipeline.media import Media
-from minjob_ingest.pipeline.normalize import address_or_none, pay_of, period_of, place_of
+from minjob_ingest.pipeline.normalize import address_or_none, pay_of, period_of
 
 #: 본문이 비었을 때 프롬프트에 넣는 자리표시자. 빈 칸을 그냥 두면 모델이 앞 문단을 본문으로
 #: 오해한다. ⚠️ 본문이 없는 것은 실패가 아니다 — 포스터 한 장이거나 첨부에 내용이 있다.
@@ -189,9 +189,10 @@ def _text_values() -> types.Schema:
 #: 응답 스키마. `required`에 다 넣고 `nullable`을 허용한다 — 키를 빼는 것과 "값이 없다"를
 #: 구분하기 위해서다(키가 빠지면 모델이 스키마를 안 따른 것이므로 실패로 본다).
 #: 배열 칸은 `nullable`을 쓰지 않는다 — 빈 배열이 "없음"이다.
-#: ⚠️ **`_text()`로 끝나는 칸은 원문을 그대로 받는 자리다.** 대문자 값을 고르는 칸은 넷뿐이고
-#: (`position`·`department`·`employment_type`·`qualification`) 그 넷만 프롬프트에 변환표가 있다.
-#: 지역·사례비·마감 여부는 모델이 아니라 `pipeline/normalize.py`가 바꾼다 — 맥락이 필요 없는
+#: ⚠️ **`_text()`로 끝나는 칸은 원문을 그대로 받는 자리다.** 대문자 값을 고르는 칸은 다섯이고
+#: (`position`·`department`·`employment_type`·`qualification`·`region`) 프롬프트가 각각을 설명한다.
+#: ⚠️ `region`만 낱말표가 아니라 **지리 지식**이라 뒷받침 검사를 못 한다(SPEC §5.5b).
+#: 사례비·마감 여부는 모델이 아니라 `pipeline/normalize.py`가 바꾼다 — 맥락이 필요 없는
 #: 변환에 모델을 쓰면 같은 글자에서 실행마다 다른 값이 나온다(실측 `연봉 3,200` → 3200 / 267).
 _PROPERTIES: Final[Mapping[str, types.Schema]] = {
     # 게이트
@@ -232,8 +233,11 @@ _PROPERTIES: Final[Mapping[str, types.Schema]] = {
     "deadline": _text(),
     # 교회
     "church_name": _text(),
-    #: 지역 **표기**만 받는다 — 광역·시군구는 `normalize.place_of`가 가른다.
-    "location": _text(),
+    #: ⚠️ **지역은 모델이 판정한다**(2026-08-16 · SPEC §5.5b). `안동시`가 어느 광역인지는
+    #: 글자가 아니라 지리 지식이고, 표로 담으려면 동 이름까지 3,500줄이 된다.
+    "region": _enum_value(Region),
+    "region_evidence": _text(),
+    "city": _text(),
     #: 교회가 **있는 곳**의 도로명·지번. ⚠️ `contact_post`(서류 보낼 곳)와 다른 칸이다.
     "address": _text(),
     "raw_denomination": _text(),
@@ -313,8 +317,15 @@ _PROMPT_TEMPLATE: Final = """\
 - pay_note: 금액이 아닌 사례비 표현(`교회 내규에 따름`).
 - housing_note: 사택 조건 그대로(`사택 제공`·`24평 아파트`·`전세 지원 5천만원`).
 - benefit_note: 사례비·사택 **말고** 그 밖 처우(`4대보험`·`상여금 200%`·`연차 15일`).
-- location: 지역 표기 **원문에 있는 글자만**(`전북 전주시 완산구`). ⚠️ 광역으로 바꾸지도,
-  없는 도·시 이름을 보태지도 않는다(`춘천새순교회` → `춘천`이지 `강원 춘천시`가 아니다).
+- region: **교회가 있는** 광역을 우리 key로. 공고가 도시만 말해도 그 도시가 속한 광역을
+  답한다(`안동시` → GYEONGBUK). ⚠️ 한 공고에 여러 곳이 나오면 **교회가 있는 곳**이다 —
+  노회 소재지·서류 보낼 곳이 아니다. ⚠️ 해외면 OVERSEAS. **어디인지 모르면 비운다.**
+- region_evidence: 그렇게 고른 근거를 원문에서 **글자 그대로** 오려낸다(`북구 오치동`).
+  ⚠️ 고쳐 쓰지 말고 원문 조각 그대로 — 없으면 그 지역은 버려진다.
+- city: 시·군·구 표기를 **원문 글자 그대로**. ⚠️ **시·군이 구보다 앞선다** — 원문이
+  `고양시 덕양구`면 `고양시 덕양구`라고 쓴다(`덕양구`만 쓰지 않는다). `중구`처럼 구 이름만으로는
+  전국에 여럿이라 어디인지 정해지지 않는다. ⚠️ 세종처럼 시·군이 없는 곳과 해외는 비운다.
+  없는 이름을 보태지 않는다.
 - address: **교회가 있는 곳**의 도로명·지번만 원문 글자 그대로(`도작로 61`·`지축동 911`).
   ⚠️ 서류를 보낼 곳(`contact_post`)과 **다른 칸**이다 — 노회 사무실로 받는 교회가 있다.
   ⚠️ 층·호수만 있거나 건물 이름뿐이면 비운다(`1층 사무실`·`카림애비뉴 214호`).
@@ -377,7 +388,8 @@ class Evidence:
     #: 코드가 숫자·날짜·enum으로 바꾼 원문 조각(`normalize.py`·`_optional_date`). 저장되는
     #: 것은 변환 결과뿐이라 여기 두지 않으면 **무엇을 보고 3200을 만들었는지** 검산할 수 없다.
     pay_amount: str | None = None
-    location: str | None = None
+    #: 지역을 그렇게 고른 근거(원문 조각). ⚠️ **값이 아니라 근거다** — `region`은 우리 key다.
+    region: str | None = None
     deadline: str | None = None
 
 
@@ -387,8 +399,9 @@ class Extraction:
 
     필드 이름은 `ReviewData`와 1:1이다(`structure.build_draft`가 그대로 옮긴다).
 
-    ⚠️ **모델 응답 키와 1:1이 아니다.** 모델은 `location`·`pay_amount`를 표현 그대로 주고
-    `parse_extraction`이 `region`·`city`·`pay_min`·`pay_max`로 바꾼다(`normalize.py`).
+    ⚠️ **모델 응답 키와 1:1이 아니다.** 모델은 `pay_amount`를 표현 그대로 주고
+    `parse_extraction`이 `pay_min`·`pay_max`로 바꾼다(`normalize.py`).
+    지역은 모델이 직접 답한다(SPEC §5.5b).
     마감 여부는 아예 묻지 않는다 — 게시판 상태 필드를 `structure.build_draft`가 읽는다.
     """
 
@@ -426,7 +439,7 @@ class Extraction:
     contact_tel: str | None = None
     contact_link: str | None = None
     contact_post: str | None = None
-    #: 대문자 값 넷 + 코드가 바꾼 값 셋(사례비·지역·마감)의 근거.
+    #: 대문자 값 다섯(`region` 포함) + 코드가 바꾼 값 둘(사례비·마감)의 근거.
     #: ⚠️ `ReviewData`에 같은 칸이 없다 — 검산용이고 저장되지 않는다.
     evidence: Evidence = field(default_factory=Evidence)
 
@@ -473,10 +486,9 @@ def parse_extraction(payload: str) -> Extraction:
     gate1 = _gate1(decoded)
     # ⚠️ 모델이 준 **표현**을 여기서 저장값으로 바꾼다(`pipeline/normalize.py`). 맥락이 필요
     #    없는 변환을 모델에 맡기면 같은 글자에서 실행마다 다른 값이 나온다.
-    location = _short_text(decoded, "location")
+    region = _optional_member(decoded, "region", Region)
     pay_amount = _short_text(decoded, "pay_amount")
     positions, position_evidence = _enum_pairs_of(decoded, "position", Position)
-    region, city = place_of(location)
     pay_min, pay_max = pay_of(pay_amount)
     return Extraction(
         is_church_recruitment=gate1,
@@ -505,7 +517,7 @@ def parse_extraction(payload: str) -> Extraction:
         deadline=_optional_date(decoded, "deadline"),
         church_name=_short_text(decoded, "church_name"),
         region=region,
-        city=city,
+        city=_short_text(decoded, "city"),
         address=address_or_none(_short_text(decoded, "address")),
         raw_denomination=_short_text(decoded, "raw_denomination"),
         contact_email=_short_text(decoded, "contact_email"),
@@ -518,7 +530,7 @@ def parse_extraction(payload: str) -> Extraction:
             employment_type=_short_text(decoded, "employment_type_evidence"),
             qualification=_short_text(decoded, "qualification_evidence"),
             pay_amount=pay_amount,
-            location=location,
+            region=_short_text(decoded, "region_evidence"),
             deadline=_short_text(decoded, "deadline"),
         ),
     )

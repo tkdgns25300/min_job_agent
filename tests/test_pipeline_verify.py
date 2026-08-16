@@ -318,22 +318,38 @@ def test_a_grounded_pay_amount_keeps_the_numbers() -> None:
 
 
 def test_an_invented_location_clears_the_region() -> None:
+    """⚠️ 지역은 이제 **모델이 판정한 값**이라(SPEC §5.5b) 근거로 검산한다.
+
+    근거가 원문에 없으면 그 광역은 지어낸 것이다 — 틀린 지역은 min_job 검색을 오염시킨다.
+    """
     verified, report = _verified(
         _record(),
         _extraction(
-            region=Region.SEOUL, city="강남구", evidence=Evidence(location="서울 강남구 역삼동")
+            region=Region.SEOUL, city="강남구", evidence=Evidence(region="서울 강남구 역삼동")
         ),
     )
 
-    assert (verified.region, verified.city) == (None, None)
-    assert "location" in report.scrubbed
+    assert verified.region is None
+    assert "region" in report.scrubbed
+
+
+def test_the_city_is_checked_on_its_own_not_with_the_region() -> None:
+    """⚠️ 광역 근거가 없다고 도시까지 버리지 않는다 — `서울 소재`처럼 광역만 적힌 공고가 있고,
+    도시는 제 글자가 원문에 있으면 그 자체가 근거다."""
+    verified, _ = _verified(
+        _record(raw_text="성원교회는 문경시에 있습니다."),
+        _extraction(region=Region.SEOUL, city="문경시", evidence=Evidence(region="없는근거")),
+    )
+
+    assert verified.region is None, "근거 없는 광역은 버린다"
+    assert verified.city == "문경시", "원문에 있는 도시는 남는다"
 
 
 def test_a_grounded_location_keeps_the_region() -> None:
     verified, _ = _verified(
         _record(),
         _extraction(
-            region=Region.GYEONGBUK, city="문경시", evidence=Evidence(location="경북 문경시 점촌동")
+            region=Region.GYEONGBUK, city="문경시", evidence=Evidence(region="경북 문경시 점촌동")
         ),
     )
 
@@ -510,13 +526,16 @@ def test_evidence_from_the_wrong_field_does_not_support_a_choice(
 
 
 def test_a_derived_value_without_its_evidence_is_kept_not_blamed() -> None:
-    """⚠️ 근거 칸이 비었는데 파생값이 있는 상태는 `parse_extraction`으로는 만들어지지 않는다
-    (파생값이 근거에서 나오므로). 그래도 계약으로 못 박는다 — 나중에 다른 경로가 생겨
-    이 분기가 실패로 바뀌면 사례비·지역이 조용히 사라진다.
-    """
-    verified, report = _verified(_record(), _extraction(pay_min=250, region=Region.GYEONGBUK))
+    """⚠️ 근거 칸이 비었는데 **파생값**이 있는 상태는 `parse_extraction`으로 만들어지지 않는다
+    (파생값이 근거에서 나오므로). 그래도 계약으로 못 박는다 — 이 분기가 실패로 바뀌면
+    사례비·마감이 조용히 사라진다.
 
-    assert (verified.pay_min, verified.region) == (250, Region.GYEONGBUK)
+    ⚠️ **지역은 2026-08-16에 이 규칙에서 빠졌다.** 모델이 따로 답하는 칸이 되어 더 이상
+    파생값이 아니다 — 근거가 없으면 비운다(`test_a_region_without_evidence_is_blanked`).
+    """
+    verified, report = _verified(_record(), _extraction(pay_min=250))
+
+    assert verified.pay_min == 250
     assert report.is_clean
 
 
@@ -1364,3 +1383,38 @@ def test_housing_not_mentioned_keeps_a_note_that_is_in_the_source() -> None:
 
     assert verified.housing_note == "사택 협의 가능"
     assert "housing_note" not in report.scrubbed
+
+
+def test_a_region_without_evidence_is_blanked() -> None:
+    """⚠️ **`grounds`를 쓰면 안 되는 이유.** 그 함수는 "근거가 없으면 파생값도 이미 비어 있다"를
+    전제하는데(사례비·마감이 그렇다), 지역은 더 이상 파생값이 아니라 모델이 따로 답하는 칸이다.
+
+    실측 재현(2026-08-16): `region=SEOUL` + `region_evidence=null`이 검산 없이 통과했다.
+    프롬프트는 "없으면 그 지역은 버려진다"고 약속한다 — 코드가 그 약속을 지켜야 한다.
+    """
+    verified, report = _verified(_record(), _extraction(region=Region.SEOUL))
+
+    assert verified.region is None
+    assert "region" in report.scrubbed
+
+
+def test_a_blanked_region_records_which_region_the_model_chose() -> None:
+    """⚠️ 칸 이름만 남기면 "모델이 어디라고 답했길래 지웠나"를 알 수 없어 과검을 못 잡는다."""
+    _, report = _verified(
+        _record(), _extraction(region=Region.SEOUL, evidence=Evidence(region="원문에없는근거"))
+    )
+
+    dropped = [item for item in report.dropped if item.field == "region"]
+    assert [(item.value, item.evidence) for item in dropped] == [("SEOUL", "원문에없는근거")]
+
+
+def test_an_invented_city_is_blanked() -> None:
+    """⚠️ 모델이 교회명에서 **추론한** 도시가 원문에 없으면 지운다(실측: 매 실행 12건).
+
+    `포항제일교회` → `포항시`는 광역(GYEONGBUK)의 근거는 되지만, `포항시`라는 글자가 원문에
+    없으면 도시 칸에 넣을 수 없다.
+    """
+    verified, report = _verified(_record(), _extraction(city="원문에없는시"))
+
+    assert verified.city is None
+    assert "city" in report.scrubbed

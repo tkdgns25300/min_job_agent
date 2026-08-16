@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from minjob_ingest.domain import Region, StipendPeriod
+from minjob_ingest.domain import StipendPeriod
 from minjob_ingest.models import JsonValue
 from minjob_ingest.pipeline.normalize import (
     address_or_none,
@@ -17,60 +17,7 @@ from minjob_ingest.pipeline.normalize import (
     closed_by_board,
     pay_of,
     period_of,
-    place_of,
 )
-
-# ── 지역 ─────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    ("given", "region", "city"),
-    [
-        ("전북특별자치도 전주시 완산구 삼천동2가", Region.JEONBUK, "전주시"),
-        ("경북 문경시 점촌동", Region.GYEONGBUK, "문경시"),
-        ("경기 광명시 소하동", Region.GYEONGGI, "광명시"),
-        ("서울 관악구 신림동", Region.SEOUL, "관악구"),
-        ("충청남도 천안시 서북구", Region.CHUNGNAM, "천안시"),
-        ("제주특별자치도 서귀포시", Region.JEJU, "서귀포시"),
-        ("강원 홍천군", Region.GANGWON, "홍천군"),
-        ("대구", Region.DAEGU, None),
-        ("수성구", None, "수성구"),
-        ("", None, None),
-        (None, None, None),
-    ],
-    ids=[
-        "시+구 → 시",
-        "경북",
-        "경기",
-        "구만 있음",
-        "긴 이름이 먼저",
-        "제주",
-        "군",
-        "광역만",
-        "광역 없음",
-        "빈 값",
-        "null",
-    ],
-)
-def test_a_place_becomes_a_region_and_a_city(
-    given: str | None, region: Region | None, city: str | None
-) -> None:
-    """⚠️ **시·군이 구보다 앞선다** — `전주시 완산구`는 `전주시`다.
-
-    구 이름만으로는 어느 광역인지 알 수 없어서(`중구`가 여러 곳에 있다) 도시로 쓸모가 적다.
-    """
-    assert place_of(given) == (region, city)
-
-
-def test_a_wide_name_is_not_mistaken_for_a_district() -> None:
-    """⚠️ `대구`는 `~구`로 끝난다 — 거르지 않으면 광역이 시·군·구 칸에 들어간다."""
-    assert place_of("대구 수성구") == (Region.DAEGU, "수성구")
-
-
-def test_the_longer_wide_name_wins() -> None:
-    """`충청북도`가 `충북`보다 먼저 걸려야 한다 — 순서가 뒤집히면 못 찾는다."""
-    assert place_of("충청북도 청주시")[0] is Region.CHUNGBUK
-
 
 # ── 사례비 ───────────────────────────────────────────────────────
 

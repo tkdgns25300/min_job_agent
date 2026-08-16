@@ -13,7 +13,7 @@ from typing import Final
 import pytest
 
 from minjob_ingest.clock import KST
-from minjob_ingest.domain import Department, IsChurchRecruitment, JobKind, Position
+from minjob_ingest.domain import Department, IsChurchRecruitment, JobKind, Position, Region
 from minjob_ingest.models import (
     Attachment,
     JsonValue,
@@ -84,7 +84,9 @@ def _answer(**overrides: object) -> str:
         "description": "점촌제일교회가 전임 사역자를 청빙합니다.",
         "deadline": "2026-08-31",
         "church_name": "점촌제일교회",
-        "location": "경북 문경시 점촌동",
+        "region": "GYEONGBUK",
+        "region_evidence": "경북 문경시 점촌동",
+        "city": "문경시",
         "address": "점촌로 30",
         "raw_denomination": "예장통합",
         "contact_email": "church@example.kr",
@@ -362,7 +364,9 @@ def test_the_output_contract_is_exactly_these_columns() -> None:
             "housing_provided",
             "is_church_recruitment",
             "job_kind",
-            "location",
+            "region",
+            "region_evidence",
+            "city",
             "address",
             "optional_docs",
             "pay_amount",
@@ -388,26 +392,31 @@ def test_the_model_is_not_asked_for_values_code_can_derive() -> None:
     """⚠️ 맥락이 필요 없는 변환을 모델에 맡기면 **같은 글자에서 실행마다 다른 값**이 나온다.
 
     실측: `연봉 3,200이상`을 Flash는 3200, Flash-Lite는 267(월로 나눈 값)로 돌려줬다.
-    지역·금액·마감 여부는 `pipeline/normalize.py`가 정하고 모델은 표현만 준다.
+    금액·마감 여부·제목은 `pipeline/normalize.py`가 정하고 모델은 표현만 준다.
     """
     asked = set(RESPONSE_SCHEMA.properties or {})
 
-    assert {
-        "region",
-        "city",
-        "pay_min",
-        "pay_max",
-        "pay_period",
-        "is_closed",
-        "title",
-    } & asked == set()
-    assert {"location", "pay_amount"} <= asked
+    assert {"pay_min", "pay_max", "pay_period", "is_closed", "title"} & asked == set()
+    assert {"pay_amount"} <= asked
+
+
+def test_the_model_is_asked_for_the_location_because_code_cannot_derive_it() -> None:
+    """⚠️ **지역만 예외다**(2026-08-16 개정 · SPEC §5.5b). 위 규칙의 반대편이라 함께 고정한다.
+
+    글자 대응이 아니라 지리 지식이다: `안동시`가 경북인 줄은 글자를 봐서는 알 수 없고
+    (표본 11%가 도시만 적혀 광역이 비었다), `전남광주통합특별시 북구 오치동`은 앞글자만
+    보면 전남이지만 실제로는 광주다(그 표기 12건 중 4건). 표로 담으려면 동 이름까지 필요하다.
+    """
+    asked = set(RESPONSE_SCHEMA.properties or {})
+
+    assert {"region", "region_evidence", "city"} <= asked
+    assert "location" not in asked, "옛 경로(코드가 광역을 글자로 찾던 칸)는 사라졌다"
 
 
 def test_every_extracted_field_has_a_home_in_the_record() -> None:
     """⚠️ `Extraction`과 `ReviewData`의 칸 이름이 어긋나면 뽑고도 저장되지 않는다.
 
-    ⚠️ 스키마 키와는 1:1이 아니다 — `location`·`pay_amount`가 `region`·`city`·`pay_min`·
+    ⚠️ 스키마 키와는 1:1이 아니다 — 옛 `location`·`pay_amount`가 `region`·`city`·`pay_min`·
     `pay_max`로 바뀌기 때문이다(`parse_extraction`).
 
     ⚠️ `evidence`만 예외다 — 대문자 값을 고른 **근거**이고, 검산(`pipeline/verify.py`)에만 쓰고
@@ -753,3 +762,13 @@ def test_an_address_that_is_not_an_address_never_reaches_the_draft() -> None:
     """
     assert parse_extraction(_answer(address="1층 사무실")).address is None
     assert parse_extraction(_answer(address="도작로 61")).address == "도작로 61"
+
+
+def test_the_location_answer_is_read_into_the_extraction() -> None:
+    """⚠️ 배선이 끊겨도 다른 테스트는 전부 통과한다 — 검산 테스트가 손으로 만든 `Evidence`를
+    쓰기 때문이다. 모델 응답 → `Extraction` 경로를 여기서 고정한다."""
+    extraction = parse_extraction(_answer())
+
+    assert extraction.region is Region.GYEONGBUK
+    assert extraction.city == "문경시"
+    assert extraction.evidence.region == "경북 문경시 점촌동"
