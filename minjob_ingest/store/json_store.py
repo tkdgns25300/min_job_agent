@@ -21,14 +21,20 @@ import logging
 import os
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Final
 
 from minjob_ingest.clock import kst_now
 from minjob_ingest.domain import CrawlMode, normalize_source_key
 from minjob_ingest.models import CrawlRun, ReviewData, SourceData, SourceHealth
-from minjob_ingest.store.base import LedgerEntry, RequeueResult, StoreError
+from minjob_ingest.store.base import (
+    DedupCandidate,
+    DedupUpdate,
+    LedgerEntry,
+    RequeueResult,
+    StoreError,
+)
 from minjob_ingest.store.serde import (
     Row,
     SerdeError,
@@ -233,6 +239,49 @@ class JsonStore:
             self._write_rows(_REVIEW_DATA_FILE, rows)
             return True
 
+    def dedup_candidates(self) -> tuple[DedupCandidate, ...]:
+        with self._write_lock:
+            posted_on = {
+                str(row.get("id")): row_to_source_data(row).posted_on
+                for row in self._read_rows(_SOURCE_DATA_FILE)
+            }
+            candidates: list[DedupCandidate] = []
+            for row in self._read_rows(_REVIEW_DATA_FILE):
+                # ⚠️ 깨진 행을 건너뛰지 않는다 — 그 행이 대표였을 수 있고, 그러면 대표가 아닌
+                #    쪽이 공개되면서 아무 표시도 남지 않는다.
+                try:
+                    draft = row_to_review_data(row)
+                except SerdeError as err:
+                    raise StoreError(f"읽을 수 없는 초안이 있어 중복 판정을 멈췄다: {err}") from err
+                source_posted_on = posted_on.get(str(draft.source_data_id))
+                if source_posted_on is None:
+                    raise StoreError(
+                        f"초안의 원자료가 없다 (source_data_id={draft.source_data_id})"
+                    )
+                candidates.append(DedupCandidate(draft=draft, posted_on=source_posted_on))
+            return tuple(candidates)
+
+    def apply_dedup(self, updates: Sequence[DedupUpdate]) -> int:
+        with self._write_lock:
+            rows = self._read_rows(_REVIEW_DATA_FILE)
+            at_id = {str(row.get("id")): index for index, row in enumerate(rows)}
+            changed = 0
+            for update in updates:
+                index = at_id.get(str(update.review_data_id))
+                if index is None:
+                    raise StoreError(
+                        f"초안이 없어 판정을 적용할 수 없다 (id={update.review_data_id})"
+                    )
+                stored = row_to_review_data(rows[index])
+                judged = _with_dedup(stored, update)
+                if judged == stored:
+                    continue
+                rows[index] = to_row(judged)
+                changed += 1
+            if changed:
+                self._write_rows(_REVIEW_DATA_FILE, rows)
+            return changed
+
     # ── 실행·상태 ───────────────────────────────────────────────
 
     def start_run(self, mode: CrawlMode) -> CrawlRun:
@@ -391,3 +440,25 @@ class JsonStore:
                 f"source_data {stored.id}: 시도 횟수를 줄일 수 없음"
                 f" ({stored.structure_attempts} → {incoming.structure_attempts})"
             )
+
+
+def _with_dedup(stored: ReviewData, update: DedupUpdate) -> ReviewData:
+    """판정을 반영한 초안. **라벨과 판정을 나눠 적용한다**(`DedupUpdate.verdict`).
+
+    ⚠️ 운영자가 손댄 행에 판정이 실려 오면 버그다 — 조용히 무시하면 사람이 한 일이 덮인 뒤에도
+    아무 표시가 없다(`pipeline/dedup`이 그런 행에는 라벨만 만든다).
+    """
+    if update.verdict is None:
+        return replace(stored, dedup_key=update.dedup_key, dedup_state=update.dedup_state)
+    if stored.is_operator_owned:
+        raise StoreError(f"운영자가 손댄 초안에는 판정을 쓸 수 없다 (id={stored.id})")
+    # ⚠️ **한 번에 바꾼다.** 라벨을 먼저 붙이면 `dedup_state=DUPLICATE`인데 아직 거절이 아닌
+    #    중간 상태가 생기고, 레코드 불변식이 그걸 막는다(`_check_dedup`) — 옳은 거부다.
+    return replace(
+        stored,
+        dedup_key=update.dedup_key,
+        dedup_state=update.dedup_state,
+        review_status=update.verdict.review_status,
+        reject_reason=update.verdict.reject_reason,
+        posted_at=update.verdict.posted_at,
+    )

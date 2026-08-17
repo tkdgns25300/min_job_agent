@@ -18,9 +18,11 @@ import pytest
 from minjob_ingest.domain import (
     Confidence,
     CrawlMode,
+    DedupState,
     Denomination,
     DenominationSource,
     IsChurchRecruitment,
+    RejectReason,
     ReviewStatus,
     SourceHealthStatus,
 )
@@ -32,7 +34,13 @@ from minjob_ingest.models import (
     SourceHealth,
     new_id,
 )
-from minjob_ingest.store.base import LedgerEntry, Store, StoreError
+from minjob_ingest.store.base import (
+    DedupUpdate,
+    DedupVerdict,
+    LedgerEntry,
+    Store,
+    StoreError,
+)
 from minjob_ingest.store.json_store import _MUTABLE_STATE_FIELDS, FILE_VERSION, JsonStore
 from minjob_ingest.store.serde import SerdeError, to_row
 
@@ -722,3 +730,155 @@ def test_requeue_refuses_when_a_draft_cannot_be_read(store: JsonStore, data_dir:
         store.requeue_for_structure()
 
     assert store.list_unstructured(10) == (), "아무것도 바뀌지 않았다"
+
+
+# ── 중복 판정 읽기·쓰기 (SPEC §4.1) ──────────────────────────────
+
+
+def _drafted(store: JsonStore, external_id: str) -> ReviewData:
+    record = _structured(store, _source_data(external_id))
+    draft = _review_data(record.id)
+    store.upsert_review_data(draft)
+    return draft
+
+
+def test_dedup_candidates_carry_the_source_posting_date(store: JsonStore) -> None:
+    """⚠️ 대표의 `review_data.posted_at`은 묶음의 최신으로 덮인다 — 그 값으로 라운드를 계산하면
+    다시 돌릴 때마다 경계가 움직인다. 원자료 게시일은 write-once라 안 흔들린다."""
+    draft = _drafted(store, "1")
+
+    (candidate,) = store.dedup_candidates()
+
+    assert candidate.draft.id == draft.id
+    assert candidate.posted_on == FIXED_NOW.date()
+
+
+def test_dedup_candidates_are_not_filtered_by_the_store(store: JsonStore) -> None:
+    """무엇을 판정 대상으로 볼지는 `pipeline/dedup`이 정한다 — 저장소가 정책을 알면 규칙을
+    고칠 때 순수 함수 테스트가 아니라 저장소 테스트를 고쳐야 한다."""
+    _drafted(store, "1")
+    record = _structured(store, _source_data("2"))
+    store.upsert_review_data(
+        replace(
+            _review_data(record.id),
+            review_status=ReviewStatus.REJECTED,
+            reject_reason=RejectReason.HERESY,
+            heresy_flag=True,
+            heresy_evidence="heresy-ref: 교회명 일치",
+        )
+    )
+
+    assert len(store.dedup_candidates()) == 2
+
+
+def test_dedup_stops_instead_of_skipping_a_broken_draft(store: JsonStore, data_dir: Path) -> None:
+    """⚠️ 건너뛴 행이 대표였을 수 있다 — 그러면 대표가 아닌 쪽이 공개되고 아무 표시도 없다."""
+    _drafted(store, "1")
+    path = data_dir / "review_data.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    del document["records"][0]["confidence"]
+    path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(StoreError, match="중복 판정을 멈췄다"):
+        store.dedup_candidates()
+
+
+def test_applying_a_verdict_rejects_the_duplicate(store: JsonStore) -> None:
+    draft = _drafted(store, "1")
+    key = "오천중앙교회:GYEONGBUK:ASSOCIATE_PASTOR:-:R1"
+
+    changed = store.apply_dedup(
+        [
+            DedupUpdate(
+                review_data_id=draft.id,
+                dedup_key=key,
+                dedup_state=DedupState.DUPLICATE,
+                verdict=DedupVerdict(
+                    review_status=ReviewStatus.REJECTED,
+                    reject_reason=RejectReason.DUPLICATE,
+                    posted_at=FIXED_NOW.date(),
+                ),
+            )
+        ]
+    )
+
+    (stored,) = store.dedup_candidates()
+    assert changed == 1
+    assert stored.draft.dedup_key == key
+    assert stored.draft.dedup_state is DedupState.DUPLICATE
+    assert stored.draft.reject_reason is RejectReason.DUPLICATE
+
+
+def test_applying_the_same_verdict_twice_writes_nothing(store: JsonStore) -> None:
+    """멱등 — 매 실행 파일이 바뀌면 무엇이 실제로 변했는지 알 수 없다."""
+    draft = _drafted(store, "1")
+    update = DedupUpdate(
+        review_data_id=draft.id,
+        dedup_key="오천중앙교회:GYEONGBUK:ASSOCIATE_PASTOR:-:R1",
+        dedup_state=DedupState.ALONE,
+    )
+
+    assert store.apply_dedup([update]) == 1
+    assert store.apply_dedup([update]) == 0
+
+
+def test_applying_a_verdict_to_a_missing_draft_stops_the_run(store: JsonStore) -> None:
+    """⚠️ 조용히 넘기면 판정이 사라진 것을 아무도 모른다."""
+    with pytest.raises(StoreError, match="초안이 없어"):
+        store.apply_dedup(
+            [
+                DedupUpdate(
+                    review_data_id=new_id(),
+                    dedup_key="없는교회:SEOUL:ETC:-:R1",
+                    dedup_state=DedupState.ALONE,
+                )
+            ]
+        )
+
+
+def test_a_label_is_allowed_on_a_row_the_operator_owns(store: JsonStore) -> None:
+    """⚠️ 라벨은 붙여야 한다 — 없으면 SPEC §4.2가 "이미 공개된 같은 자리"를 못 찾는다."""
+    record = _structured(store, _source_data("1"))
+    published = replace(
+        _review_data(record.id),
+        review_status=ReviewStatus.APPROVED,
+        published_job_id=new_id(),
+    )
+    store.upsert_review_data(published)
+    key = "오천중앙교회:GYEONGBUK:ASSOCIATE_PASTOR:-:R1"
+
+    changed = store.apply_dedup(
+        [DedupUpdate(review_data_id=published.id, dedup_key=key, dedup_state=DedupState.MASTER)]
+    )
+
+    (stored,) = store.dedup_candidates()
+    assert changed == 1
+    assert stored.draft.dedup_key == key
+    assert stored.draft.review_status is ReviewStatus.APPROVED, "판정은 그대로다"
+
+
+def test_a_verdict_on_a_row_the_operator_owns_is_a_bug(store: JsonStore) -> None:
+    """⚠️ 조용히 무시하면 사람이 한 일이 덮인 뒤에도 아무 표시가 없다 — 멈추고 알린다."""
+    record = _structured(store, _source_data("1"))
+    published = replace(
+        _review_data(record.id),
+        review_status=ReviewStatus.APPROVED,
+        published_job_id=new_id(),
+    )
+    store.upsert_review_data(published)
+
+    with pytest.raises(StoreError, match="판정을 쓸 수 없다"):
+        store.apply_dedup(
+            [
+                DedupUpdate(
+                    review_data_id=published.id,
+                    dedup_key="오천중앙교회:GYEONGBUK:ASSOCIATE_PASTOR:-:R1",
+                    dedup_state=DedupState.DUPLICATE,
+                    verdict=DedupVerdict(
+                        review_status=ReviewStatus.REJECTED,
+                        reject_reason=RejectReason.DUPLICATE,
+                        posted_at=FIXED_NOW.date(),
+                    ),
+                )
+            ]
+        )

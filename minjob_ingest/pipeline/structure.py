@@ -45,7 +45,7 @@ from minjob_ingest.domain import (
 )
 from minjob_ingest.lib.gemini import GeminiError
 from minjob_ingest.models import ReviewData, SourceData
-from minjob_ingest.pipeline.confidence import grade
+from minjob_ingest.pipeline.confidence import grade, review_status_for
 from minjob_ingest.pipeline.denomination import confirm
 from minjob_ingest.pipeline.extraction import Extraction, ExtractionError
 from minjob_ingest.pipeline.heresy import HeresyMatch, HeresyRef, screen
@@ -534,17 +534,8 @@ def build_draft(
     return replace(
         draft,
         confidence=confidence,
-        review_status=_review_status(confidence, reject_reason),
+        review_status=review_status_for(confidence, reject_reason),
     )
-
-
-def _review_status(confidence: Confidence, reject_reason: RejectReason | None) -> ReviewStatus:
-    """거절이 먼저다 — 이단·마감은 등급과 무관하게 공개되지 않는다(SPEC §5.4·§5.4b)."""
-    if reject_reason is not None:
-        return ReviewStatus.REJECTED
-    if confidence is Confidence.HIGH:
-        return ReviewStatus.APPROVED
-    return ReviewStatus.PENDING
 
 
 def _reject_reason(heresy: HeresyMatch | None, closed: bool) -> RejectReason | None:

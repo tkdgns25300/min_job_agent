@@ -19,12 +19,14 @@ from minjob_ingest.domain import (
     IsChurchRecruitment,
     JobKind,
     Position,
+    Region,
     SourceHealthStatus,
 )
 from minjob_ingest.fetch.client import FetchError
 from minjob_ingest.lib import gemini
 from minjob_ingest.models import ReviewData, SourceData, new_id
 from minjob_ingest.pipeline.collect import CollectReport
+from minjob_ingest.pipeline.dedup import DedupReport
 from minjob_ingest.pipeline.extraction import Extraction
 from minjob_ingest.pipeline.health import EMPTY_RUNS_ALARM
 from minjob_ingest.pipeline.heresy import HeresyEntry, HeresyMatch, HeresyRef
@@ -996,3 +998,126 @@ def test_the_heresy_list_is_read_before_the_first_paid_call(
     assert main(["structure", "--limit", "1", "--dry-run"]) == 0
 
     assert order == ["heresy", "gemini"], "--dry-run 도 유료 호출을 한다 — 같은 순서여야 한다"
+
+
+# ── dedup 명령 (SPEC §4.1) ───────────────────────────────────────
+
+
+def test_dedup_reports_what_it_merged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 중복은 **검수 큐에 뜨지 않는다** — 몇 건을 어느 자리로 줄였는지 화면에 없으면 잘못
+    묶어도 아무도 모른다."""
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path))
+    monkeypatch.setattr(
+        cli,
+        "dedup_all",
+        lambda *_a, **_k: DedupReport(
+            scanned=132,
+            states={"DUPLICATE": 21, "MASTER": 17, "ALONE": 86, "UNCERTAIN": 2, "SEPARATE": 4},
+            groups=17,
+            unjudged=2,
+            settled=1,
+            changed=44,
+        ),
+    )
+
+    assert main(["dedup"]) == 0
+
+    shown = capsys.readouterr().out
+    assert "훑음" in shown and "132건" in shown
+    assert "중복" in shown and "21건" in shown and "17개 자리" in shown
+    assert "판단 못 함" in shown and "2건" in shown
+    assert "다른 자리" in shown and "4건" in shown
+    assert "견줄 수 없음" in shown, "왜 이 중복이 안 잡히나에 답할 수 있어야 한다"
+    assert "이미 결론" in shown, "이단·마감 거절을 자물쇠 없음과 섞어 세지 않는다"
+    assert "44건 갱신" in shown
+
+
+def test_dedup_dry_run_says_it_stored_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path))
+    monkeypatch.setattr(cli, "dedup_all", lambda *_a, **_k: DedupReport(scanned=3))
+
+    assert main(["dedup", "--dry-run"]) == 0
+
+    shown = capsys.readouterr().out
+    assert "미리보기" in shown and "하지 않음" in shown
+
+
+def test_structure_runs_dedup_when_it_stored_something(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ **잊어버릴 자리에 두지 않는다.** 자동 승인이 켜진 이상(SPEC §5.7) dedup을 빼먹으면
+    같은 자리가 최대 26번 그대로 공개된다. 무료·무네트워크·멱등이라 매번 돌려도 된다."""
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path))
+    monkeypatch.setattr(cli, "structure_pending", lambda *_a, **_k: StructureReport(drafted=2))
+    monkeypatch.setattr(cli, "dedup_all", lambda *_a, **_k: DedupReport(scanned=2, changed=1))
+    monkeypatch.setattr(cli, "load_ref", lambda _path: _FAKE_HERESY)
+    _stub_gemini(monkeypatch)
+
+    assert main(["structure", "--limit", "1"]) == 0
+
+    assert "중복 판정" in capsys.readouterr().out
+
+
+def test_a_structure_preview_does_not_run_dedup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--dry-run`은 아무것도 저장하지 않았으니 판정할 것도 없다."""
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path))
+    monkeypatch.setattr(cli, "structure_pending", lambda *_a, **_k: StructureReport(drafted=2))
+    monkeypatch.setattr(cli, "load_ref", lambda _path: _FAKE_HERESY)
+
+    def _must_not_run(*_a: object, **_k: object) -> DedupReport:
+        raise AssertionError("미리보기에서 중복 판정을 돌리면 안 된다")
+
+    monkeypatch.setattr(cli, "dedup_all", _must_not_run)
+    _stub_gemini(monkeypatch)
+
+    assert main(["structure", "--limit", "1", "--dry-run"]) == 0
+    assert "중복 판정" not in capsys.readouterr().out
+
+
+def test_dedup_on_a_real_store_judges_two_cross_posts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """가짜 없이 저장소를 실제로 지난다 — 읽기·판정·쓰기가 실제로 이어지는지 본다."""
+    monkeypatch.setenv(ENV_DATA_DIR, str(tmp_path))
+    store = JsonStore(tmp_path)
+    for external_id in ("1", "2"):
+        record = SourceData(
+            source_key="DAESHIN",
+            external_id=external_id,
+            source_url=f"https://e.kr/{external_id}",
+            title="장성제일교회에서 동역할 부목사님을 청빙합니다.",
+            posted_on=date(2026, 8, 4),
+            run_id=new_id(),
+            fetched_at=kst_now(),
+            raw_text="장성제일교회에서 부목사님을 청빙합니다. shoutlord@hanmail.net",
+        )
+        store.save_source_data(record)
+        store.update_structure_state(record.with_verdict_recorded())
+        store.upsert_review_data(
+            build_draft(
+                record,
+                Extraction(
+                    is_church_recruitment=IsChurchRecruitment.YES,
+                    church_name="장성제일교회",
+                    region=Region.JEONNAM,
+                    description="장성제일교회가 부목사를 청빙합니다.",
+                    job_kind=(JobKind.MINISTRY,),
+                    position=(Position.ASSOCIATE_PASTOR,),
+                    contact_email="shoutlord@hanmail.net",
+                ),
+            )
+        )
+
+    assert main(["dedup"]) == 0
+
+    shown = capsys.readouterr().out
+    assert "중복" in shown and "1건" in shown
+    stored = [candidate.draft for candidate in store.dedup_candidates()]
+    assert sorted(str(draft.dedup_state) for draft in stored) == ["DUPLICATE", "MASTER"]
+    assert len({draft.dedup_key for draft in stored}) == 1, "한 자리로 묶였다"

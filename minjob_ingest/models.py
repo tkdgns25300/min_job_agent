@@ -25,6 +25,7 @@ from minjob_ingest.clock import ensure_kst, kst_now, require_plain_date
 from minjob_ingest.domain import (
     Confidence,
     CrawlMode,
+    DedupState,
     Denomination,
     DenominationSource,
     Department,
@@ -80,8 +81,7 @@ REVIEW_STATE_FIELDS: tuple[str, ...] = (
 #: ⚠️ **재구조화가 매번 새로 내리는 판정** — 이어받으면 안 된다.
 #: 이어받으면 새 초안이 붙인 이단·마감 거절이 이전 행의 `PENDING`으로 덮여 **사라진다**
 #: (실측 2026-08-17: 이단 거절을 붙인 초안으로 기존 `PENDING` 행을 대체하니 `PENDING`이
-#: 그대로 남았다). 자동 승인도 같은
-#: 이유로 영영 적용되지 않았다(`high`인데 `PENDING`).
+#: 그대로 남았다). 자동 승인도 같은 이유로 영영 적용되지 않았다(`high`인데 `PENDING`).
 _VERDICT_FIELDS = frozenset({"review_status", "reject_reason"})
 
 #: 재구조화 초안이 기존 행에서 **이어받는** 칸 = 행 식별자 + 운영자가 쓴 칸.
@@ -468,7 +468,11 @@ class ReviewData:
     heresy_evidence: str | None = None
 
     # 검수 메타 — 승격 시 min_job으로 넘기지 않는다
+    #: 같은 자리 **후보**를 가리키는 묶음표(SPEC §4.1). `교회명:지역:직분:부서:R라운드`.
+    #: ⚠️ **파생값이다** — 언제든 다시 계산한다. 판정 결과는 `dedup_state`가 갖는다.
     dedup_key: str | None = None
+    #: 그 후보 안에서 내린 결론. 키 없이 결론만 있을 수 없다(아래 검사).
+    dedup_state: DedupState | None = None
     review_status: ReviewStatus = ReviewStatus.PENDING
     #: `REJECTED`일 때 **왜**인지. 자동 거부(중복·이단)를 되짚는 유일한 통로다 —
     #: 구분이 없으면 "우리 dedup이 틀렸나"·"이단 오판인가"를 확인할 방법이 없다.
@@ -488,6 +492,7 @@ class ReviewData:
         self._check_job_kind()
         self._check_heresy()
         self._check_reject_reason()
+        self._check_dedup()
         _set(self, "created_at", ensure_kst(self.created_at))
         if self.reviewed_at is not None:
             _set(self, "reviewed_at", ensure_kst(self.reviewed_at))
@@ -516,6 +521,7 @@ class ReviewData:
             _as_enum(self.denomination_source, DenominationSource, "denomination_source"),
         )
         _set(self, "review_status", _as_enum(self.review_status, ReviewStatus, "review_status"))
+        _set(self, "dedup_state", _as_optional_enum(self.dedup_state, DedupState, "dedup_state"))
         _set(
             self,
             "reject_reason",
@@ -620,6 +626,21 @@ class ReviewData:
                 f" ({self.reject_reason.value})"
             )
 
+    def _check_dedup(self) -> None:
+        """판정과 거절이 서로를 배신하지 않게 한다(SPEC §4.1).
+
+        ⚠️ `DUPLICATE`인데 살아 있으면 **중복이 그대로 공개된다**. 반대로 `DUPLICATE`로
+        거절해 놓고 판정이 없으면 왜 거절됐는지 되짚을 수 없다 — 둘을 한 몸으로 묶는다.
+        """
+        if self.dedup_state is not None and self.dedup_key is None:
+            raise ValueError(f"dedup_state={self.dedup_state.value}인데 dedup_key가 없음")
+        duplicate = self.reject_reason is RejectReason.DUPLICATE
+        if duplicate is not (self.dedup_state is DedupState.DUPLICATE):
+            raise ValueError(
+                "reject_reason=DUPLICATE와 dedup_state=DUPLICATE는 항상 함께여야 함"
+                f" (reject_reason={self.reject_reason}, dedup_state={self.dedup_state})"
+            )
+
     @property
     def needs_operator_review(self) -> bool:
         """승격 전에 운영자가 교단을 확인해야 하는가(SPEC §5.3).
@@ -651,12 +672,27 @@ class ReviewData:
         )
 
     @property
+    def is_operator_owned(self) -> bool:
+        """**사람의 손이 닿은 행인가** — 크롤러가 판정을 덮어써선 안 된다.
+
+        `is_operator_touched`에 **게재 링크**를 더한 것이다: admin이 `reviewed_by`를 안 채운 채
+        승인만 해도 `published_job_id`가 붙는데, 그 행을 나중에 중복으로 거절하면 **이미 공개한
+        공고가 목록에서 사라진다**(SPEC §4.1). 그래도 `dedup_key` 라벨은 붙인다 — 그게 없으면
+        SPEC §4.2가 "이미 공개된 같은 자리"를 찾을 수 없다.
+        """
+        return self.is_operator_touched or self.published_job_id is not None
+
+    @property
     def is_safe_to_replace(self) -> bool:
         """재구조화가 이 초안을 **버려도 되는가**.
 
         ⚠️ `is_operator_touched`만으로는 부족하다 — admin이 `reviewed_by`를 안 채운 채 승인만
         해도 `published_job_id`가 붙는데, 그 링크가 사라지면 이미 공개한 공고를 한 번 더
         승격하게 된다(SPEC §4.2가 그 값으로 끌어올림을 찾는다). **검수가 끝난 행도 지킨다.**
+
+        ⚠️ **`is_operator_owned`를 쓰지 않는다** — `PENDING`인데 게재 링크가 있는 행은 §4.2의
+        끌어올림 행이고, 그건 재구조화로 내용을 갱신하는 게 맞다(링크는 이어받는다).
+        게재 링크를 이유로 막는 것은 **중복 거절**뿐이다(`pipeline/dedup`).
 
         ⚠️ 이 판정은 **한 곳에만 있어야 한다** — 저장(`JsonStore.upsert_review_data`)과
         되돌리기(`scripts/reset_structure.py`)가 서로 다른 기준을 쓰면 한쪽이 다른 쪽이

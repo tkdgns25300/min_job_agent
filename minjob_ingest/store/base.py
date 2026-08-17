@@ -14,6 +14,9 @@
 보고한다. 반면 **단건 읽기(`get_health`)는 그대로 던진다** — 조용히 `None`을 주면 누적
 카운터가 초기화돼 §7 경보가 무의미해진다.
 `serde.SerdeError`만 "이 행 손상"으로 취급하고, 다른 예외는 버그이므로 중단시킨다.
+⚠️ **`dedup_candidates`도 그대로 던진다** — 중복 판정은 행 하나가 아니라 **묶음**을 보고
+대표를 고르므로(SPEC §4.1), 깨진 행을 건너뛰면 그 행이 대표였을 때 **대표가 아닌 쪽이
+공개되면서 아무 표시도 남지 않는다**.
 """
 
 from __future__ import annotations
@@ -22,8 +25,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
+from uuid import UUID
 
-from minjob_ingest.domain import CrawlMode
+from minjob_ingest.domain import CrawlMode, DedupState, RejectReason, ReviewStatus
 from minjob_ingest.models import CrawlRun, ReviewData, SourceData, SourceHealth
 
 
@@ -43,6 +47,45 @@ class RequeueResult:
     #: 거기에는 코드가 만든 거절(`HERESY`·`CLOSED`)도 걸린다. 그런 행은 목록·규칙을 고쳐도
     #: 되돌아오지 않으므로, 세는 쪽이 이유를 단정하지 않는다.
     skipped: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DedupCandidate:
+    """중복 판정에 들어가는 한 건 — 초안 + **원자료의 게시일**(SPEC §4.1).
+
+    ⚠️ **날짜를 원자료에서 가져오는 이유**: 대표 행의 `review_data.posted_at`은 묶음의 최신
+    날짜로 덮어쓴다. 그 값으로 라운드 경계를 계산하면 **다시 돌릴 때마다 경계가 움직여**
+    같은 데이터에서 다른 결과가 나온다. `source_data.posted_on`은 write-once라 안 흔들린다.
+    """
+
+    draft: ReviewData
+    posted_on: date
+
+
+@dataclass(frozen=True, slots=True)
+class DedupVerdict:
+    """판정을 적용할 때 함께 바뀌는 칸들. 라벨만 붙일 때는 이게 없다."""
+
+    review_status: ReviewStatus
+    reject_reason: RejectReason | None
+    #: 대표는 묶음의 최신 게시일을 쓴다(계속 끌어올린다 = 아직 뽑고 있다 · SPEC §4.1).
+    posted_at: date
+
+
+@dataclass(frozen=True, slots=True)
+class DedupUpdate:
+    """dedup이 한 행에 반영할 것.
+
+    ⚠️ **판정은 선택이다.** 운영자가 손댔거나 이미 공개된 행에는 `dedup_key`·`dedup_state`
+    **라벨만** 붙인다(`verdict=None`) — 사람이 한 일을 크롤러가 덮으면 안 되고, 이미 공개한
+    공고를 나중에 중복으로 거절하면 목록에서 사라진다. 그래도 라벨은 붙여야 SPEC §4.2가
+    "이미 공개된 같은 자리"를 이 키로 찾을 수 있다.
+    """
+
+    review_data_id: UUID
+    dedup_key: str
+    dedup_state: DedupState
+    verdict: DedupVerdict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +211,29 @@ class Store(Protocol):
         이어받으면 새로 붙은 이단·마감 거절이 옛 `PENDING`으로 덮여 사라진다(SPEC §5.7).
 
         Returns: 기록했으면 True, 이미 검수돼 건너뛰었으면 False.
+        """
+        ...
+
+    def dedup_candidates(self) -> tuple[DedupCandidate, ...]:
+        """중복 판정에 넣을 초안 전부 + 각 초안의 **원자료 게시일**(SPEC §4.1).
+
+        ⚠️ **걸러내지 않는다** — 무엇을 판정 대상으로 볼지는 `pipeline/dedup`이 정한다
+        (이단·마감으로 거절된 행은 그쪽에서 뺀다). 저장소가 정책을 알면 규칙을 고칠 때
+        순수 함수 테스트가 아니라 저장소 테스트를 고쳐야 한다.
+
+        ⚠️ **전체를 한 번에 준다.** 중복은 글 하나만 보고 판정할 수 없어서(SPEC §4.1) 배치로
+        쪼갤 수 없다 — 1번째 글을 볼 때 31번째가 없으면 대표가 순서에 따라 달라진다.
+        """
+        ...
+
+    def apply_dedup(self, updates: Sequence[DedupUpdate]) -> int:
+        """판정을 반영하고 **실제로 바뀐 행 수**를 돌려준다.
+
+        ⚠️ **한 번에 쓴다.** 행마다 파일을 다시 쓰면 3,000번 재작성이고, 중간에 죽으면
+        일부만 반영된 원장이 남는다.
+
+        ⚠️ 없는 `review_data_id`는 `StoreError`다 — 조용히 넘기면 판정이 사라진 것을 아무도
+        모른다. 값이 이미 같은 행은 세지 않는다(멱등).
         """
         ...
 

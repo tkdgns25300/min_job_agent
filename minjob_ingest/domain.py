@@ -153,6 +153,25 @@ class DenominationSource(StrEnum):
     OPERATOR = "operator"
 
 
+class DedupState(StrEnum):
+    """중복 판정 결과(SPEC §4.1). **크롤러 내부값** — min_job `jobs` 계약(CONTRACT §1)이 아니다.
+
+    ⚠️ `dedup_key`(같은 자리 **후보**)와 짝이다. 키만 있으면 "왜 이 결론인지"를 알 수 없다 —
+    같은 키를 가진 두 행이 `DUPLICATE`인지 `SEPARATE`인지 `UNCERTAIN`인지가 여기 남는다.
+    """
+
+    #: 같은 자리가 없다.
+    ALONE = "ALONE"
+    #: 묶음의 대표. 이 행만 공개된다.
+    MASTER = "MASTER"
+    #: 같은 자리의 재게시 — 거절한다(`reject_reason=DUPLICATE`).
+    DUPLICATE = "DUPLICATE"
+    #: 키는 같지만 **다른 자리**다(지원 연락처가 다르다 · SPEC §4.1 4단계).
+    SEPARATE = "SEPARATE"
+    #: 같은 자리인지 **코드가 알 수 없다**(부서를 한쪽만 말했다) — 사람이 본다.
+    UNCERTAIN = "UNCERTAIN"
+
+
 class ReviewStatus(StrEnum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Final
 
-from minjob_ingest.domain import Confidence, IsChurchRecruitment
+from minjob_ingest.domain import Confidence, IsChurchRecruitment, RejectReason, ReviewStatus
 from minjob_ingest.models import ReviewData
 
 #: 승격에 필요한 칸(SPEC §6 · min_job DATA.md §3 = 필수 5 + CHECK 2). 하나라도 비면 min_job이
@@ -100,3 +100,18 @@ def _only_contact_is_unverified(draft: ReviewData) -> bool:
     return bool(getattr(draft, _UNVERIFIED_CONTACT)) and not any(
         getattr(draft, name) for name in others
     )
+
+
+def review_status_for(confidence: Confidence, reject_reason: RejectReason | None) -> ReviewStatus:
+    """등급 → 검수 상태. **거절이 먼저다** — 이단·마감은 등급과 무관하게 공개되지 않는다
+    (SPEC §5.4·§5.4b).
+
+    ⚠️ 두 곳이 쓴다: 초안을 만들 때(`structure.build_draft`)와 **중복 판정을 되돌릴 때**
+    (`dedup`이 잘못 거절한 행을 되살릴 때 · SPEC §4.1). 규칙이 갈리면 되살아난 행의 상태가
+    처음 저장될 때와 달라진다.
+    """
+    if reject_reason is not None:
+        return ReviewStatus.REJECTED
+    if confidence is Confidence.HIGH:
+        return ReviewStatus.APPROVED
+    return ReviewStatus.PENDING

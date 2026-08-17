@@ -25,7 +25,7 @@ from uuid import UUID
 
 from minjob_ingest.clock import kst_now
 from minjob_ingest.console import Console, ProgressLine
-from minjob_ingest.domain import Confidence, CrawlMode, ReviewStatus
+from minjob_ingest.domain import Confidence, CrawlMode, DedupState, ReviewStatus
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.lib.gemini import GeminiClient, GeminiError
 from minjob_ingest.models import (
@@ -45,6 +45,7 @@ from minjob_ingest.pipeline.collect import (
     ProgressSink,
     collect_source,
 )
+from minjob_ingest.pipeline.dedup import DedupReport, dedup_all
 from minjob_ingest.pipeline.extraction import GeminiExtractor
 from minjob_ingest.pipeline.health import (
     Alert,
@@ -97,6 +98,7 @@ _CHECK_GEMINI = "check-gemini"
 _COLLECT = "collect"
 _SNAPSHOT = "snapshot"
 _STRUCTURE = "structure"
+_DEDUP = "dedup"
 #: 요청마다 한 줄씩 찍어 리포트를 덮는 로거들. `--verbose`에서만 켠다.
 #: ⚠️ 구조화는 공고마다 한 줄을 찍는다 — 빼두면 전량 실행에서 진행 줄이 수천 줄에 묻힌다.
 _NOISY_LOGGERS = ("httpx", "httpcore", "minjob_ingest.lib.gemini")
@@ -185,6 +187,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             lite=bool(args.lite),
             workers=int(args.workers),
         )
+    if command == _DEDUP:
+        return _run_dedup(dry_run=bool(args.dry_run), verbose=bool(args.verbose))
     # argparse가 이미 미등록 명령을 걸러내므로, 여기 오는 건 "서브파서는 추가했는데 연결을
     # 잊은" 경우다 — 조용히 성공(0)하는 대신 크래시로 알린다.
     raise RuntimeError(f"명령 '{command}'이 _dispatch에 연결되지 않았다")
@@ -661,6 +665,12 @@ def _run_structure(
         preview.write()
         console.field("미리보기 파일", str(out), note=f"{preview.count}건")
     _print_structure_report(console, report, dry_run=dry_run)
+    if not dry_run:
+        # ⚠️ **잊어버릴 자리에 두지 않는다.** 자동 승인이 켜진 이상(SPEC §5.7) dedup을 빼먹으면
+        #    같은 자리가 최대 26번 그대로 공개된다. 무료·무네트워크·멱등이라 매번 돌려도 된다.
+        #    `--dry-run`에서는 돌리지 않는다 — 저장된 것이 없으니 판정할 것도 없다.
+        console.heading("중복 판정", note="구조화 결과 전체를 다시 훑는다")
+        _print_dedup_report(console, dedup_all(store, dry_run=False), dry_run=False)
     # 멈춘 실행은 실패도 함께 세어져 있다(`_Tally._watch_store` — 저장 실패는 FAILED다).
     return 1 if report.failed else 0
 
@@ -1114,7 +1124,74 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=f"{ENV_VERTEX_MODEL_LITE} 모델로 (기본은 {ENV_VERTEX_MODEL})",
     )
+
+    # ⚠️ `structure`가 끝나면 자동으로 돈다 — 이 명령은 **다시 돌릴 때**를 위한 것이다
+    #    (규칙을 고친 뒤 · 무엇이 묶이는지만 볼 때 · 이미 저장된 데이터에 처음 적용할 때).
+    dedup = subcommands.add_parser(
+        _DEDUP, help="같은 자리가 여러 번 올라온 것을 하나로 (무료 · 게시판에 요청하지 않음)"
+    )
+    dedup.add_argument(
+        "--dry-run", action="store_true", help="판정만 하고 저장 안 함 (무엇이 묶이는지 확인용)"
+    )
+    dedup.add_argument("--verbose", action="store_true", help="로그까지 표시")
     return parser
+
+
+def _run_dedup(*, dry_run: bool, verbose: bool) -> int:
+    """같은 자리가 여러 번·여러 게시판에 올라온 것을 하나로 줄인다(SPEC §4.1).
+
+    ⚠️ **유료 호출도 게시판 요청도 없다.** 저장된 초안만 보고 판정하므로 몇 번을 돌려도 안전하고,
+    같은 데이터면 같은 결과가 나온다.
+    """
+    console = Console()
+    store = JsonStore(Settings.load().data_dir)
+
+    console.heading("중복 판정 미리보기" if dry_run else "중복 판정", note="게시판에 요청하지 않음")
+    with _console_logging(console, verbose=verbose):
+        report = dedup_all(store, dry_run=dry_run)
+    _print_dedup_report(console, report, dry_run=dry_run)
+    return 0
+
+
+def _print_dedup_report(console: Console, report: DedupReport, *, dry_run: bool) -> None:
+    console.field("훑음", f"{report.scanned}건")
+    duplicates = report.count(DedupState.DUPLICATE)
+    if duplicates:
+        # ⚠️ **거절한 수를 화면에 내놓는다.** 중복은 검수 큐에 뜨지 않으므로, 잘못 묶어도
+        #    여기서 안 보이면 아무도 모른다(SPEC §4.1).
+        console.field(
+            "중복",
+            console.paint(f"{duplicates}건", "yellow"),
+            note=f"{report.groups}개 자리로 줄었다 — 검수 큐에 뜨지 않는다",
+        )
+    uncertain = report.count(DedupState.UNCERTAIN)
+    if uncertain:
+        console.field(
+            "  ↳ 판단 못 함",
+            console.paint(f"{uncertain}건", "yellow", "bold"),
+            note="부서를 한쪽만 말했다 — 사람이 본다",
+        )
+    separated = report.count(DedupState.SEPARATE)
+    if separated:
+        console.field("다른 자리", f"{separated}건", note="지원 연락처가 달랐다 — 둘 다 남긴다")
+    alone = report.count(DedupState.ALONE)
+    if alone:
+        console.field("혼자", f"{alone}건", note="같은 자리가 없다")
+    if report.unjudged:
+        # ⚠️ 조용히 빠지면 "왜 이 중복이 안 잡히나"에 답할 수 없다.
+        console.field(
+            "견줄 수 없음",
+            f"{report.unjudged}건",
+            note="교회명·지역·직분 중 하나가 비었다",
+        )
+    if report.settled:
+        console.field(
+            "이미 결론", f"{report.settled}건", note="이단·마감·운영자 거절 — 건드리지 않는다"
+        )
+    console.field(
+        "저장",
+        "하지 않음(미리보기)" if dry_run else f"{report.changed}건 갱신",
+    )
 
 
 def _run_check_gemini(*, lite: bool) -> int:

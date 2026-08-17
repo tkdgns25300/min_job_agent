@@ -16,6 +16,7 @@ from minjob_ingest.clock import kst_now
 from minjob_ingest.domain import (
     Confidence,
     CrawlMode,
+    DedupState,
     Denomination,
     DenominationSource,
     IsChurchRecruitment,
@@ -988,8 +989,55 @@ def test_a_non_rejection_cannot_carry_a_reason() -> None:
 
 def test_each_rejection_reason_is_accepted() -> None:
     for reason in RejectReason:
-        record = replace(_review_data(), review_status=ReviewStatus.REJECTED, reject_reason=reason)
+        # ⚠️ 중복 거절은 dedup 판정과 한 몸이다(`_check_dedup`) — 이유만 붙일 수 없다.
+        duplicate = reason is RejectReason.DUPLICATE
+        record = replace(
+            _review_data(),
+            review_status=ReviewStatus.REJECTED,
+            reject_reason=reason,
+            dedup_key="성원교회:DAEGU:ASSOCIATE_PASTOR:-:R1" if duplicate else None,
+            dedup_state=DedupState.DUPLICATE if duplicate else None,
+        )
         assert record.reject_reason is reason
+
+
+def test_a_dedup_verdict_needs_a_key() -> None:
+    """⚠️ 결론만 있고 키가 없으면 **왜 그 결론인지 되짚을 수 없다**(SPEC §4.1).
+
+    키는 어느 자리 후보인지를, 결론은 그 후보 안에서 무엇으로 판정됐는지를 말한다.
+    """
+    with pytest.raises(ValueError, match="dedup_key가 없음"):
+        replace(_review_data(), dedup_state=DedupState.ALONE)
+
+
+def test_a_duplicate_verdict_and_a_duplicate_rejection_are_one_thing() -> None:
+    """⚠️ 둘이 갈리면 **중복이 그대로 공개되거나**, 왜 거절됐는지 알 수 없는 행이 남는다."""
+    key = "성원교회:DAEGU:ASSOCIATE_PASTOR:-:R1"
+
+    with pytest.raises(ValueError, match="항상 함께여야 함"):
+        # 판정은 중복인데 살아 있다 → 중복이 공개된다
+        replace(_review_data(), dedup_key=key, dedup_state=DedupState.DUPLICATE)
+
+    with pytest.raises(ValueError, match="항상 함께여야 함"):
+        # 중복으로 거절해 놓고 판정이 없다 → 되짚을 수 없다
+        replace(
+            _review_data(),
+            dedup_key=key,
+            dedup_state=DedupState.MASTER,
+            review_status=ReviewStatus.REJECTED,
+            reject_reason=RejectReason.DUPLICATE,
+        )
+
+
+def test_the_other_verdicts_leave_the_row_alive() -> None:
+    """`MASTER`·`SEPARATE`·`UNCERTAIN`은 거절이 아니다 — 그 행은 공개될 수 있다."""
+    key = "성원교회:DAEGU:ASSOCIATE_PASTOR:-:R1"
+
+    for state in (DedupState.ALONE, DedupState.MASTER, DedupState.SEPARATE, DedupState.UNCERTAIN):
+        record = replace(_review_data(), dedup_key=key, dedup_state=state)
+
+        assert record.reject_reason is None
+        assert record.dedup_state is state
 
 
 def test_a_new_rejection_replaces_the_old_pending_state() -> None:

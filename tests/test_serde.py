@@ -17,6 +17,7 @@ import pytest
 from minjob_ingest.domain import (
     Confidence,
     CrawlMode,
+    DedupState,
     Denomination,
     DenominationSource,
     Department,
@@ -127,7 +128,8 @@ def _full_review_data() -> ReviewData:
         contact_post="경북 포항시 남구 오천읍 1-1",
         heresy_flag=True,
         heresy_evidence="heresy-ref: 교회명 일치",
-        dedup_key="오천중앙교회|ASSOCIATE_PASTOR|250",
+        dedup_key="오천중앙교회:GYEONGBUK:ASSOCIATE_PASTOR:DISTRICT:R1",
+        dedup_state=DedupState.DUPLICATE,
         review_status=ReviewStatus.REJECTED,
         reject_reason=RejectReason.DUPLICATE,
         matched_church_id=new_id(),
@@ -253,6 +255,7 @@ def test_encodes_enum_as_its_value() -> None:
     assert row["confidence"] == "medium"  # 소문자 SPEC 값 유지
     assert row["review_status"] == "REJECTED"
     assert row["reject_reason"] == "DUPLICATE"
+    assert row["dedup_state"] == "DUPLICATE"
     assert row["denomination_source"] == "operator"
 
 

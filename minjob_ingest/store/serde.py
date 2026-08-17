@@ -35,6 +35,7 @@ from minjob_ingest.clock import parse_iso, parse_iso_date, to_iso, to_iso_date
 from minjob_ingest.domain import (
     Confidence,
     CrawlMode,
+    DedupState,
     Denomination,
     DenominationSource,
     Department,
@@ -180,6 +181,7 @@ def row_to_review_data(row: Row) -> ReviewData:
             heresy_flag=_bool(row, "heresy_flag"),
             heresy_evidence=_optional_str(row, "heresy_evidence"),
             dedup_key=_optional_str(row, "dedup_key"),
+            dedup_state=_optional_enum(row, "dedup_state", DedupState),
             review_status=_enum(row, "review_status", ReviewStatus),
             reject_reason=_optional_enum(row, "reject_reason", RejectReason),
             matched_church_id=_optional_uuid(row, "matched_church_id"),
