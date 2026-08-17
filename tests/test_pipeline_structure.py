@@ -6,6 +6,7 @@ AI는 가짜(`_FakeExtractor`)로 바꾼다. **네트워크도 유료 호출도 
 
 from __future__ import annotations
 
+import inspect
 import json
 import threading
 import time
@@ -44,7 +45,7 @@ from minjob_ingest.models import (
 )
 from minjob_ingest.pipeline import structure
 from minjob_ingest.pipeline.extraction import Evidence, Extraction, ExtractionError
-from minjob_ingest.pipeline.heresy import HeresyEntry, HeresyRef, screen
+from minjob_ingest.pipeline.heresy import HeresyEntry, HeresyMatch, HeresyRef, screen
 from minjob_ingest.pipeline.media import BoardMediaSource, Media, MediaSet
 from minjob_ingest.pipeline.structure import (
     STORE_FAILURE_LIMIT,
@@ -52,9 +53,11 @@ from minjob_ingest.pipeline.structure import (
     StructureReport,
     StructureResult,
     Verdict,
-    build_draft,
     structure_one,
     structure_pending,
+)
+from minjob_ingest.pipeline.structure import (
+    build_draft as _build_draft,
 )
 from minjob_ingest.store.base import StoreError
 from minjob_ingest.store.json_store import JsonStore
@@ -65,6 +68,27 @@ from minjob_ingest.store.serde import row_to_review_data
 _NO_HERESY: Final = HeresyRef.of(())
 
 _NOW: Final = datetime(2026, 8, 10, 9, 0, tzinfo=KST)
+
+
+def build_draft(
+    record: SourceData,
+    extraction: Extraction,
+    *,
+    heresy: HeresyMatch | None = None,
+    media_sent: bool = False,
+    media_missed: bool = False,
+) -> ReviewData:
+    """그림 신호를 채워 부르는 테스트용 얇은 껍데기.
+
+    운영 시그니처에서는 두 값이 **필수**다 — 빠뜨린 쪽이 자동 승인이라 기본값을 두지 않았다.
+    여기서만 기본값을 준다: 대부분의 검사는 그림과 무관하고, 매 호출에 두 줄을 붙이면
+    정작 무엇을 검사하는지가 묻힌다.
+    """
+    return _build_draft(
+        record, extraction, heresy=heresy, media_sent=media_sent, media_missed=media_missed
+    )
+
+
 _RUN_ID: Final = new_id()
 
 
@@ -1552,3 +1576,154 @@ def test_the_draft_carries_the_address() -> None:
     draft = build_draft(record, replace(_extraction(), address="점촌로 30"))
 
     assert draft.address == "점촌로 30"
+
+
+# ── 자동 승인 ────────────────────────────────────────────────────
+
+
+def _complete() -> Extraction:
+    """승격 6칸이 다 차는 모델 답 — 이게 `high`가 되는 기준선이다."""
+    return replace(
+        _extraction(),
+        job_kind=(JobKind.MINISTRY,),
+        position=(Position.ASSOCIATE_PASTOR,),
+        contact_email="church@example.kr",
+        evidence=Evidence(position_items=("부목사 1명",)),
+    )
+
+
+def test_a_high_draft_is_approved_without_a_person(store: JsonStore, data_dir: Path) -> None:
+    """⚠️ **여기가 사람 게이트를 여는 자리다**(SPEC §5.7). 규칙이 느슨해지면 확인 안 된 값이
+    검수 없이 공개된다."""
+    record = _source_data(raw_text="점촌제일교회에서 사역자를 청빙합니다. church@example.kr")
+    store.save_source_data(record)
+
+    result = structure_one(record, store, _FakeExtractor(_complete()), heresy=_NO_HERESY)
+
+    assert result.verdict is Verdict.DRAFTED
+    draft = _drafts(data_dir)[0]
+    assert draft.confidence is Confidence.HIGH
+    assert draft.review_status is ReviewStatus.APPROVED
+
+
+def test_a_draft_that_needs_a_person_stays_pending(store: JsonStore, data_dir: Path) -> None:
+    """연락처가 없으면 지원 자체가 불가능하다 — 사람이 채워야 한다."""
+    record = _source_data()
+    store.save_source_data(record)
+
+    result = structure_one(record, store, _FakeExtractor(), heresy=_NO_HERESY)
+
+    assert result.verdict is Verdict.DRAFTED
+    draft = _drafts(data_dir)[0]
+    assert draft.confidence is Confidence.LOW
+    assert draft.review_status is ReviewStatus.PENDING
+
+
+def test_a_rejected_draft_is_never_approved_however_complete_it_is() -> None:
+    """⚠️ 거절이 등급보다 앞선다 — 이단·마감은 6칸이 다 차 있어도 공개되지 않는다."""
+    record = replace(_source_data(), title="[청빙완료] 점촌제일교회 부목사")
+
+    draft = build_draft(record, _complete())
+
+    assert draft.confidence is Confidence.HIGH, "등급 자체는 정상 계산한다"
+    assert draft.review_status is ReviewStatus.REJECTED
+    assert draft.reject_reason is RejectReason.CLOSED
+
+
+def test_a_poster_posting_is_not_approved(store: JsonStore, data_dir: Path) -> None:
+    """⚠️ 그림을 보낸 공고는 **어느 칸도 원문과 대조된 적이 없다** — 사람이 그림을 봐야 한다.
+
+    실측: 사람이 볼 24건 중 21건(88%)이 이 경우다(SPEC §5.7).
+    """
+    record = _source_data(
+        raw_text="점촌제일교회에서 부목사 1명을 청빙합니다. church@example.kr",
+        image_urls=("https://example.kr/poster.jpg",),
+    )
+    store.save_source_data(record)
+
+    result = structure_one(
+        record,
+        store,
+        _FakeExtractor(_complete()),
+        heresy=_NO_HERESY,
+        images=_FakeImages(MediaSet(items=(Media(media_type="image/jpeg", data=b"x" * 5_000),))),
+    )
+
+    assert result.verdict is Verdict.DRAFTED
+    draft = _drafts(data_dir)[0]
+    assert draft.confidence is Confidence.MEDIUM
+    assert draft.review_status is ReviewStatus.PENDING
+
+
+def test_a_posting_whose_image_never_arrived_is_not_approved(
+    store: JsonStore, data_dir: Path
+) -> None:
+    """그림을 **못 받은** 것은 보낸 것과 다르다 — 내용 자체가 없을 수 있다."""
+    record = _source_data(
+        raw_text="점촌제일교회에서 부목사 1명을 청빙합니다. church@example.kr",
+        image_urls=("https://example.kr/poster.jpg",),
+    )
+    store.save_source_data(record)
+
+    result = structure_one(
+        record,
+        store,
+        _FakeExtractor(_complete()),
+        heresy=_NO_HERESY,
+        images=_FakeImages(MediaSet(failures=("poster.jpg: HTTP 404",))),
+    )
+
+    assert result.media_note is not None, "못 받았다는 사실이 기록돼야 한다"
+    assert _drafts(data_dir)[0].confidence is Confidence.LOW
+
+
+def test_the_report_counts_what_was_approved_without_a_person(store: JsonStore) -> None:
+    """⚠️ 자동 승인은 사람을 거치지 않고 공개된다 — 그 수가 실행 화면에 안 보이면 규칙이
+    느슨해진 것을 알아챌 방법이 없다(SPEC §5.7).
+
+    ⚠️ **등급이 아니라 상태로 센다** — 거절된 초안도 등급은 `high`일 수 있어서, 등급으로
+    세면 "자동 승인"이 실제보다 커 보인다(실측: 표본에서 거절 2건이 둘 다 `high`였다).
+    """
+    record = _source_data(raw_text="점촌제일교회에서 부목사 1명을 청빙합니다. church@example.kr")
+    store.save_source_data(record)
+    tally = structure._Tally()
+
+    tally.add(structure_one(record, store, _FakeExtractor(_complete()), heresy=_NO_HERESY))
+    report = tally.report()
+
+    assert report.statuses == {ReviewStatus.APPROVED.value: 1}
+    assert report.drafted == 1
+
+
+def test_the_media_signals_cannot_be_forgotten() -> None:
+    """⚠️ 두 값에 **기본값을 두지 않는다** — 빠뜨린 쪽이 자동 승인이기 때문이다.
+
+    포스터 공고는 `verify`가 어느 칸도 대조하지 않는다(SPEC §5.5b). 새 호출자가
+    `media_sent=`를 잊으면 그 공고가 조용히 `APPROVED`로 나간다. 기본값이 없으면 mypy가
+    호출자를 막지만, **기본값이 다시 생기는 것**은 타입 검사로 잡히지 않는다 — 여기서 잡는다.
+    """
+    params = inspect.signature(_build_draft).parameters
+
+    assert params["media_sent"].default is inspect.Parameter.empty
+    assert params["media_missed"].default is inspect.Parameter.empty
+
+
+def test_a_rejected_draft_is_not_counted_as_approved(store: JsonStore) -> None:
+    """⚠️ 실측: 표본의 거절 2건이 **둘 다 등급은 `high`**였다 — 등급으로 세면 화면이 거짓말한다."""
+    record = _source_data(
+        raw_text="점촌제일교회에서 부목사 1명을 청빙합니다. church@example.kr",
+        external_id="99",
+    )
+    store.save_source_data(replace(record, title="[청빙완료] 점촌제일교회 부목사"))
+    tally = structure._Tally()
+
+    tally.add(
+        structure_one(
+            replace(record, title="[청빙완료] 점촌제일교회 부목사"),
+            store,
+            _FakeExtractor(_complete()),
+            heresy=_NO_HERESY,
+        )
+    )
+
+    assert tally.report().statuses == {ReviewStatus.REJECTED.value: 1}

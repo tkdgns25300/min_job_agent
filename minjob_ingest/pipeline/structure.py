@@ -11,7 +11,7 @@ source_data ──▶ 빈 공고?  ──예──▶ structured_at 만 (Gemini 
                   │성공
                   ▼
               게이트1 NO ──▶ structured_at 만 (초안 없음 · 제외됐음을 기록)
-              게이트1 YES/UNCERTAIN ──▶ review_data(PENDING) + structured_at
+              게이트1 YES/UNCERTAIN ──▶ review_data(APPROVED 또는 PENDING · §5.7) + structured_at
 ```
 
 **한 패스에서 끝내고 완성된 레코드를 한 번만 INSERT**한다 — 넣었다 고치지 않는다.
@@ -31,7 +31,7 @@ import threading
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Final, Protocol, assert_never
 
@@ -45,6 +45,7 @@ from minjob_ingest.domain import (
 )
 from minjob_ingest.lib.gemini import GeminiError
 from minjob_ingest.models import ReviewData, SourceData
+from minjob_ingest.pipeline.confidence import grade
 from minjob_ingest.pipeline.denomination import confirm
 from minjob_ingest.pipeline.extraction import Extraction, ExtractionError
 from minjob_ingest.pipeline.heresy import HeresyMatch, HeresyRef, screen
@@ -183,6 +184,10 @@ class StructureReport:
     #: "잘못 걸러도 영원히 드러나지 않는다"가 그대로 일어난다.
     rejected: int = 0
     rejected_reasons: Mapping[str, int] = field(default_factory=dict)
+    #: 검수 상태별 초안 수(SPEC §5.7). ⚠️ **`APPROVED`는 사람을 거치지 않고 공개된다** —
+    #: 이 숫자가 안 보이면 규칙이 느슨해진 것을 실행 화면에서 알아챌 수 없다.
+    #: ⚠️ 등급이 아니라 **상태**로 센다: 거절된 초안도 등급은 `high`일 수 있다.
+    statuses: Mapping[str, int] = field(default_factory=dict)
     #: 그림을 하나라도 못 읽고 텍스트만으로 판정한 공고 수. **실패가 아니지만 조용히
     #: 넘기면 안 된다** — 포스터 공고가 그렇게 판정되면 되돌릴 수 없다.
     text_only: int = 0
@@ -221,6 +226,7 @@ class _Tally:
     failed: int = 0
     text_only: int = 0
     rejected_reasons: Counter[str] = field(default_factory=Counter)
+    statuses: Counter[str] = field(default_factory=Counter)
     scrubbed_fields: Counter[str] = field(default_factory=Counter)
     unverifiable: int = 0
     unchecked_fields: Counter[str] = field(default_factory=Counter)
@@ -249,8 +255,12 @@ class _Tally:
         match result.verdict:
             case Verdict.DRAFTED:
                 self.drafted += 1
-                if result.draft is not None and result.draft.reject_reason is not None:
-                    self.rejected_reasons[result.draft.reject_reason.value] += 1
+                if result.draft is not None:
+                    # ⚠️ 등급이 아니라 **검수 상태**로 센다 — 거절된 초안도 등급은 `high`일 수
+                    #    있어서(SPEC §5.7) 등급으로 세면 "자동 승인"이 실제보다 커 보인다.
+                    self.statuses[result.draft.review_status.value] += 1
+                    if result.draft.reject_reason is not None:
+                        self.rejected_reasons[result.draft.reject_reason.value] += 1
             case Verdict.EXCLUDED:
                 self.excluded += 1
             case Verdict.EMPTY:
@@ -290,6 +300,7 @@ class _Tally:
             text_only=self.text_only,
             rejected=sum(self.rejected_reasons.values()),
             rejected_reasons=dict(self.rejected_reasons),
+            statuses=dict(self.statuses),
             scrubbed=sum(self.scrubbed_fields.values()),
             scrubbed_fields=dict(self.scrubbed_fields),
             unverifiable=self.unverifiable,
@@ -419,13 +430,25 @@ def structure_one(
 
 
 def build_draft(
-    record: SourceData, extraction: Extraction, *, heresy: HeresyMatch | None = None
+    record: SourceData,
+    extraction: Extraction,
+    *,
+    heresy: HeresyMatch | None = None,
+    media_sent: bool,
+    media_missed: bool,
 ) -> ReviewData:
     """검수 초안 조립.
 
-    ⚠️ **모델이 뽑은 값은 그대로 옮기고, 판정은 붙이지 않는다.** `confidence`·`dedup_key`는
-    규칙이 정한다(ROADMAP 1-2 3단계). 그때까지는 `LOW`(운영자 우선검토)이고 — 게이트1
-    `UNCERTAIN`은 레코드 불변식이 `LOW`를 요구하기도 한다(SPEC §5.1).
+    ⚠️ **모델이 뽑은 값은 그대로 옮기고, 판정은 규칙이 붙인다.** `dedup_key`만 아직 비어 있다
+    (ROADMAP 1-3).
+
+    ⚠️ **등급은 조립이 끝난 뒤에 매긴다**(`pipeline/confidence.py`). 판정 대상이 모델 답이
+    아니라 **실제로 저장될 레코드**라 여기서 손으로 옮긴 값과 갈릴 수 없다. `high`면
+    `review_status=APPROVED` — 사람을 거치지 않고 공개된다(SPEC §5.7).
+
+    ⚠️ **그림 신호 둘은 기본값이 없다.** 빠뜨리기 쉬운데 빠뜨린 쪽이 **자동 승인**이라
+    (포스터 공고는 `verify`가 어느 칸도 대조하지 않는다 · SPEC §5.5b), 새 호출자가 잊으면
+    확인 안 된 값이 그대로 공개된다. 부를 때마다 답하게 한다.
 
     ⚠️ **이단은 목록이 아니라 판정 결과를 받는다**(`heresy`). 여기서 목록을 뒤지면 이 함수가
     파일을 알아야 하고, 기본값이 "목록 없음"이 되어 **조용히 아무도 안 걸리는** 길이 생긴다.
@@ -452,7 +475,7 @@ def build_draft(
     # ⚠️ **이단이 마감보다 우선한다.** `reject_reason`은 한 칸뿐인데, 마감은 그 공고에 관한
     #    사실이고 이단은 그 교회에 관한 사실이라 뒤에 올 공고에도 그대로 적용된다.
     reject_reason = _reject_reason(heresy, closed)
-    return ReviewData(
+    draft = ReviewData(
         source_data_id=record.id,
         run_id=record.run_id,
         source_url=record.source_url,
@@ -504,6 +527,24 @@ def build_draft(
         review_status=ReviewStatus.REJECTED if reject_reason else ReviewStatus.PENDING,
         reject_reason=reject_reason,
     )
+    # ⚠️ 등급을 매긴 뒤 검수 상태를 다시 정한다 — 등급이 조립된 레코드에서 나오므로
+    #    한 번에 만들 수 없다. `replace`가 불변식을 다시 검사하므로 게이트1 `UNCERTAIN`에
+    #    `high`를 매기면 여기서 레코드가 거부된다(SPEC §5.1).
+    confidence = grade(draft, media_sent=media_sent, media_missed=media_missed)
+    return replace(
+        draft,
+        confidence=confidence,
+        review_status=_review_status(confidence, reject_reason),
+    )
+
+
+def _review_status(confidence: Confidence, reject_reason: RejectReason | None) -> ReviewStatus:
+    """거절이 먼저다 — 이단·마감은 등급과 무관하게 공개되지 않는다(SPEC §5.4·§5.4b)."""
+    if reject_reason is not None:
+        return ReviewStatus.REJECTED
+    if confidence is Confidence.HIGH:
+        return ReviewStatus.APPROVED
+    return ReviewStatus.PENDING
 
 
 def _reject_reason(heresy: HeresyMatch | None, closed: bool) -> RejectReason | None:
@@ -574,6 +615,10 @@ def _judge(
             heresy=screen(
                 extraction.church_name, extraction.raw_denomination, extraction.region, heresy
             ),
+            # ⚠️ 그림을 **보냈나**와 **못 받았나**는 뜻이 다르다(SPEC §5.7): 보낸 공고는
+            #    어느 칸도 원문 대조가 안 됐고, 못 받은 공고는 내용 자체가 없을 수 있다.
+            media_sent=bool(gathered.items),
+            media_missed=note is not None,
         )
     except ValueError as err:
         # 모델 값이 레코드 불변식과 어긋났다(SPEC §5.1·§6). 저장할 수 없는 초안이므로 실패다.

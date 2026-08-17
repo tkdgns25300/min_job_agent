@@ -15,14 +15,19 @@ from minjob_ingest import cli
 from minjob_ingest.cli import _NOISY_LOGGERS, _dispatch, main
 from minjob_ingest.clock import kst_now
 from minjob_ingest.console import Console
-from minjob_ingest.domain import IsChurchRecruitment, SourceHealthStatus
+from minjob_ingest.domain import (
+    IsChurchRecruitment,
+    JobKind,
+    Position,
+    SourceHealthStatus,
+)
 from minjob_ingest.fetch.client import FetchError
 from minjob_ingest.lib import gemini
-from minjob_ingest.models import SourceData, new_id
+from minjob_ingest.models import ReviewData, SourceData, new_id
 from minjob_ingest.pipeline.collect import CollectReport
 from minjob_ingest.pipeline.extraction import Extraction
 from minjob_ingest.pipeline.health import EMPTY_RUNS_ALARM
-from minjob_ingest.pipeline.heresy import HeresyEntry, HeresyRef
+from minjob_ingest.pipeline.heresy import HeresyEntry, HeresyMatch, HeresyRef
 from minjob_ingest.pipeline.structure import (
     DEFAULT_WORKERS,
     StructureOptions,
@@ -30,7 +35,9 @@ from minjob_ingest.pipeline.structure import (
     StructureResult,
     Verdict,
     _Tally,
-    build_draft,
+)
+from minjob_ingest.pipeline.structure import (
+    build_draft as _build_draft,
 )
 from minjob_ingest.pipeline.verify import VerifyReport
 from minjob_ingest.settings import (
@@ -45,6 +52,25 @@ from minjob_ingest.store.json_store import JsonStore
 #: `structure` 명령이 시작하자마자 읽는 이단 목록의 대역. 실제 파일은 실명 122건이 담겨
 #: **커밋되지 않으므로**(`.gitignore`) 테스트가 그것에 기대면 새로 받은 리포에서 전부 깨진다.
 _FAKE_HERESY = HeresyRef.of((HeresyEntry("아무개", ("○○교회",), ("합신",)),))
+
+
+def build_draft(
+    record: SourceData,
+    extraction: Extraction,
+    *,
+    heresy: HeresyMatch | None = None,
+    media_sent: bool = False,
+    media_missed: bool = False,
+) -> ReviewData:
+    """그림 신호를 채워 부르는 테스트용 얇은 껍데기.
+
+    운영 시그니처에서는 두 값이 **필수**다 — 빠뜨린 쪽이 자동 승인이라 기본값을 두지 않았다.
+    여기서만 기본값을 준다: 대부분의 검사는 그림과 무관하고, 매 호출에 두 줄을 붙이면
+    정작 무엇을 검사하는지가 묻힌다.
+    """
+    return _build_draft(
+        record, extraction, heresy=heresy, media_sent=media_sent, media_missed=media_missed
+    )
 
 
 def _write_config(tmp_path: Path, *, enabled: bool = True) -> Path:
@@ -565,6 +591,55 @@ def test_the_preview_shows_the_record_that_would_be_stored(
     assert "아직 비어 있는 칸" in shown, "얇아 보이는 이유가 화면에 있어야 한다"
 
 
+def test_the_preview_says_whether_the_draft_goes_out_without_a_person(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """⚠️ 등급만 찍으면 `high`가 **자동 공개**라는 사실이 화면에 없다(SPEC §5.7).
+
+    운영자가 프롬프트를 다듬으며 보는 화면이라, 지금 이 공고가 사람을 거치는지 아닌지가
+    등급 옆에 있어야 한다.
+    """
+    record = SourceData(
+        source_key="DAESHIN",
+        external_id="41",
+        source_url="https://e.kr/41",
+        title="성원교회 부목사 청빙",
+        posted_on=kst_now().date(),
+        run_id=new_id(),
+        fetched_at=kst_now(),
+        raw_text="성원교회 부목사 청빙. church@example.kr",
+    )
+    complete = Extraction(
+        is_church_recruitment=IsChurchRecruitment.YES,
+        church_name="성원교회",
+        description="성원교회가 부목사를 청빙합니다.",
+        job_kind=(JobKind.MINISTRY,),
+        position=(Position.ASSOCIATE_PASTOR,),
+        contact_email="church@example.kr",
+    )
+
+    cli._print_preview(
+        Console(color=False),
+        StructureResult(
+            record=record, verdict=Verdict.DRAFTED, draft=build_draft(record, complete)
+        ),
+    )
+    approved = capsys.readouterr().out
+
+    cli._print_preview(
+        Console(color=False),
+        StructureResult(
+            record=record,
+            verdict=Verdict.DRAFTED,
+            draft=build_draft(record, complete, media_sent=True),
+        ),
+    )
+    reviewed = capsys.readouterr().out
+
+    assert "high" in approved and "자동 승인" in approved
+    assert "medium" in reviewed and "운영자 검수" in reviewed
+
+
 def test_the_preview_says_why_no_draft_was_made(capsys: pytest.CaptureFixture[str]) -> None:
     record = SourceData(
         source_key="CALVIN",
@@ -726,6 +801,41 @@ def test_the_run_report_shows_the_verification_lines(capsys: pytest.CaptureFixtu
     assert "검산에서 비움" in shown and "raw_denomination" in shown
     assert "본문 확인 못 함" in shown
     assert "원문에서 확인 못 함" in shown and "required_docs" in shown
+
+
+def test_the_run_report_shows_how_many_went_out_without_a_person(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """⚠️ 자동 승인은 사람을 거치지 않고 공개된다 — 그 수가 화면에 없으면 규칙이 느슨해진 것을
+    알아챌 방법이 없다(SPEC §5.7).
+
+    ⚠️ **초안 수 옆의 "검수 대기"는 초안 전체가 아니다** — 자동 승인·자동 거절이 빠진 수다.
+    """
+    report = StructureReport(
+        scanned=12,
+        drafted=10,
+        rejected=1,
+        rejected_reasons={"HERESY": 1},
+        statuses={"APPROVED": 7, "PENDING": 2, "REJECTED": 1},
+    )
+
+    cli._print_structure_report(Console(color=False), report, dry_run=False)
+
+    shown = capsys.readouterr().out
+    assert "자동 승인" in shown and "7건" in shown
+    assert "검수 대기 2건" in shown, "초안 10건이 전부 큐에 뜨는 것처럼 보이면 안 된다"
+    assert "자동 거절" in shown and "HERESY" in shown
+
+
+def test_the_run_report_stays_quiet_when_nothing_was_auto_approved(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """0건까지 적으면 눈이 그 줄을 흘려보내게 된다 — 있을 때만 눈에 띄어야 한다."""
+    report = StructureReport(scanned=3, drafted=2, statuses={"PENDING": 2})
+
+    cli._print_structure_report(Console(color=False), report, dry_run=False)
+
+    assert "자동 승인" not in capsys.readouterr().out
 
 
 def test_the_preview_says_which_field_verification_emptied(

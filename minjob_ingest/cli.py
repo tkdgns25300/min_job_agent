@@ -25,7 +25,7 @@ from uuid import UUID
 
 from minjob_ingest.clock import kst_now
 from minjob_ingest.console import Console, ProgressLine
-from minjob_ingest.domain import CrawlMode
+from minjob_ingest.domain import Confidence, CrawlMode, ReviewStatus
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.lib.gemini import GeminiClient, GeminiError
 from minjob_ingest.models import (
@@ -845,7 +845,11 @@ def _print_preview(console: Console, result: StructureResult) -> None:
         console.field("교회명", draft.church_name or _NO_VALUE)
         console.field("제목", draft.title or _NO_VALUE)
         console.field("요약", draft.description or _NO_VALUE)
-        console.field("신뢰도", draft.confidence.value, note="운영자 우선검토")
+        console.field(
+            "신뢰도",
+            draft.confidence.value,
+            note="자동 승인" if draft.confidence is Confidence.HIGH else "운영자 검수",
+        )
         console.field(
             "교단", str(draft.denomination or "—"), note=f"근거 {draft.denomination_source.value}"
         )
@@ -918,10 +922,11 @@ def _note_unfilled_columns(console: Console, draft: ReviewData) -> None:
 
 
 def _draft_note(report: StructureReport, *, dry_run: bool) -> str:
+    """⚠️ 초안이 전부 검수 대기는 아니다 — 자동 승인·자동 거절이 섞여 있다(SPEC §5.7)."""
     if dry_run:
         return "저장하지 않음(미리보기)"
-    pending = report.drafted - report.rejected
-    return f"검수 대기 {pending}건(PENDING)" if report.rejected else "검수 대기(PENDING)"
+    pending = report.statuses.get(ReviewStatus.PENDING.value, 0)
+    return f"검수 대기 {pending}건(PENDING)"
 
 
 def _print_structure_report(console: Console, report: StructureReport, *, dry_run: bool) -> None:
@@ -942,6 +947,15 @@ def _print_structure_report(console: Console, report: StructureReport, *, dry_ru
         console.paint(f"{report.drafted}건", "green", "bold"),
         note=_draft_note(report, dry_run=dry_run),
     )
+    approved = report.statuses.get(ReviewStatus.APPROVED.value, 0)
+    if approved:
+        # ⚠️ **자동 승인 수를 화면에 내놓는다.** 사람을 거치지 않고 공개되므로, 규칙이
+        #    느슨해져 그 수가 튀는 것을 여기서 알아채야 한다(SPEC §5.7).
+        console.field(
+            "  ↳ 자동 승인",
+            console.paint(f"{approved}건", "green", "bold"),
+            note="사람을 거치지 않고 공개된다",
+        )
     if report.rejected:
         # ⚠️ **거절을 화면에 내놓는다.** 초안은 만들어졌지만 검수 큐에 뜨지 않는다 —
         #    여기서 안 보이면 잘못 걸러도 아무도 모른다(SPEC §5.4).

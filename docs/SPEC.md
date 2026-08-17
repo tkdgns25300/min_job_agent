@@ -10,7 +10,7 @@
 
 ## 0. 개요
 
-크롤러는 **개교회(지역 교회)의 채용 공고**를 공식 게시판(SOURCES 31곳)에서 수집해, 구조화 초안으로 만들어 **리뷰 큐(`review_data`)**에 쌓는다. 운영자가 min_job admin에서 검수·승인하면 공개(`jobs`)로 승격한다(⚠️ `churches`에는 쓰지 않는다 — §6 승격 목적지). 크롤러는 **절대 바로 공개하지 않는다**(사람 게이트).
+크롤러는 **개교회(지역 교회)의 채용 공고**를 공식 게시판(SOURCES 31곳)에서 수집해, 구조화 초안으로 만들어 **리뷰 큐(`review_data`)**에 쌓는다. 운영자가 min_job admin에서 검수·승인하면 공개(`jobs`)로 승격한다(⚠️ `churches`에는 쓰지 않는다 — §6 승격 목적지). ⚠️ **2026-08-17부터 확인할 것이 없는 초안은 크롤러가 `APPROVED`로 만든다**(§5.7) — 사람 게이트는 "사람이 봐야 답이 나오는 것"에만 남는다. 크롤러가 직접 `jobs`에 쓰지 않는 것은 그대로다.
 
 - 자동: 수집 → 구조화 → 리뷰 큐 적재 → 운영 상태 기록.
 - 사람: 검수 → 승격.
@@ -66,12 +66,12 @@
       게이트1 개교회 채용? (명백 기관·비채용 → review_data 생성 안 함)
       게이트2 job_kind · 교단 판정 · contact 추출 · 이단 스크리닝
    │
-   ▼ ⑤ review_data INSERT (PENDING) + source_health UPSERT + crawl_run UPDATE(finished_at·집계)
+   ▼ ⑤ review_data INSERT (APPROVED 또는 PENDING · §5.7) + source_health UPSERT + crawl_run UPDATE(finished_at·집계)
 ──────────────────  여기까지 크롤러(자동)  ──────────────────
    ▼ ⑥ 운영자 검수 (min_job admin) → 승인/수정 → jobs 승격(공개 · church_id=NULL)
 ```
 
-- ①~⑤ 자동, ⑥ 사람. 크롤러 write = `source_data`·`review_data`·`source_health`·`crawl_run`. 크롤러는 `churches`/`jobs`를 직접 안 건드린다.
+- ①~⑤ 자동, ⑥ 사람(⚠️ `APPROVED`로 나온 초안은 ⑥을 건너뛴다 · §5.7). 크롤러 write = `source_data`·`review_data`·`source_health`·`crawl_run`. 크롤러는 `churches`/`jobs`를 직접 안 건드린다.
 - **crawl_run은 실행 시작(①)에 INSERT**(started_at·mode, run_id 확보) → source_data/review_data가 이 run_id를 FK로 참조 → **종료(⑤)에 UPDATE**(finished_at·sources_ok/failed·new_count·error_detail).
 - ⚠️ **구조화를 따로 돌리는 실행은 `crawl_run`을 만들지 않는다**(Phase 1의 `structure` 명령 — 수집이 끝난 뒤 유료 호출을 별도로 집행한다). `crawl_run`의 집계는 전부 **게시판 단위**(`mode`·`sources_ok`·`sources_failed`·`new_count`·`error_detail[source_key]`)라 **공고 단위**로 도는 구조화가 들어갈 칸이 없고, 억지로 넣으면 컬럼 이름이 뜻과 어긋난다. 그때 `review_data.run_id`는 **그 공고를 수집해온 실행**(`source_data.run_id`)을 승계한다 — 위 정의("①에서 INSERT된 crawl_run")가 그대로 유지되고, ①~⑤가 한 실행으로 이어지는 데일리에서도 같은 값이 되어 두 경로가 어긋나지 않는다. 구조화 실행의 진행·집계는 명령 출력과 `source_data`의 `structured_at`·`structure_attempts`·`last_structure_error`가 담당한다.
 
@@ -275,12 +275,27 @@ dedup_key = 정규화교회명 : region : position : department : 라운드번�
 ### 5.6 나머지 필드
 min_job `jobs` 미러(title·position·role·department·employment_type·qualification·headcount·start_timing·housing_provided·housing_note·pay_*·benefit_note·work_days·requirements[]·preferred[]·required_docs[]·optional_docs[]·process_steps[]·description·posted_at·deadline·**연락처 4컬럼**) + 교회 초안(church_name·region·city·address)을 raw에서 추출. `raw_text`(원문 전체)는 항상 보존.
 
-### 5.7 자동 승인 (`confidence`) — **결정 2026-08-16 · 미구현**
+### 5.7 자동 승인 (`confidence`) — ✅ **구현 2026-08-17**
 
 > ⚠️ **`review_data`의 종착지가 `PENDING`이 아니게 된다.** 지금까지의 "크롤러는 절대 바로 공개하지 않는다"(§0)를 운영자가 개정한 것이다. 검수는 **사람이 봐야 답이 나오는 것만** 남긴다.
 
-- **검수 대상 3가지만** — ① 포스터 공고(그림을 열어야 안다) ② 그림을 못 받은 공고 ③ 승격 6칸이 빈 공고. 실측 표본 132건 기준 약 20%.
-- **나머지는 `review_status=APPROVED`** 로 만든다. 근거: 지어낸 값은 `verify`가 이미 비우고(§5.5c), 변환은 코드가 하며(모델에 맡기지 않는다), 이단·마감은 자동 거절된다(§5.4·§5.4b).
+**규칙**(`pipeline/confidence.py` · 조립이 끝난 `ReviewData`를 본다 — 모델 답이 아니라 실제로 저장될 값이다):
+
+| 등급 | 언제 | 뜻 |
+|---|---|---|
+| `low` | 승격 6칸 중 하나라도 빔 · 게이트1 `UNCERTAIN` · **그림을 못 받음** | 손봐야 한다 — 그대로는 공개가 안 되거나 판단이 필요하다 |
+| `medium` | **그림을 보냄**(포스터) · **지원 경로가 `contact_post` 하나뿐** | 보기만 하면 된다 — 무엇을 볼지 안다 |
+| `high` | 그 밖 | 확인할 것이 없다 → **`review_status=APPROVED`** |
+
+- ⚠️ **그림을 "보냈다"와 "못 받았다"는 뜻이 다르다**: 보낸 공고는 어느 칸도 원문 대조가 안 됐고(§5.5b), 못 받은 공고는 **내용 자체가 없을 수 있다**.
+- ⚠️ **게시판 제목·교회명 대조는 넣었다가 뺐다**(2026-08-17). 제목은 모델이 만들 수 없는 유일한 두 번째 출처라 기대했지만 실측 138건에서 **적발 3건이 전부 오탐**이었다: 대괄호가 부분일치를 깨거나(`[대구] 영광교회` vs `대구영광교회`), 같은 교회의 다른 표기이거나(`대전한밭제일장로교회` vs `한밭제일교회` · 본문 `교회명:`이 모델 편), 제목의 `교회`가 일반명사였다. **참 적발 0 · 헛검수 3** — 다시 넣으려면 실측 근거를 먼저 가져온다.
+- ⚠️ **`unchecked`(조립 칸 어긋남)는 등급을 내리지 않는다.** 초안 132건 중 53건(40%)·자동 승인 108건 중 37건(34%)이 해당해 등급을 내리면 검수량이 24 → 61건이 된다. 어긋남은 프롬프트가 **조립을 시킨** 칸에 몰려 있고(`benefit_note` 16 · `headcount` 10) 손으로 본 23개 중 지어낸 것은 0개였다(§5.5b). **프롬프트 수정의 신호로만 쓴다.**
+- ⚠️ **`contact_post`만 있는 공고는 자동 승인하지 않는다.** 연락처 넷 중 **원문 대조를 거치지 않는 유일한 칸**이라(조립 칸 · §5.5b) 그것뿐이면 지원 경로 전체가 확인된 적 없는 값이 된다 — 틀리면 지원자가 엉뚱한 곳으로 서류를 보낸다. 실측 132건 중 **0건**(`contact_post`가 있는 14건은 전부 다른 연락처를 함께 가졌다) — 검수량은 늘지 않는다.
+- ⚠️ **거절이 등급보다 앞선다** — 이단·마감은 6칸이 다 차 있어도 공개되지 않는다(§5.4·§5.4b). 등급 자체는 정상 계산한다: 오거부를 되돌렸을 때 등급이 참말이어야 한다.
+- **실측**(표본 138건 · 2026-08-17 · 전량 3,188건 환산): `high` 108 · `medium` 21 · `low` 3 · 게이트1 탈락 6. 상태로는 **`APPROVED` 106(77% ≈ 2,449) · `PENDING` 24(17% ≈ 554) · `REJECTED` 2(≈ 46)**. **사람이 볼 것 ≈ 554건(17%)이고 그중 23건(96%)이 그림 때문이다**(포스터 21 · 못 받음 2 · 나머지 1건은 연락처가 없다). ⚠️ dedup(§4.1) 뒤에는 재게시 42%만큼 더 줄어든다.
+- ⚠️ **등급과 상태를 같은 수로 세지 않는다** — 거절된 2건은 **둘 다 `high`**였다(거절이 등급보다 앞선다). 실행 화면은 **상태**로 센다.
+- ⚠️ **재구조화는 판정을 이어받지 않는다**(2026-08-17 수정). 이전에는 `review_status`·`reject_reason`을 기존 행에서 가져와서, 이단 목록에 이름을 넣고 다시 돌려도 **새 거절이 옛 `PENDING`으로 덮여 사라졌다**. 자동 승인도 같은 이유로 적용되지 않았다. 지금은 판정을 새로 쓰고 `id`·`created_at`·운영자 기록만 이어받는다(`CARRIED_ON_RESTRUCTURE`) — 대체 자체가 **손대지 않은 `PENDING` 행에만** 일어나므로 운영자 승인은 되돌아가지 않는다.
+- ⚠️ **자동 승인된 행은 재구조화가 건너뛴다**(`is_safe_to_replace`는 `PENDING`만 허용). 전량 저장 뒤 규칙을 고치면 그 행들에 적용되지 않는다 — **지금은 `data/review_data.json`을 지우고 `scripts/reset_structure.py`로 되돌리면 되지만**(로컬 JSON·공개된 것 없음), Supabase 전환·데일리 실행 이후에는 그 방법이 통하지 않는다. 그때 "사람이 승인한 것"과 "코드가 승인한 것"을 갈라야 한다(`reviewed_by`가 비면 코드).
 - **검수로 넘기지 않고 코드가 처리하는 것**: 사택 근거 없음 → 비운다(§5.5c) · 지역 없음 → 그대로 공개한다. ⚠️ **2026-08-16 이후 빈 지역은 2건뿐이다**(모델이 26건을 교회명에서 채웠다 · §5.5b).
 - ⚠️ **전량 저장은 dedup(§4.1) 뒤에만.** 안 그러면 같은 자리가 최대 26번 공개된다(실측 재게시 42%).
 - ⚠️ **`high`는 "값이 맞다"는 뜻이 아니다.** `verify`는 *그 글자가 원문에 있나*를 보지 *올바른 곳에서 가져왔나*를 보지 않는다. 원문에 전화번호가 둘이면 엉뚱한 쪽을 골라도 통과한다 — 코드로는 막을 수 없다(운영자가 알고 내린 결정).
@@ -341,7 +356,7 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 > CHECK ((review_status = 'REJECTED') = (reject_reason IS NOT NULL))
 > ```
 >
-> ⚠️⚠️ **승격 게이트 = 필수 4 + CHECK 2**(min_job DATA.md §3 정본 · 2026-08-05 우리 실측 3,181건으로 8개→6개로 줄였다). 크롤러가 맞춰야 하는 6개: **교회 매칭 · `title` · `job_kind` · 직분(`position`) 또는 직무(`role`) · `description` · 연락처 4컬럼 중 1개**(⚠️ `source_url`은 세지 않는다 — 세면 제약이 항상 참이 되어 무의미하다).
+> ⚠️⚠️ **승격 게이트 = 필수 5 + CHECK 2**(min_job DATA.md §3 정본 · 2026-08-05 우리 실측 3,181건으로 8개→6개로 줄였다). 크롤러가 맞춰야 하는 6개: **교회 매칭 · `title` · `job_kind` · 직분(`position`) 또는 직무(`role`) · `description` · 연락처 4컬럼 중 1개**. ⚠️ 다섯째 필수인 **`posted_at`과 `source_url`은 세지 않는다** — `ReviewData`가 둘 다 값 없이는 만들어지지 않아(§6) 검사가 항상 참이 되기 때문이다. 세는 곳은 `pipeline/confidence.PROMOTION_FIELDS`.
 >
 > **`denomination`·`region`은 비어도 승격된다** — 게시판이 안 주거나 원문에 없을 수 있다(실측: 교단 명시 2.8% · 지역 81%). AI가 못 뽑을 수 있고 운영자가 채우는 초안이라 nullable이 맞다.
 >
@@ -395,9 +410,10 @@ claim하면** `church_id`가 채워진다.
 **min_job이 채우는 것**: `id` · `status`(OPEN) · `source`(OPERATOR) · `featured_tier`(NONE) ·
 `created_at` · `updated_at`. ⚠️ `owner_id`는 **컬럼에서 제거됐다**(2026-08-06 · `church_id`로 충분).
 
-**승격 게이트 = 필수 4 + CHECK 2** (min_job DATA.md §3 정본): `church_name`·`title`·`job_kind`·
-`description` NOT NULL · `position` 또는 `role` · **연락처 4개 중 1개**(`source_url`은 안 셈).
-`region`·`denomination`·`posted_at`은 **비어도 승격된다**.
+**승격 게이트 = 필수 5 + CHECK 2** (min_job DATA.md §3 정본): `church_name`·`title`·`job_kind`·
+`description`·**`posted_at`** NOT NULL · `position` 또는 `role` · **연락처 4개 중 1개**.
+`region`·`denomination`은 **비어도 승격된다**.
+⚠️ `posted_at`·`source_url`은 `ReviewData` 자체가 강제하므로 등급 계산에서는 세지 않는다.
 
 **승인 시 `review_data`에서 바뀌는 것 — 4개**
 
