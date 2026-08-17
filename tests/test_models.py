@@ -26,8 +26,8 @@ from minjob_ingest.domain import (
     SourceHealthStatus,
 )
 from minjob_ingest.models import (
+    CARRIED_ON_RESTRUCTURE,
     MAX_STRUCTURE_ATTEMPTS,
-    REVIEW_STATE_FIELDS,
     Attachment,
     CrawlRun,
     JsonValue,
@@ -689,13 +689,31 @@ def test_redraft_preserves_identity_and_review_state() -> None:
         published_job_id=new_id(),
     )
     fresh = replace(_review_data(), title="다시 구조화한 제목")
-    merged = fresh.carrying_review_state_of(approved)
 
-    assert merged.id == approved.id  # admin 참조가 끊기지 않는다
-    assert merged.created_at == approved.created_at  # 큐 정렬·감사 기준 유지
-    assert merged.review_status is ReviewStatus.APPROVED
-    assert merged.matched_church_id == approved.matched_church_id
-    assert merged.published_job_id == approved.published_job_id
+    # ⚠️ 검수가 끝난 행은 애초에 대체 대상이 아니다 — 호출자가 검사를 빠뜨리면 여기서 막는다.
+    with pytest.raises(ValueError, match="운영자가 손댄 행"):
+        fresh.carrying_operator_state_of(approved)
+
+
+def test_restructuring_keeps_the_admin_references_of_an_untouched_row() -> None:
+    """손대지 않은 PENDING 행만 대체된다 — 그때 `id`·게재 링크는 이어받는다.
+
+    ⚠️ `published_job_id`가 끊기면 SPEC §4.2가 그 값으로 찾는 "이미 공개한 공고"를 다시
+    승격하게 된다.
+    """
+    previous = replace(
+        _review_data(),
+        matched_church_id=new_id(),
+        published_job_id=new_id(),
+    )
+    fresh = replace(_review_data(), title="다시 구조화한 제목")
+
+    merged = fresh.carrying_operator_state_of(previous)
+
+    assert merged.id == previous.id  # admin 참조가 끊기지 않는다
+    assert merged.created_at == previous.created_at  # 큐 정렬·감사 기준 유지
+    assert merged.matched_church_id == previous.matched_church_id
+    assert merged.published_job_id == previous.published_job_id
     assert merged.title == "다시 구조화한 제목"  # 새 구조화 결과는 반영
 
 
@@ -974,9 +992,25 @@ def test_each_rejection_reason_is_accepted() -> None:
         assert record.reject_reason is reason
 
 
-def test_the_reason_survives_restructuring() -> None:
-    """재구조화 upsert가 검수 상태를 덮으면 안 된다 — 이유도 상태의 일부다."""
-    assert "reject_reason" in REVIEW_STATE_FIELDS
+def test_a_new_rejection_replaces_the_old_pending_state() -> None:
+    """⚠️ **판정은 이어받지 않는다**(2026-08-17 실측 버그).
+
+    이전에는 `review_status`·`reject_reason`을 이전 행에서 그대로 가져왔다. 그래서 이단
+    목록에 이름을 추가하고 다시 구조화하면, 새로 붙은 거절이 이전 행의 `PENDING`으로 덮여
+    **사라졌다**. 자동 승인도 같은 이유로 영영 적용되지 않았다(SPEC §5.7).
+    """
+    previous = _review_data()  # 손대지 않은 PENDING
+    rejected = replace(
+        _review_data(),
+        review_status=ReviewStatus.REJECTED,
+        reject_reason=RejectReason.HERESY,
+    )
+
+    merged = rejected.carrying_operator_state_of(previous)
+
+    assert merged.review_status is ReviewStatus.REJECTED
+    assert merged.reject_reason is RejectReason.HERESY
+    assert set(CARRIED_ON_RESTRUCTURE).isdisjoint({"review_status", "reject_reason"})
 
 
 # ── 여러 값을 담는 분류 칸 (2026-08-11) ──────────────────────────

@@ -161,10 +161,11 @@ class Store(Protocol):
         기존 행에 **운영자 손길이 있으면 덮어쓰지 않고 건너뛴다**(`is_operator_touched`):
         (a) 이미 검수됨(PENDING 아님) — 재구조화가 승인을 PENDING으로 되돌리면 안 된다,
         (b) PENDING이지만 운영자가 교단·교회명 등을 고쳐둠 — 이어받는 필드는
-        `REVIEW_STATE_FIELDS`뿐이라 나머지 교정은 AI 초안으로 덮인다. 그러면 `reviewed_by`만
+        `CARRIED_ON_RESTRUCTURE`뿐이라 나머지 교정은 AI 초안으로 덮인다. 그러면 `reviewed_by`만
         남아 "봤는데 고친 흔적이 없는" 모순 행이 된다.
-        손대지 않은 PENDING이면 `id`·`created_at`·검수 메타를 이어받아
-        (`ReviewData.carrying_review_state_of`) 초안 필드만 갱신한다.
+        손대지 않은 PENDING이면 `id`·`created_at`·운영자 기록을 이어받아
+        (`ReviewData.carrying_operator_state_of`) 초안 필드와 **판정**을 갱신한다 — 판정까지
+        이어받으면 새로 붙은 이단·마감 거절이 옛 `PENDING`으로 덮여 사라진다(SPEC §5.7).
 
         Returns: 기록했으면 True, 이미 검수돼 건너뛰었으면 False.
         """

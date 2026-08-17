@@ -64,9 +64,8 @@ _CONFIRMED_DENOMINATION_SOURCES = frozenset(
     {DenominationSource.STATED, DenominationSource.REGISTRY, DenominationSource.OPERATOR}
 )
 
-#: **운영자(min_job admin)가 쓰는 컬럼.** 재구조화 upsert가 덮어써선 안 되는 집합이며,
-#: Supabase `ON CONFLICT (source_data_id) DO UPDATE`의 갱신 대상은 이 집합의 **여집합**이다.
-#: `carrying_review_state_of`가 이 목록에서 파생된다(두 곳에 적어 어긋나지 않게).
+#: **추출이 채우지 않는 칸** — 행 식별자 + 판정 + 운영자 기록. 미리보기가 "아직 비어 있다"고
+#: 셀 때 제외하는 집합이다(`reject_reason`은 비어 있는 게 정상이다).
 REVIEW_STATE_FIELDS: tuple[str, ...] = (
     "id",
     "created_at",
@@ -76,6 +75,20 @@ REVIEW_STATE_FIELDS: tuple[str, ...] = (
     "published_job_id",
     "reviewed_by",
     "reviewed_at",
+)
+
+#: ⚠️ **재구조화가 매번 새로 내리는 판정** — 이어받으면 안 된다.
+#: 이어받으면 새 초안이 붙인 이단·마감 거절이 이전 행의 `PENDING`으로 덮여 **사라진다**
+#: (실측 2026-08-17: 이단 거절을 붙인 초안으로 기존 `PENDING` 행을 대체하니 `PENDING`이
+#: 그대로 남았다). 자동 승인도 같은
+#: 이유로 영영 적용되지 않았다(`high`인데 `PENDING`).
+_VERDICT_FIELDS = frozenset({"review_status", "reject_reason"})
+
+#: 재구조화 초안이 기존 행에서 **이어받는** 칸 = 행 식별자 + 운영자가 쓴 칸.
+#: Supabase `ON CONFLICT (source_data_id) DO UPDATE`의 갱신 대상은 이 집합의 **여집합**이며,
+#: 운영자 승인은 열 제외가 아니라 **`is_safe_to_replace` 조건(WHERE)** 이 지킨다.
+CARRIED_ON_RESTRUCTURE: tuple[str, ...] = tuple(
+    name for name in REVIEW_STATE_FIELDS if name not in _VERDICT_FIELDS
 )
 
 
@@ -651,14 +664,23 @@ class ReviewData:
         """
         return self.review_status is ReviewStatus.PENDING and not self.is_operator_touched
 
-    def carrying_review_state_of(self, previous: ReviewData) -> ReviewData:
-        """재구조화 초안이 기존 행을 대체할 때 **식별자·검수 상태를 이어받는다**.
+    def carrying_operator_state_of(self, previous: ReviewData) -> ReviewData:
+        """재구조화 초안이 기존 행을 대체할 때 **식별자와 운영자 기록을 이어받는다**.
 
         SPEC §6 ②는 `UNIQUE(source_data_id)` upsert를 요구한다. 새 초안을 그대로 쓰면
-        `id`·`created_at`이 새로 생기고 운영자 승인 상태(`review_status`·매칭·게재 링크)가
-        지워진다 → admin 참조가 끊기고 승인이 PENDING으로 되돌아간다.
+        `id`·`created_at`이 새로 생기고 매칭·게재 링크가 지워진다 → admin 참조가 끊기고
+        SPEC §4.2가 그 링크로 찾는 "이미 공개한 공고"를 다시 승격하게 된다.
+
+        ⚠️ **판정(`review_status`·`reject_reason`)은 이어받지 않는다** — 새로 내린 판정이
+        옛 `PENDING`으로 덮이면 이단·마감 거절이 사라진다(`_VERDICT_FIELDS`).
+
+        ⚠️ 대체는 **손대지 않은 PENDING 행에만** 허용된다 — 그래서 판정을 새것으로 써도
+        운영자 승인을 되돌릴 일이 없다. 그 전제를 여기서 다시 확인한다: 호출자가 검사를
+        빠뜨리면 승인이 조용히 PENDING으로 돌아가기 때문이다.
         """
-        carried = {name: getattr(previous, name) for name in REVIEW_STATE_FIELDS}
+        if not previous.is_safe_to_replace:
+            raise ValueError("운영자가 손댄 행은 재구조화가 대체할 수 없다")
+        carried = {name: getattr(previous, name) for name in CARRIED_ON_RESTRUCTURE}
         return replace(self, **carried)
 
 

@@ -229,7 +229,7 @@ class JsonStore:
                     existing.review_status.value,
                 )
                 return False
-            rows[index] = to_row(record.carrying_review_state_of(existing))
+            rows[index] = to_row(record.carrying_operator_state_of(existing))
             self._write_rows(_REVIEW_DATA_FILE, rows)
             return True
 
