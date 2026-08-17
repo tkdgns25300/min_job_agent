@@ -18,6 +18,7 @@ naive datetime을 저장하면 나중에 Supabase가 서버 로컬시간으로 �
 
 from __future__ import annotations
 
+import calendar
 from datetime import date, datetime
 from typing import Final
 from zoneinfo import ZoneInfo
@@ -99,3 +100,17 @@ def require_plain_date(value: date) -> date:
     if isinstance(value, datetime):
         raise ValueError(f"date 컬럼에 datetime을 넣을 수 없음: {value!r}")
     return value
+
+
+def months_before(value: date, months: int) -> date:
+    """N개월 전 같은 날. **말일을 보정한다**(3/31의 1개월 전 = 2/28).
+
+    ⚠️ 90일 근사를 쓰지 않는다 — 달마다 길이가 달라 "3개월"의 뜻이 실행 시점에 따라 흔들린다.
+    수집 컷오프(`--months`)와 dedup 라운드 경계(SPEC §4.1)가 **같은 셈법**을 써야 한다.
+    """
+    if months < 1:
+        raise ValueError(f"months는 1 이상이어야 함 ({months})")
+    total = value.year * 12 + (value.month - 1) - months
+    year, month = divmod(total, 12)
+    last_day = calendar.monthrange(year, month + 1)[1]
+    return date(year, month + 1, min(value.day, last_day))

@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import calendar
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -17,7 +16,7 @@ from datetime import date, timedelta
 from typing import Final
 from uuid import UUID
 
-from minjob_ingest.clock import kst_now
+from minjob_ingest.clock import kst_now, months_before
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.models import SourceData
 from minjob_ingest.sources.adapters.base import ParseError, PostingRef, RawPosting
@@ -100,16 +99,8 @@ class PagePlan:
 
 
 def cutoff_date(months: int, *, today: date) -> date:
-    """N개월 전 같은 날. 말일 보정을 한다(3/31에서 1개월 전 = 2/28).
-
-    `--months`는 달 단위라 90일 근사로 하면 달마다 범위가 달라진다.
-    """
-    if months < 1:
-        raise ValueError(f"months는 1 이상이어야 함 ({months})")
-    total = today.year * 12 + (today.month - 1) - months
-    year, month = divmod(total, 12)
-    last_day = calendar.monthrange(year, month + 1)[1]
-    return date(year, month + 1, min(today.day, last_day))
+    """수집 범위의 시작일 = N개월 전 같은 날. 셈법은 `clock.months_before`가 갖는다."""
+    return months_before(today, months)
 
 
 def plan_page(

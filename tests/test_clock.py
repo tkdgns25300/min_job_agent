@@ -9,6 +9,7 @@ import pytest
 from minjob_ingest.clock import (
     ensure_kst,
     kst_now,
+    months_before,
     parse_iso,
     parse_iso_date,
     require_plain_date,
@@ -141,3 +142,33 @@ def test_an_empty_date_column_is_refused() -> None:
     """
     with pytest.raises(ValueError, match="비어 있음"):
         require_plain_date(None)  # type: ignore[arg-type]
+
+
+# ── 달 셈법 (수집 컷오프 · dedup 라운드가 함께 쓴다) ────────────────
+
+
+def test_months_before_keeps_the_same_day() -> None:
+    assert months_before(date(2026, 8, 4), 3) == date(2026, 5, 4)
+
+
+@pytest.mark.parametrize(
+    ("value", "months", "expected"),
+    [
+        (date(2026, 3, 31), 1, date(2026, 2, 28)),
+        (date(2026, 5, 31), 3, date(2026, 2, 28)),
+        (date(2026, 1, 15), 3, date(2025, 10, 15)),
+    ],
+    ids=["3/31의 1개월 전", "5/31의 3개월 전", "해를 넘김"],
+)
+def test_months_before_corrects_the_month_end(value: date, months: int, expected: date) -> None:
+    """⚠️ 90일 근사를 쓰면 달마다 범위가 달라져 "3개월"의 뜻이 실행 시점에 따라 흔들린다.
+
+    수집 컷오프(`--months`)와 dedup 라운드 경계(SPEC §4.1)가 **같은 셈법**을 써야 한다.
+    """
+    assert months_before(value, months) == expected
+
+
+def test_months_before_refuses_zero() -> None:
+    """0을 허용하면 "범위 없음"이 조용히 "오늘까지"가 된다."""
+    with pytest.raises(ValueError, match="1 이상"):
+        months_before(date(2026, 8, 4), 0)
