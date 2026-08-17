@@ -59,7 +59,7 @@
 - [x] **원장 조회 확장** — `SourceData.title`·`posted_on` 컬럼 + `seen_postings`가 `LedgerEntry`(제목·게시일)를 함께 반환 + `points_to_another_posting`(둘 다 다르면 소스 실패). 추가 요청 0건 · mutation 12/12
 - [x] `--months N` 컷오프 = **목록의 게시일**(구조화 전이라 posted_at 없음 · 달 단위 말일 보정) · `--months 0`이면 날짜로 안 자름 · **범위는 컷오프가 정하고 페이지 상한(100p)은 폭주 방지용 · CLI 옵션 없음**
 
-### 1-2. 구조화 패스 (source_data → review_data)  ⏳ **3단계 진행(2026-08-14~)** — 교단·이단 완료 · `confidence`·`dedup_key`와 전량 실행이 남았다
+### 1-2. 구조화 패스 (source_data → review_data)  ⏳ **3단계 진행(2026-08-14~)** — 교단·이단·`confidence` 완료 · **`dedup_key`와 전량 실행이 남았다**
 
 > **3단계에서 지금까지 한 일**(2026-08-14~15) — 모델에게서 **변환을 뺏고**(사례비·주기·마감·제목은
 > `pipeline/normalize.py`가 만든다), 남긴 답을 **원문과 대조**한다(`pipeline/verify.py`).
@@ -202,7 +202,7 @@
 - [x] **Gemini 호출**(멀티모달 · 텍스트 + 이미지 + `raw_meta`) — ⚠️ `image_urls`의 `data:` URI는 **fetch하지 말고 디코드**(CALVIN 26건) · 빈 응답·`finishReason` 이상은 실패 처리
 - [x] **게이트1**(개교회 채용? `YES`/`NO`/`UNCERTAIN`) · **게이트2**(`job_kind`·`position` 또는 `role`)
 - [x] **`status` 판정**(모집 중 / 마감) — ⚠️ 키워드로는 못 가른다: 본문의 "채용 완료"는 실측 383건 중 대부분이 `"서류는 채용 완료 후 폐기됩니다"` 같은 안내 문구다. 제목에 명시된 것만 57건
-- [ ] **규칙 후처리**(AI 아님 · 같은 패스 · INSERT 전) ← ★ **다음 작업** — enum 정규화 ✅ · 교단 확정(**명시만** · 없으면 `UNKNOWN`) · **이단 대조**(SPEC §5.4 · 정확 일치 → `REJECTED`+`HERESY`+근거) · `dedup_key` 계산 · `confidence`(승격 6개 중 미충족 → `low`)
+- [ ] **규칙 후처리**(AI 아님 · 같은 패스 · INSERT 전) — enum 정규화 ✅ · 교단 확정 ✅(2026-08-16) · 이단 대조 ✅(2026-08-17) · `confidence` ✅(2026-08-17) · **`dedup_key` 계산만 남았다** ← ★ 다음 작업
 - [x] **저장 규칙** — 게이트1 `YES`/`UNCERTAIN` → `review_data`(PENDING) · `NO` → 만들지 않음. ⚠️ **둘 다 `structured_at` 기록**(SPEC §4 — 안 하면 제외 공고를 매 실행 Gemini에 재전송하는 비용 루프). 빈 공고 **56건**(본문·이미지·첨부가 **모두** 없는 것 = `SourceData.is_empty`)은 **Gemini를 부르지 않고** `structured_at`만 기록. ⚠️ 본문·이미지가 없고 **HWP/PDF 첨부만 있는 5건**은 여기 해당하지 않는다(2026-08-10 실측 · 본문 없음 177건 → 인라인 이미지도 없음 64 → 이미지 첨부도 없음 61 → 첨부 자체가 없음 56). 그 5건은 **제목·`raw_meta`·첨부 파일명으로 호출**한다(`청빙공고문.hwp` 같은 이름이 단서다) — 건너뛰면 실제 공고가 판단도 없이 사라진다. ⚠️ 판정은 모델에 맡긴다: 억지로 `UNCERTAIN`을 만들면 첨부만 있는 **공지글**까지 검수 큐에 쌓인다
 - [x] **저장 순서 고정** — `upsert_review_data` → `update_structure_state`(`store/base.py` 계약). 뒤집으면 그 사이에 죽은 공고가 "판정 완료 + 초안 없음"으로 남는데, SPEC §4가 "review_data 없음"을 재시도 기준으로 쓰지 않기 때문에 **사후 탐지가 불가능한 유실**이 된다
 - [x] **테스트 seam** — 파이프라인은 Gemini를 **좁은 Protocol**로 받는다(구상 `GeminiClient`를 직접 받으면 테스트가 네트워크를 타야 한다). fake로 5가지: 정상 1건 · 게이트1 `NO` · 빈 공고(호출 0회) · 실패(`structured_at` 없음 + `attempts` +1) · **저장 순서**
