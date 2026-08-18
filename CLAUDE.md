@@ -31,9 +31,10 @@
 [GitHub Actions cron] ─ 매일 자동 (⚠️ Supabase 전환 후에만)
         │  config(소스 레지스트리) + env(Vertex·Supabase 키)
         ▼
-[크롤러 프로세스]  fetch → 구조화 → 적재      ← 끝나면 소멸
+[크롤러 프로세스]  fetch → 구조화 → 중복 판정 → 공개      ← 끝나면 소멸
         ▼
-[저장소]  source_data → review_data ──(운영자 승격)──▶ min_job jobs
+[저장소]  source_data → review_data ─┬─ APPROVED ──▶ jobs (크롤러가 INSERT)
+                                     └─ PENDING  ──▶ min_job admin 검수 ──▶ 승인 → 다음 실행이 공개
 ```
 
 > ⚠️ **순서 제약(필수)**: **JsonStore(로컬 파일) 단계에서 GitHub Actions를 붙이지 않는다.** ephemeral 러너에선 JSON 원장이 매 실행 사라져 → 31곳 전량 재크롤 + 전량 재구조화(비용) + 산출물 유실. `crawl.yml`은 **SupabaseStore 전환(ROADMAP 1-6) 이후**에 만든다. 그전까지 실행은 운영자 로컬.
@@ -42,8 +43,9 @@
 
 단계 정의·판정 규칙은 **SPEC §2·§5가 정본**이다(여기서 다시 번호를 붙이지 않는다). 이 리포가 지켜야 할 아키텍처 사실만:
 
-- 크롤러의 **종착지는 `review_data`(PENDING)** 다. `churches`/`jobs`를 직접 쓰지 않는다.
-- 자동 구간(수집·구조화·적재) 다음의 **검수·승격은 min_job 쪽 책임**이며 이 리포 밖이다.
+- 크롤러의 종착지는 **`jobs` 공개까지**다(운영자 결정 2026-08-18 · 경계는 SPEC §8). 확인할 것이 없는 초안은 크롤러가 승인하고 직접 공개한다 — 사람이 보는 것은 `PENDING`뿐이다.
+- ⚠️ **`jobs`에서 건드리는 것은 "자기가 만들었고 아직 교회 것이 아닌" 공고뿐**이다: INSERT(SPEC §4.3)와 `posted_at` 갱신(§4.2b). 그 외 모든 행은 **읽기만**(중복 대조용 앵커 · §4.2). `churches`에는 쓰지 않는다.
+- **검수(`PENDING`)는 min_job 쪽 책임**이며 이 리포 밖이다. 승인은 `review_status`만 바꾸고, 공개는 다음 실행이 한다.
 - `crawl_run`은 **실행 시작에 INSERT**해 `run_id`를 얻고(하위 레코드가 참조) **종료에 UPDATE**한다.
 
 ### 3층 분리 (게시판이 30곳이어도 코드는 안 늘어난다)
@@ -213,7 +215,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 ## 저장소·비밀 규칙
 
 - **staging 4테이블(`source_data`·`review_data`·`source_health`·`crawl_run`)은 이 리포가 소유·마이그레이션**한다(SPEC §8). 물리적으로 min_job Supabase 프로젝트에 함께 두되, **min_job 리포의 파일을 이 작업으로 수정하지 않는다**.
-- **RLS: 운영자 전용**(public 노출 없음). 크롤러는 **service-role 키로 staging에만** 쓴다. `churches`/`jobs` write 권한을 크롤러에 주지 않는다.
+- **RLS: 운영자 전용**(public 노출 없음). 크롤러는 staging 4테이블에 쓰고, `jobs`에는 **읽기 + INSERT + `posted_at` 한 칸**만 갖는다(운영자 결정 2026-08-18 · **GRANT 정본은 SPEC §8**). ⚠️ **권한을 코드 규율이 아니라 DB로 강제한다** — 운영자가 검수에서 고친 값을 크롤러가 덮는 길이 컬럼 단위 GRANT로 막힌다.
 - 비밀은 **환경변수만**(`.env` 로컬 · GH Secrets CI). 코드·config·데이터·로그에 키를 남기지 않는다. `.env.example`만 커밋.
 - **DB는 저장 전용** — trigger·custom function을 만들지 않는다(min_job DB 정책 승계). 로직은 파이프라인 코드에.
 - env는 **`settings.py` 한 곳**에서 읽는다. import 시점에 캡처하지 말고(dotenv 로드보다 먼저 실행됨), 빈 문자열은 미설정으로 취급한다.
@@ -264,5 +266,5 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 4. **저장**: `Store` 경유(직접 파일·DB X) · 필드명 = SPEC §6 snake_case · `source_data` write-once(opt-out 예외) · JSON 쓰기는 원자적
 5. **증분**: 원장(`source_key`+`external_id`)으로 판정 · "이미 본 글에서 중단" 로직 없음 · 공지행 제외
 6. **AI**: 출력 스키마 강제 + enum 정규화 · **`structured_at` 기록**(게이트1 탈락 포함) · 빈 응답은 실패 처리 · 모델 ID는 env
-7. **경계**: 종착지는 `review_data`까지 · `churches`/`jobs` 직접 쓰기 없음 · **`../min_job` 파일 미수정** · 유료 호출·전량 수집은 운영자
+7. **경계**: `jobs`는 **자기가 만들었고 claim 전인 행**만(INSERT·`posted_at`) · `churches` 쓰기 없음 · **`../min_job` 파일 미수정** · 유료 호출·전량 수집은 운영자
 8. **커밋 전**: `data/`·`.env` 미포함 · fixture 개인정보 마스킹 · Actions는 Supabase 전환 후에만

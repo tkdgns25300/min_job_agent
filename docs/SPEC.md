@@ -10,7 +10,7 @@
 
 ## 0. 개요
 
-크롤러는 **개교회(지역 교회)의 채용 공고**를 공식 게시판(SOURCES 31곳)에서 수집해, 구조화 초안으로 만들어 **리뷰 큐(`review_data`)**에 쌓는다. 운영자가 min_job admin에서 검수·승인하면 공개(`jobs`)로 승격한다(⚠️ `churches`에는 쓰지 않는다 — §6 승격 목적지). ⚠️ **2026-08-17부터 확인할 것이 없는 초안은 크롤러가 `APPROVED`로 만든다**(§5.7) — 사람 게이트는 "사람이 봐야 답이 나오는 것"에만 남는다. 크롤러가 직접 `jobs`에 쓰지 않는 것은 그대로다.
+크롤러는 **개교회(지역 교회)의 채용 공고**를 공식 게시판(SOURCES 31곳)에서 수집해, 구조화 초안으로 만들어 **리뷰 큐(`review_data`)**에 쌓는다. 확인할 것이 없는 초안은 **크롤러가 `APPROVED`로 만들고**(§5.7) **`jobs`에 직접 공개한다**(§4.3). 사람 게이트는 "사람이 봐야 답이 나오는 것"(`PENDING`)에만 남는다. ⚠️ `churches`에는 쓰지 않고, `jobs`에서도 **자기가 만든 공고만** 건드린다 — 경계는 §8.
 
 - 자동: 수집 → 구조화 → 리뷰 큐 적재 → 운영 상태 기록.
 - 사람: 검수 → 승격.
@@ -48,7 +48,7 @@
 
 ---
 
-## 2. 파이프라인 (①~⑥)
+## 2. 파이프라인 (①~⑧)
 
 ```
 [입력] GitHub: 소스 config(31)   ·   로컬/시크릿: config/heresy-ref.json(커밋 금지)   ·   GH Secrets: Vertex·Supabase 키
@@ -67,11 +67,17 @@
       게이트2 job_kind · 교단 판정 · contact 추출 · 이단 스크리닝
    │
    ▼ ⑤ review_data INSERT (APPROVED 또는 PENDING · §5.7) + source_health UPSERT + crawl_run UPDATE(finished_at·집계)
+   │
+   ▼ ⑥ 중복 판정 (§4.1) — 우리 초안 + 이미 공개된 자리(§4.2)를 함께 본다
+   │     중복은 거절 · 그 자리의 공개 날짜는 항상 최신 게시일
+   │
+   ▼ ⑦ 공개 (§4.3) — APPROVED이고 아직 안 나간 행을 jobs에 INSERT (church_id=NULL)
 ──────────────────  여기까지 크롤러(자동)  ──────────────────
-   ▼ ⑥ 운영자 검수 (min_job admin) → 승인/수정 → jobs 승격(공개 · church_id=NULL)
+   ▼ ⑧ 운영자 검수 (min_job admin) — PENDING만. 승인하면 review_status만 바꾸고
+        다음 실행의 ⑦이 공개한다. 교회가 claim하면 소유권이 넘어간다(§8)
 ```
 
-- ①~⑤ 자동, ⑥ 사람(⚠️ `APPROVED`로 나온 초안은 ⑥을 건너뛴다 · §5.7). 크롤러 write = `source_data`·`review_data`·`source_health`·`crawl_run`. 크롤러는 `churches`/`jobs`를 직접 안 건드린다.
+- ①~⑦ 자동, ⑧ 사람(⚠️ `APPROVED`는 ⑧을 건너뛴다 · §5.7). 크롤러 write = staging 4테이블 + **`jobs` 중 자기가 만든 공고**(§8). `churches`에는 쓰지 않는다.
 - **crawl_run은 실행 시작(①)에 INSERT**(started_at·mode, run_id 확보) → source_data/review_data가 이 run_id를 FK로 참조 → **종료(⑤)에 UPDATE**(finished_at·sources_ok/failed·new_count·error_detail).
 - ⚠️ **구조화를 따로 돌리는 실행은 `crawl_run`을 만들지 않는다**(Phase 1의 `structure` 명령 — 수집이 끝난 뒤 유료 호출을 별도로 집행한다). `crawl_run`의 집계는 전부 **게시판 단위**(`mode`·`sources_ok`·`sources_failed`·`new_count`·`error_detail[source_key]`)라 **공고 단위**로 도는 구조화가 들어갈 칸이 없고, 억지로 넣으면 컬럼 이름이 뜻과 어긋난다. 그때 `review_data.run_id`는 **그 공고를 수집해온 실행**(`source_data.run_id`)을 승계한다 — 위 정의("①에서 INSERT된 crawl_run")가 그대로 유지되고, ①~⑤가 한 실행으로 이어지는 데일리에서도 같은 값이 되어 두 경로가 어긋나지 않는다. 구조화 실행의 진행·집계는 명령 출력과 `source_data`의 `structured_at`·`structure_attempts`·`last_structure_error`가 담당한다.
 
@@ -181,31 +187,68 @@ KWANGSHIN 1). 그대로 승격하면 min_job 목록 절반이 중복이 된다.
 가능**하기 때문이다(왜 합쳐졌는지 항상 답할 수 있다). 유사도·임계값은 정답 데이터가 쌓인 뒤에
 얹는다. 지금 넣으면 틀렸을 때 원인을 알 수 없다.
 
-### 4.2 이미 승격된 공고의 끌어올림 (데일리 전환 후)
+### 4.2 이미 공개된 자리와의 대조 — 앵커
 
-승격 시 `review_data.published_job_id`에 생성된 `jobs` 행이 기록된다. 새 공고가 들어오면
-**우리 `review_data`만 조회**하면 된다 — min_job DB를 읽지 않는다.
-
-⚠️⚠️ **이건 min_job에 대한 의존이다.** 승격 흐름이 `published_job_id`를 채우지 않으면 우리는
-"이미 공개됨"을 알 방법이 없고, **데일리 실행이 매일 같은 자리를 새 공고로 올린다**(dedup이
-하루 단위로 무력해진다). 데일리 전환 전에 min_job 쪽에서 확인해야 한다(ROADMAP 1-7).
+중복은 우리 원장 안에서만 생기지 않는다. 같은 자리가 **min_job을 통해 먼저 등록**되거나
+(교회 직접·운영자 수동), **우리가 어제 공개한 것**일 수 있다. 그래서 판정할 때 `jobs`에서
+**지금 목록에 보이는 공고**를 읽어 후보에 함께 넣는다 — 이것을 **앵커**라 한다.
 
 ```
-새 공고 → dedup_key 계산
-  같은 dedup_key 이면서 published_job_id 가 있는 행이 있나?
-    있으면  →  기존 job 의 끌어올림  →  그 published_job_id 를 물려주고
-                min_job 이 `jobs.posted_at` 만 UPDATE
-    없으면  →  새 공고  →  INSERT
+앵커 = jobs 중  status='OPEN'  AND  (deadline IS NULL OR deadline >= 오늘)
+                AND  posted_at >= 오늘 - 3개월
+       ⚠️ 우리 review_data.published_job_id 로 이어진 행은 제외한다
+          (그 행은 후보에 이미 우리 초안으로 들어와 있다 — 자기 자신과 중복 판정하게 된다)
 ```
 
-⚠️ **UPDATE 경로는 min_job 승격 흐름에 아직 없다**(현재 INSERT만). 1회 백필에서는 필요 없고
-**데일리(1-7) 전환 시 필요**하다.
+- **키는 저장하지 않고 계산한다.** `jobs`에 `church_name`·`region`·`position[]`·`department`·
+  `posted_at`이 있어 §4.1과 **같은 키**를 그 자리에서 만든다. 파생값이라 컬럼을 두지 않는다.
+- **앵커는 항상 대표다**(§4.1 대표 순위 1번). 이미 공개된 자리를 새 공고가 밀어내지 않는다.
+- ⚠️ **"보이는 공고"로 한정하는 이유**: 마감이 지나 숨겨진 공고를 앵커로 쓰면, 교회가 새 마감일로
+  다시 올린 재게시가 "이미 공개됨"으로 처리돼 **그 자리가 영영 목록에 안 나온다**. 숨겨진 공고는
+  앵커가 아니므로 재게시가 새 공고로 정상 발행되고, 옛 행은 숨겨진 채 남는다(무해).
+- ⚠️ **노출 조건은 min_job의 규칙을 그대로 따라야 한다**(마감·3개월). 어긋나면 중복이 새거나
+  자리가 사라진다 — min_job이 `jobs_visible` 뷰를 제공하면 그걸 읽는 것이 안전하다.
+- ⚠️ `region`이 비면 키를 못 만들어 앵커가 되지 못한다(§4.1과 같은 규칙 — 근거가 없으면 안 묶는다).
 
-⚠️ **`jobs`를 읽으면 막을 수 있는 두 경우**(지금은 못 막는다 · 크롤러에게 `jobs` **쓰기**만
-금지돼 있고 읽기는 정책상 가능하다): ① 운영자가 **손으로 올린 공고**(크롤러 유래 아님)는 우리
-`review_data`에 없어 중복 판정 대상이 아니다 → 같은 자리를 또 올릴 수 있다. ② 이미 **마감된
-job**과 같은 자리가 3개월 안에 다시 올라오면 끌어올림으로 처리된다(라운드가 3개월을 넘는
-재공고는 이미 새 공고로 가른다).
+### 4.2b 끌어올림 — `jobs.posted_at` 갱신
+
+§4.1의 규칙 **"그 자리의 공개 날짜 = 묶음에서 가장 최근 게시일"** 을 이미 공개된 자리에 적용한다.
+
+```
+대표가 이미 공개돼 있고  우리가 만든 공고이며  아직 교회 것이 아니면
+   →  UPDATE jobs SET posted_at = <묶음 최신 게시일> WHERE id = ? AND church_id IS NULL
+```
+
+- **왜 필요한가**: min_job은 게시일이 3개월 지난 공고를 숨긴다. 교회가 계속 끌어올리는 자리를
+  갱신하지 않으면 **아직 뽑고 있는데 목록에서 사라진다**.
+- ⚠️ **`posted_at` 한 칸만** 쓴다. 제목·연락처·마감일·상태는 운영자·교회의 몫이다(§8).
+- ⚠️ **교회가 claim한 공고·min_job이 만든 공고는 갱신하지 않는다**(§8 소유권). 앵커 역할은 그대로
+  하므로 중복은 계속 막힌다 — 날짜는 그 교회가 관리한다.
+
+### 4.3 공개 — `review_data` → `jobs` INSERT
+
+자동 승인된 초안(§5.7)과 운영자가 승인한 초안을 **크롤러가 직접 공개**한다. 사람이 버튼을 눌러야
+공개되는 경로를 두면 자동 승인이 무의미해지기 때문이다(운영자 결정 2026-08-18).
+
+```
+대상:  review_data 에서  review_status='APPROVED'  AND  published_job_id IS NULL
+채움:  §6 승격 목적지의 33칸 · church_id=NULL · source='OPERATOR' · source_url=원문 링크
+       posted_at = 그 자리 묶음의 가장 최근 게시일(§4.1)
+순서:  ⚠️ id 를 우리가 만들어 review_data.published_job_id 에 **먼저 적고** → 그 id 로 INSERT
+```
+
+- ⚠️ **순서를 뒤집으면 안 된다.** INSERT를 먼저 하고 죽으면 "공개됐는데 우리는 모르는 행"이 남아
+  **매 실행 다시 공개**한다. 먼저 적어두면 다음 실행이 "적혔는데 `jobs`에 없음"을 보고 이어서 넣는다.
+- ⚠️ **판정(§4.1)이 공개(§4.3)보다 먼저다.** 순서가 바뀌면 곧 중복으로 거절될 행을 먼저 공개한다.
+- ⚠️ **스키마 드리프트는 시작 전에 잡는다.** `jobs`는 min_job 소유라(§8) 컬럼이 늘면 **공개
+  테이블에 대고** 깨진다. 실행 머리에서 컬럼 집합을 대조하고 어긋나면 **INSERT를 시작조차 하지
+  않는다**(enum 드리프트를 테스트로 잡는 것과 같은 방식).
+- **승격 게이트는 이미 통과돼 있다** — `confidence`가 `high`가 되려면 min_job의 필수 5 + CHECK 2를
+  모두 채워야 한다(§5.7). `PENDING`·`REJECTED`는 절대 넣지 않는다.
+- 운영자가 검수에서 승인하면 `review_status`만 `APPROVED`가 되고 **다음 실행이 공개**한다.
+  즉시 필요하면 수동 실행(`workflow_dispatch`)으로 돌린다.
+- ⚠️ 공개된 job을 운영자가 **지웠으면** `published_job_id`는 남고 행은 없다 — §4.2의 읽기로 존재를
+  확인해 그 값을 비우고 다시 공개한다.
 
 ---
 
@@ -379,7 +422,7 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 | 교단 | `denomination`(`UNKNOWN` 가능·임시) · `denomination_source`(stated/registry/ai_guess/unknown) · `denomination_evidence` · `raw_denomination`(원표기) |
 | 이단 | `heresy_flag`·`heresy_evidence` |
 | 검수 이력 **없음** | ⚠️ **검산이 무엇을 비웠는지는 저장하지 않는다**(§5.5b). admin에서 빈 칸을 보면 "원문에 없었다"와 "검산이 지웠다"를 구분할 수 없다 — 실측에서 비운 것이 42개 중 1개라 지금은 두지만, 검수가 답답해지면 `scrubbed_fields text[]`를 추가한다 |
-| 검수 메타 | `confidence`(high/medium/low) · **`dedup_key`·`dedup_state`**(§4.1 · ALONE/MASTER/DUPLICATE/SEPARATE/UNCERTAIN) · `review_status`(PENDING/APPROVED/REJECTED) + **`reject_reason`**(DUPLICATE/HERESY/**CLOSED**/OPERATOR) · **`published_job_id`** FK→jobs(승격 결과 · §4.2가 이걸로 끌어올림을 찾는다) · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
+| 검수 메타 | `confidence`(high/medium/low) · **`dedup_key`·`dedup_state`**(§4.1 · ALONE/MASTER/DUPLICATE/SEPARATE/UNCERTAIN) · `review_status`(PENDING/APPROVED/REJECTED) + **`reject_reason`**(DUPLICATE/HERESY/**CLOSED**/OPERATOR) · **`published_job_id`** FK→jobs(공개 결과 · §4.2가 앵커를 가리고 §4.2b가 이걸로 끌어올림 대상을 찾는다) · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
 | 미사용 | ~~`matched_church_id`~~ — 교회 행을 만들지 않기로 해(2026-08-06 · §6 승격 목적지) **채우지 않는다**. 컬럼은 남겨 두되 값은 항상 NULL이다 |
 
 > 게이트1 `NO`(개교회 아님·비채용)는 review_data를 만들지 않는다(§1·§5.1) — 대신 `source_data.structured_at`이 기록돼 재구조화 대상에서 빠진다(§4). `UNCERTAIN`은 confidence=low로 여기 온다.
@@ -422,6 +465,9 @@ v2 스키마: `{version, source_url, captured_on, policy, note, entries:[{name, 
 
 ### 승격 목적지 — `jobs` **한 테이블** (min_job DATA.md 정본)
 
+⚠️ **승격은 크롤러가 한다**(2026-08-18 · 절차는 §4.3). 바뀐 것은 "누가 INSERT하나"뿐이고,
+아래 33칸·게이트는 그대로다.
+
 ⚠️ **`churches`에는 쓰지 않는다**(2026-08-06 확정). 크롤 공고는 `church_id = NULL`로 들어가고,
 교회명은 `jobs.church_name`(텍스트)이 담는다. 그 교회가 min_job에 가입·인증한 뒤 **자기 공고를
 claim하면** `church_id`가 채워진다.
@@ -432,7 +478,7 @@ claim하면** `church_id`가 채워진다.
 다르다 — **다른 교회를 합치면**(B교회 페이지에 A교회 공고) 되돌리기 어렵고 이미 공개돼 있고,
 **같은 교회를 나누면** 중복 행이 생길 뿐이다. 끝까지 밀어 **아예 만들지 않는** 쪽으로 갔다.
 
-**승격 시 우리가 채우는 것(33개)**
+**승격 시 우리가 채우는 것(34개)** — `jobs` 42칸 중 나머지 8칸은 고정값·DB 기본값이다
 
 | 그룹 | 컬럼 |
 |---|---|
@@ -443,10 +489,16 @@ claim하면** `church_id`가 채워진다.
 | 지원 | `contact_email`·`contact_tel`·`contact_link`·`contact_post` · `required_docs[]`·`optional_docs[]`·`process_steps[]`·`work_days` · `requirements[]`·`preferred[]` |
 | 본문 | `title` · `description`(**요약** · 원문 복제 금지) · `source_url` · `posted_at` · `deadline` |
 
-**min_job이 채우는 것**: `id` · `status`(OPEN) · `source`(OPERATOR) · `featured_tier`(NONE) ·
-`created_at` · `updated_at`. ⚠️ `owner_id`는 **컬럼에서 제거됐다**(2026-08-06 · `church_id`로 충분).
+⚠️ **`jobs`에 교단 컬럼이 없다.** 교단은 `churches.denomination`에만 있고 우리는 교회 행을 만들지
+않으므로(`church_id=NULL`), **`denomination`은 공개로 나가지 않는다** — `review_data`에 남아 검수·
+교회 claim 이후를 위한 값이다. 이단 대조(§5.4)와 교단 확정(§5.3)이 무의미한 것은 아니다: 전자는
+거절 근거이고 후자는 claim·매칭 때 쓰인다.
 
-**승격 게이트 = 필수 5 + CHECK 2** (min_job DATA.md §3 정본): `church_name`·`title`·`job_kind`·
+**나머지 칸**: `id`(⚠️ **우리가 만들어 넣는다** — §4.3 크래시 안전) · `status`(OPEN) ·
+`source`(OPERATOR) · `featured_tier`(NONE) · `created_at` · `updated_at`은 DB 기본값·고정값이다.
+⚠️ `owner_id`는 **컬럼에서 제거됐다**(2026-08-06 · `church_id`로 충분).
+
+**승격 게이트 = 필수 5 + CHECK 2** (min_job DATA.md §3 정본 · `confidence`가 이미 검사한다 · §5.7): `church_name`·`title`·`job_kind`·
 `description`·**`posted_at`** NOT NULL · `position` 또는 `role` · **연락처 4개 중 1개**.
 `region`·`denomination`은 **비어도 승격된다**.
 ⚠️ `posted_at`·`source_url`은 `ReviewData` 자체가 강제하므로 등급 계산에서는 세지 않는다.
@@ -474,10 +526,62 @@ published_job_id  생성된 jobs 행의 id   ← §4.2 끌어올림 판정의 �
 
 ---
 
-## 8. min_job 연동 · 스키마 거버넌스
+## 8. min_job 연동 · 소유권 경계 · 스키마 거버넌스
 
 - **staging 4테이블(`source_data`·`review_data`·`source_health`·`crawl_run`)은 이 리포가 소유·마이그레이션.** 물리적으로 min_job Supabase 프로젝트에 함께 두되(검수·승격 단순), 정의·변경은 이 리포.
-- **`churches`/`jobs`는 min_job `DATA.md`가 정본.** 크롤러는 그 모양에 맞춰 승격만.
+- **`churches`/`jobs`는 min_job `DATA.md`가 정본.** 크롤러는 그 모양에 맞춰 공개만 한다(§4.3).
+
+### 소유권 경계 — 한 줄 규칙 (운영자 결정 2026-08-18)
+
+> **크롤러는 "자기가 만들었고 아직 교회 것이 되지 않은" 공고만 건드린다. 그 외 모든 `jobs` 행은 읽기만 한다.**
+
+```
+크롤러가 쓸 수 있는 행  =  review_data.published_job_id 로 이어졌고  AND  jobs.church_id IS NULL
+그 외 모든 행          =  읽기만 (앵커로만 쓴다 · §4.2)
+```
+
+`church_id`가 채워지는 순간(= 교회가 claim) **소유권이 넘어가고 크롤러는 손을 뗀다.**
+
+| 테이블 | 크롤러 | min_job |
+|---|---|---|
+| `source_data` | **만든다**(write-once) | 읽는다(검수 화면의 원문·포스터) |
+| `review_data` | **만들고 판정한다** | **자유롭게 고친다**(검수·승인·거절) |
+| `jobs` — 크롤러가 만들었고 claim 전 | **INSERT**(§4.3) · **`posted_at`만 UPDATE**(§4.2b) | 전부 |
+| `jobs` — 그 외 전부 | **읽기만**(§4.2 앵커) | 전부 |
+| `churches` | **접근 없음** | 전부 |
+
+```sql
+GRANT SELECT, INSERT ON jobs TO crawler;
+GRANT UPDATE (posted_at) ON jobs TO crawler;
+-- DELETE 없음 · 다른 컬럼 UPDATE 없음 · churches 권한 없음
+```
+
+⚠️ **권한을 코드 규율이 아니라 DB로 강제한다.** 크롤러가 버그로 제목·연락처·마감일을 덮는 길이
+컬럼 단위 GRANT로 막힌다 — 운영자가 검수에서 고친 값이 안전해진다.
+
+**`jobs` 한 행이 어디서 왔는지 구분하는 법** (⚠️ `jobs.source`로는 안 된다 — 크롤러가 넣는 것도
+`OPERATOR`다):
+
+| 무엇 | 판정 |
+|---|---|
+| 크롤러가 긁어온 것 | `review_data.published_job_id`에 그 id가 있다 |
+| 교회가 직접 등록 | `jobs.source='CHURCH'`(그리고 `church_id`가 반드시 있다) |
+| 운영자가 손으로 등록 | `source='OPERATOR'`인데 우리 원장에 연결이 없다 |
+| 크롤러 것 → 교회가 claim | 연결은 있는데 `church_id`가 채워졌다 |
+
+### min_job이 해야 할 일 — 검수 화면 하나
+
+승인하면 `review_status`를 `APPROVED`로 바꾸기만 하고 **`jobs`에는 쓰지 않는다**(공개는 §4.3이
+한다). 거절은 `REJECTED` + `reject_reason='OPERATOR'`. `dedup_state`·`heresy_evidence`를 함께
+보여주면 검수가 쉬워진다.
+
+### 아직 안 하는 것 (알고 미루는 것 · 2026-08-18)
+
+- **교회가 닫은 자리가 게시판에 남아 다시 올라오는 것** — 지금은 새 공고로 다시 공개된다. 게시판 내용 갱신 기능이 들어오면 흡수된다.
+- **우리가 먼저 공개한 뒤 교회가 min_job에 또 등록** — claim 확인 기능이 흡수한다.
+- **운영자가 거절한 자리의 재등장** — 지금은 검수 큐에 다시 뜬다.
+- **`reviewed_by` 기록** — 없으면 "고쳤지만 아직 승인 전"인 행의 수정이 옆 게시판 판으로 대체될 수 있다(승인 후에는 `published_job_id`가 앵커가 되어 안전).
+- **`jobs.dedup_key` 컬럼** — min_job이 등록 시점에 중복을 막으려면 필요하다(claim 확인 기능이 있으면 불필요).
 
 ### min_job 스키마·정책 변경 (2026-07-29 확인 — 앱 레벨은 대부분 반영됨)
 1. ✅ `jobs`에 **`job_kind`(MINISTRY/GENERAL)** + **`role`** — min_job `types/domain.ts`에 반영됨. (목록 UI 필터·마이그레이션 SQL은 min_job 소관·진행 중)

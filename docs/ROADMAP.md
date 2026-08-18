@@ -162,7 +162,7 @@
 - [x] **한 글에 자리가 여러 개일 때 — 지금은 나누지 않는다**(운영자 결정 2026-08-11). 실측: 직분을 2개 이상 적은 공고에서 **Ⓑ 한 자리·자격만 열어둠 826건 : Ⓐ 진짜 여러 자리 128건(+애매 93건)** — 6.5:1로 Ⓑ가 압도적이라 "직분이 여럿이면 분리"는 **없는 자리 826건을 만든다**.
   - ⚠️ **궁극적으로는 나누는 것이 맞다.** 안 나누면 Ⓐ 221건(7%)이 `department`·`employment_type`·`pay_*` 전부 NULL이 되어 **검색에는 걸리지만 비교가 안 되는 공고**가 된다 — 우리 차별점이 구조화·비교인데 그 축을 잃는다.
   - **나누는 주체와 시점을 옮긴다**: Phase 1은 `review_data` 1행(검색은 배열로 다 걸림) → **Phase 2에서 min_job admin이 승격할 때 사람이 N개 `jobs`로** 나눈다(오분리 0 · 221건뿐) → Phase 3에서 필요하면 AI가 자리별 구조를 뽑아 분리안을 제시한다.
-  - **지금 나누면 안 되는 이유**: 크롤러의 종착지는 `review_data`이고 `jobs` 승격은 Phase 2라 **나눠도 갈 곳이 없다**. 그리고 나누는 순간 `UNIQUE(source_data_id)`(재구조화가 idempotent upsert인 근거)·`dedup_key`가 깨지고, 판정이 단조 증가라 **잘못 나눈 것을 되돌릴 코드 경로가 없다**. 애매한 93건은 신호가 둘 다 잡혀 AI도 못 가른다.
+  - **지금 나누면 안 되는 이유**: 나누는 순간 `UNIQUE(source_data_id)`(재구조화가 idempotent upsert인 근거)·`dedup_key`가 깨지고, 판정이 단조 증가라 **잘못 나눈 것을 되돌릴 코드 경로가 없다**. 애매한 93건은 신호가 둘 다 잡혀 AI도 못 가른다.
   - ✅ **선택지는 닫히지 않는다** — 원문은 `source_data`에, 자리 구성은 `headcount`·`description`에 남는다.
 - [x] **직분은 여러 개 붙인다**(운영자 결정 2026-08-11) — 실측 **634건(19.9%)** 이 한 공고에 직분을 여러 개 적는다. 두 경우 모두 **행을 쪼개지 않고 직분만 여러 개** 단다: ⓐ 한 자리인데 자격이 여러 직분(`전임사역자(전도사, 강도사, 목사)`) ⓑ 여러 자리(`1.부목사 2.교육목사 3.여전도사`). 대표 1개만 넣으면 나머지 직분으로 검색한 지원자에게 **안 보인다**. 행 분리는 `UNIQUE(source_data_id)`를 깨고 검수를 4배로 만든다
   - ⚠️ **min_job 스키마 변경이 선행돼야 공개된다**(운영자 작업 — 이 리포는 min_job 파일을 고치지 않는다): `jobs.position` `text`→`text[]` · 목록 필터 인덱스를 GIN으로 · 필터 쿼리 `= 'X'`→`@> ARRAY['X']` · ⚠️ `ChurchVerification.applicant.position`은 **개인 직분이라 배열화 대상이 아니다** · `role`(일반직)은 자유 텍스트라 단일 유지 · 목록 카드는 축약 필요(`부목사 외 2 · 유초등부`)
@@ -236,7 +236,6 @@
 - [x] **`dedup` 명령**(무료·무네트워크) + `structure` 뒤 자동 실행(`--dry-run` 제외). 몇 번을 돌려도 같은 결과 — 실측 두 번째 실행에서 바뀐 행 0건
 - [x] **되돌리기 = 다시 돌리기** — 지난 실행의 `DUPLICATE`도 후보에 다시 넣어 처음부터 판정하므로, 규칙을 고쳐 다시 돌리면 잘못 거절한 행이 등급대로 되살아난다. 별도 스크립트를 두지 않는 이유다
 - [x] 변이 테스트 19/19 · 실데이터 132건 대조(중복 21 제거 · UNCERTAIN 2 · SEPARATE 4 · 잘못된 병합 0)
-- [ ] (데일리 전환 시) **이미 승격된 것과의 대조** — 같은 `dedup_key`에 `published_job_id`가 있으면 끌어올림 → 그 id를 물려주고 min_job이 `jobs.posted_at`만 UPDATE(SPEC §4.2)
 
 ### 1-4. 소스 확장 (1 → 31곳)  ✅ 완료(2026-08-05 · 2026-08-10 확인)
 - [x] **유형 다른 어댑터로 틀 검증** — `PUTS`(EUC-KR)·`CSU`/`HANIL`(JSON 엔드포인트)
@@ -264,23 +263,34 @@
   (`SourceData.with_attempts_reset` — `update_structure_state`는 횟수 감소를 거부한다).
   Supabase로 옮기면 운영자가 service-role SQL을 직접 쓰는 수밖에 없어지므로 여기서 같이 낸다.
 
+### 1-6b. 공개 경로 (`jobs`) — ⚠️ **1-6 이후** (Supabase가 있어야 `jobs`가 있다)
+
+> **완료 기준**: 자동 승인된 공고가 사람 손 없이 `jobs`에 뜨고, 끌어올림이 목록 순서에 반영된다.
+> 규칙·경계는 **SPEC §4.2·§4.2b·§4.3·§8이 정본**이다.
+
+- [ ] **앵커 읽기**(SPEC §4.2) — 지금 목록에 보이는 `jobs`를 읽어 자리 키를 계산해 dedup 후보에 넣는다. `published_job_id`로 이어진 행은 제외
+- [ ] **공개**(§4.3) — `APPROVED`이고 안 나간 행을 `jobs`에 INSERT. ⚠️ **id를 우리가 만들어 `review_data`에 먼저 적고** INSERT(크래시 시 두 번 공개 방지) · **컬럼 드리프트 검사**를 통과해야 시작
+- [ ] **끌어올림**(§4.2b) — `UPDATE jobs SET posted_at=? WHERE id=? AND church_id IS NULL`
+- [ ] **권한**(§8) — `GRANT SELECT, INSERT ON jobs` + `GRANT UPDATE (posted_at) ON jobs`. `churches`·DELETE·다른 컬럼 없음
+- [ ] 공개된 job이 지워진 경우 `published_job_id` 정리 후 재공개
+- [ ] (min_job) **`jobs_visible` 뷰** — 노출 규칙(마감·3개월)이 한 곳에만 있게. 없으면 우리가 조건을 베껴야 하고 어긋나면 중복이 샌다
+
 ### 1-7. 배포 (GitHub Actions) — ⚠️ **1-6 이후에만**
 > ephemeral 러너 + JsonStore 조합은 매 실행 원장을 잃어 **전량 재크롤·재구조화·산출물 유실**을 만든다. `crawl.yml`은 **Supabase 전환(1-6) 완료 후** 작성한다(CLAUDE.md 순서 제약).
 - [ ] `.github/workflows/crawl.yml` — 매일 **07:00 KST** cron(DAILY) + `workflow_dispatch`(수동 재실행)
 - [ ] GH Secrets — Vertex·Supabase service key
 - [ ] 첫 자동 실행 검증 + crawl_run/source_health 확인
 
-> **Phase 1 완료 기준**: GitHub Actions가 매일 31곳을 긁어 새 공고를 구조화 → `review_data`(PENDING)까지 쌓고, `crawl_run`·`source_health`로 관측된다.
+> **Phase 1 완료 기준**: GitHub Actions가 매일 31곳을 긁어 구조화·중복 판정까지 하고, **확인할 것이 없는 공고는 `jobs`에 공개**되며 나머지는 `PENDING`으로 남는다. 실행은 `crawl_run`·`source_health`로 관측된다.
 
 ## Phase 2: min_job 게재 연동 + 소스 확장 (게이트)
 
 > 게재 브릿지·검수 UI는 **min_job 측 작업**(min_job ROADMAP 1-10). 크롤러는 `review_data` 제공까지가 임계경로.
-- [ ] (min_job) `review_data` → **`jobs`** 승격 UI + 크롤 대시보드 — ⚠️ `churches`에는 쓰지 않는다(`church_id=NULL` · SPEC §6). **일괄 승인** 필요(🟢/🟡/🔴 분류는 크롤러가 준다)
+- [ ] (min_job) **검수 화면** + 크롤 대시보드 — `PENDING`만 보여주고 승인하면 `review_status`만 `APPROVED`로. ⚠️ **`jobs`에는 쓰지 않는다**(공개는 크롤러가 한다 · SPEC §4.3). `dedup_state`·`heresy_evidence`를 함께 보여주면 검수가 쉬워진다
 - [ ] (min_job) **교회 claim 플로우** — 교회 가입·인증 후 `church_name`+`region`이 맞는 공고를 제시 → 확인하면 `church_id` 채움 → 교회 상세·재공고 이력이 켜진다
-- [ ] (min_job) ⚠️⚠️ **승격 시 `review_data.published_job_id` 기록** — 이게 없으면 크롤러가 "이미 공개됨"을 알 수 없어 **데일리가 매일 같은 자리를 새로 올린다**(dedup이 하루 단위로 무력해진다 · SPEC §4.2). 데일리 전환 전 필수 확인
-- [ ] (min_job) **끌어올림 UPDATE 경로** — 지금 승격은 INSERT만. 데일리 전환 시 `published_job_id`로 기존 `jobs.posted_at` 갱신이 필요하다(SPEC §4.2)
-- [ ] (min_job) **검수 화면에 `dedup_state`·`dedup_key`·`heresy_evidence` 노출** — `UNCERTAIN` 묶음은 두 건을 나란히 놓고 봐야 답이 나온다. 우리 쪽은 값만 채우면 끝이다
-- [ ] **정할 것: 크롤러에게 `jobs` 읽기 권한을 줄지** — 운영자 수동 공고·마감된 job의 재공고를 막고 싶으면 필요하다(SPEC §4.2)
+- [ ] (min_job) **claim 확인 플로우** — 교회 가입·인증 후 "이 공고가 당신 것인가"를 확인해 `church_id`를 채운다. ⚠️ 채워지는 순간 **크롤러는 그 공고에서 손을 뗀다**(SPEC §8)
+
+**미루기로 한 것**(2026-08-18 · SPEC §8): 교회가 닫은 자리의 재등장 차단 · 운영자가 거절한 자리의 재등장 차단 · `reviewed_by` 기록 · `jobs.dedup_key` 컬럼
 - [x] (min_job) 스키마 변경 — `pay_*` 개명 · 연락처 4컬럼 · `church_id` nullable · `church_name`·`jobs.region` 추가 · `owner_id` 제거 (2026-08-06 · DATA.md 반영 완료 · ⚠️ 마이그레이션 SQL은 아직 없음)
 - [ ] **로그인 티어**(KMC·AGK·기독신문·CTS) — 인증 크롤(계정=운영자 제공)
 - [ ] **커버리지 확장**(상업 CROSS: 청빙넷·cjob·갓피플) — 정책 재검토 후
