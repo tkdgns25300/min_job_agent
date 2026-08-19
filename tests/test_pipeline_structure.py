@@ -1432,32 +1432,76 @@ def test_the_overshoot_is_bounded_by_the_worker_count(store: JsonStore) -> None:
 #: 실존 교회가 공개 리포에서 "이단 목록 항목"으로 읽힌다.
 _LISTED_NAME: Final = "○○교회"
 
+#: 동명이 생길 수 없는 이름(단체·사람). ⚠️ 목록 이름 228개 중 170개가 이 꼴이고, 이쪽은
+#: 지역을 못 봐도 **거절한다** — `○○선교회`가 교회명 칸에 있으면 그건 그 단체다(SPEC §5.4).
+_LISTED_GROUP: Final = "○○선교회"
+
 
 def _listed(name: str = _LISTED_NAME, region: Region | None = None) -> HeresyRef:
     return HeresyRef.of((HeresyEntry("아무개", (name,), ("합신",), region),))
 
 
-def test_a_listed_church_is_rejected_as_it_is_built() -> None:
+def test_a_listed_group_name_is_rejected_as_it_is_built() -> None:
     """⚠️ 만들면서 거절한다 — 레코드 불변식이 "REJECTED면 이유가 있어야 한다"라
-    처음부터 맞춰 만들어야 생성된다(SPEC §5.4)."""
+    처음부터 맞춰 만들어야 생성된다(SPEC §5.4).
+
+    단체명은 **지역을 못 봐도 거절**한다 — 동명이 생기지 않는다.
+    """
     draft = build_draft(
         _source_data(),
         _extraction(),
-        heresy=screen(_LISTED_NAME, None, None, _listed()),
+        heresy=screen(_LISTED_GROUP, None, None, _listed(_LISTED_GROUP)),
     )
 
     assert draft.review_status is ReviewStatus.REJECTED
     assert draft.reject_reason is RejectReason.HERESY
     assert draft.heresy_flag is True
+    assert draft.heresy_evidence is not None and _LISTED_GROUP in draft.heresy_evidence
+
+
+def test_a_listed_church_name_with_the_region_confirmed_is_rejected() -> None:
+    """지역까지 맞았으면 그 교회다 — 목록·공고 양쪽에 지역이 있고 같을 때만이다(SPEC §5.4)."""
+    draft = build_draft(
+        _source_data(),
+        _extraction(region=Region.GYEONGBUK),
+        heresy=screen(_LISTED_NAME, None, Region.GYEONGBUK, _listed(region=Region.GYEONGBUK)),
+    )
+
+    assert draft.reject_reason is RejectReason.HERESY
+
+
+def test_a_listed_church_name_without_a_region_waits_for_a_person() -> None:
+    """⚠️ **동명이교회를 가릴 수 없으면 거절하지 않는다**(2026-08-19 실측으로 고쳤다).
+
+    목록 122항목 중 117개(96%)에 지역이 없어 사실상 이름만으로 거절하고 있었고, 실제로 예장합동
+    소속 교회가 이름만 같아서 자동 거절됐다(옛 원장에 같은 이름 21건). 자동 거절은 **검수 큐에도
+    뜨지 않아** 무고한 교회가 아무도 모르게 사라진다.
+
+    ⚠️ **봐주는 것이 아니다** — 표시와 근거는 그대로 남고, 등급이 `medium`이라 공개되지 않는다.
+    """
+    # ⚠️ 승격 6칸이 다 찬 초안으로 본다 — 그러면 **목록에 걸린 것 말고는** `high`를 막을
+    #    이유가 없어서, 등급이 내려간 원인이 이단 표시임이 분명해진다.
+    draft = build_draft(
+        _source_data(),
+        _complete(),
+        heresy=screen(_LISTED_NAME, None, None, _listed()),
+    )
+
+    assert draft.reject_reason is None, "거절하지 않는다"
+    assert draft.review_status is ReviewStatus.PENDING, "사람이 본다"
+    assert draft.confidence is Confidence.MEDIUM, "자동 공개되면 안 된다"
+    assert draft.heresy_flag is True, "표시는 남는다"
     assert draft.heresy_evidence is not None and _LISTED_NAME in draft.heresy_evidence
 
 
 def test_heresy_outranks_a_closed_posting() -> None:
     """⚠️ `reject_reason`은 한 칸뿐이다. 마감은 **그 공고**의 사실이고 이단은 **그 교회**의
     사실이라, 뒤에 올 공고에도 그대로 적용되는 쪽을 남긴다."""
-    record = replace(_source_data(), title=f"[청빙완료] {_LISTED_NAME} 부목사")
+    record = replace(_source_data(), title=f"[청빙완료] {_LISTED_GROUP} 부목사")
 
-    draft = build_draft(record, _extraction(), heresy=screen(_LISTED_NAME, None, None, _listed()))
+    draft = build_draft(
+        record, _extraction(), heresy=screen(_LISTED_GROUP, None, None, _listed(_LISTED_GROUP))
+    )
 
     assert draft.reject_reason is RejectReason.HERESY
 
@@ -1473,14 +1517,14 @@ def test_a_posting_that_is_not_listed_keeps_its_clean_record() -> None:
 def test_the_screening_runs_on_the_verified_extraction(store: JsonStore, data_dir: Path) -> None:
     """⚠️ 검산 **뒤에** 대조해야 한다 — `verify`가 지어낸 교회명을 비우므로, 없는 이름
     때문에 무고한 공고가 거절되는 일이 없다."""
-    record = _source_data(raw_text=f"{_LISTED_NAME}에서 사역자를 청빙합니다.")
+    record = _source_data(raw_text=f"{_LISTED_GROUP}에서 사역자를 청빙합니다.")
     store.save_source_data(record)
 
     result = structure_one(
         record,
         store,
-        _FakeExtractor(replace(_extraction(), church_name=_LISTED_NAME)),
-        heresy=_listed(),
+        _FakeExtractor(replace(_extraction(), church_name=_LISTED_GROUP)),
+        heresy=_listed(_LISTED_GROUP),
     )
 
     assert result.verdict is Verdict.DRAFTED
@@ -1540,7 +1584,7 @@ def test_the_report_counts_automatic_rejections(store: JsonStore) -> None:
 
     `drafted`에 포함되므로 따로 세지 않으면 "초안 10건"이 전부 검수 대기처럼 읽힌다.
     """
-    record = _source_data(raw_text=f"{_LISTED_NAME}에서 사역자를 청빙합니다.")
+    record = _source_data(raw_text=f"{_LISTED_GROUP}에서 사역자를 청빙합니다.")
     store.save_source_data(record)
     tally = structure._Tally()
 
@@ -1548,8 +1592,8 @@ def test_the_report_counts_automatic_rejections(store: JsonStore) -> None:
         structure_one(
             record,
             store,
-            _FakeExtractor(replace(_extraction(), church_name=_LISTED_NAME)),
-            heresy=_listed(),
+            _FakeExtractor(replace(_extraction(), church_name=_LISTED_GROUP)),
+            heresy=_listed(_LISTED_GROUP),
         )
     )
     report = tally.report()

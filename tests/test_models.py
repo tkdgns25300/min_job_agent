@@ -1040,6 +1040,49 @@ def test_the_other_verdicts_leave_the_row_alive() -> None:
         assert record.dedup_state is state
 
 
+@pytest.mark.parametrize(
+    "reason", [RejectReason.DUPLICATE, RejectReason.HERESY, RejectReason.CLOSED]
+)
+def test_a_rejection_the_crawler_made_can_be_undone(reason: RejectReason) -> None:
+    """⚠️ 이단·마감·중복 규칙은 실측으로 계속 바뀐다 — 그 행을 지키면 **고친 규칙이 이미
+    판정된 행에 영영 적용되지 않는다**(2026-08-19 실측: 이단 규칙을 고쳤는데 잘못 거절된 2건을
+    되돌릴 길이 없었다)."""
+    dedup = (
+        {"dedup_key": "성원교회:DAEGU:ASSOCIATE_PASTOR:-:R1", "dedup_state": DedupState.DUPLICATE}
+        if reason is RejectReason.DUPLICATE
+        else {}
+    )
+    record = replace(
+        _review_data(),
+        review_status=ReviewStatus.REJECTED,
+        reject_reason=reason,
+        heresy_flag=reason is RejectReason.HERESY,
+        heresy_evidence="목록: 아무개" if reason is RejectReason.HERESY else None,
+        **dedup,  # type: ignore[arg-type]
+    )
+
+    assert record.is_safe_to_replace is True
+
+
+def test_a_rejection_the_operator_made_is_kept() -> None:
+    """사람의 결론은 규칙을 고쳐도 되돌리지 않는다."""
+    record = replace(
+        _review_data(),
+        review_status=ReviewStatus.REJECTED,
+        reject_reason=RejectReason.OPERATOR,
+    )
+
+    assert record.is_safe_to_replace is False
+
+
+def test_an_approved_draft_is_still_kept() -> None:
+    """⚠️ 지금은 **운영자 승인과 자동 승인을 가릴 표시가 없다**(`reviewed_by` 미구현) —
+    구분이 안 되는 동안은 지키는 쪽이 안전하다."""
+    record = replace(_review_data(), review_status=ReviewStatus.APPROVED)
+
+    assert record.is_safe_to_replace is False
+
+
 def test_a_new_rejection_replaces_the_old_pending_state() -> None:
     """⚠️ **판정은 이어받지 않는다**(2026-08-17 실측 버그).
 

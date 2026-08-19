@@ -193,6 +193,18 @@ def test_a_postal_address_beside_another_contact_is_fine() -> None:
     assert _graded(_draft(contact_post="서울시 종로구 …")) is Confidence.HIGH
 
 
+def test_a_posting_on_the_heresy_list_never_goes_out_by_itself() -> None:
+    """⚠️ 이단 목록에 걸린 공고는 **자동 공개되면 안 된다**(SPEC §5.4 · 2026-08-19).
+
+    지역까지 확인해 거절한 건은 어차피 `REJECTED`가 되지만, 지역을 못 본 교회명은 동명이교회일
+    수 있어 사람이 정한다 — 그 행이 `high`로 나가면 무고한 교회를 이단으로 공개하거나(표시가
+    함께 나가면) 확인 안 된 판정을 공개하는 셈이다.
+    """
+    draft = _draft(heresy_flag=True, heresy_evidence="목록: 아무개 · ⚠️ 지역 확인 불가")
+
+    assert _graded(draft) is Confidence.MEDIUM
+
+
 # ── 제목 대조는 넣었다가 뺐다 ─────────────────────────────────────
 
 

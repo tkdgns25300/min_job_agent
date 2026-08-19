@@ -78,6 +78,11 @@ REVIEW_STATE_FIELDS: tuple[str, ...] = (
     "reviewed_at",
 )
 
+#: **크롤러가 스스로 내린 거절.** 규칙을 고치면 되돌릴 수 있어야 한다 — 이단 목록·마감 판정·
+#: 중복 규칙은 실측으로 계속 바뀌는데(2026-08-19 이단 규칙 개정), 되돌릴 길이 없으면 고친 규칙이
+#: **이미 판정된 행에는 영영 적용되지 않는다**. `OPERATOR` 거절만 사람의 결론이라 지킨다.
+_CRAWLER_REJECTIONS = frozenset({RejectReason.DUPLICATE, RejectReason.HERESY, RejectReason.CLOSED})
+
 #: ⚠️ **재구조화가 매번 새로 내리는 판정** — 이어받으면 안 된다.
 #: 이어받으면 새 초안이 붙인 이단·마감 거절이 이전 행의 `PENDING`으로 덮여 **사라진다**
 #: (실측 2026-08-17: 이단 거절을 붙인 초안으로 기존 `PENDING` 행을 대체하니 `PENDING`이
@@ -697,8 +702,17 @@ class ReviewData:
         ⚠️ 이 판정은 **한 곳에만 있어야 한다** — 저장(`JsonStore.upsert_review_data`)과
         되돌리기(`scripts/reset_structure.py`)가 서로 다른 기준을 쓰면 한쪽이 다른 쪽이
         지키기로 한 행을 지운다(실측 2026-08-14 검수).
+
+        ⚠️ **크롤러가 내린 거절은 되돌릴 수 있다**(2026-08-19). 이단·마감·중복 규칙은 실측으로
+        계속 바뀌는데, 그 행까지 지키면 **고친 규칙이 이미 판정된 행에 영영 적용되지 않는다**
+        (실측: 이단 규칙을 고쳤는데 잘못 거절된 2건을 되돌릴 길이 없었다). `APPROVED`는 계속
+        지킨다 — 지금은 운영자 승인과 자동 승인을 가릴 표시가 없다(`reviewed_by` 미구현).
         """
-        return self.review_status is ReviewStatus.PENDING and not self.is_operator_touched
+        if self.is_operator_touched:
+            return False
+        if self.review_status is ReviewStatus.PENDING:
+            return True
+        return self.reject_reason in _CRAWLER_REJECTIONS
 
     def carrying_operator_state_of(self, previous: ReviewData) -> ReviewData:
         """재구조화 초안이 기존 행을 대체할 때 **식별자와 운영자 기록을 이어받는다**.

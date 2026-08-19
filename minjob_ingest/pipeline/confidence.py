@@ -82,8 +82,11 @@ def grade(draft: ReviewData, *, media_sent: bool, media_missed: bool) -> Confide
         # ⚠️ 게이트1 `UNCERTAIN`은 레코드 불변식도 `low`를 요구한다(SPEC §5.1) — 여기서
         #    다른 값을 내면 레코드가 아예 만들어지지 않아 규칙 오류가 즉시 드러난다.
         return Confidence.LOW
-    if media_sent or _only_contact_is_unverified(draft):
-        # ⚠️ 둘 다 **원문 대조를 거치지 않은 값**이라는 한 가지 이유다: 그림을 보낸 공고는
+    if media_sent or _only_contact_is_unverified(draft) or draft.heresy_flag:
+        # ⚠️ **이단 목록에 걸린 공고도 여기 온다**(SPEC §5.4 · 2026-08-19). 지역을 확인해
+        #    거절까지 한 건은 어차피 `REJECTED`가 되지만, 지역을 못 본 교회명은 **동명이교회일
+        #    수 있어** 사람이 정한다 — 그 행이 `high`로 자동 공개되면 안 된다.
+        # ⚠️ 나머지 둘은 **원문 대조를 거치지 않은 값**이라는 한 가지 이유다: 그림을 보낸 공고는
         #    `verify`가 어느 칸도 비우지 않고 세기만 하고(SPEC §5.5b), 우편 주소는 조립 칸이라
         #    그것뿐이면 지원 경로가 통째로 미확인이다. 자동 승인하면 "확인했다"가 거짓이 된다.
         return Confidence.MEDIUM

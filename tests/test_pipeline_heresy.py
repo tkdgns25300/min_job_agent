@@ -132,16 +132,65 @@ def test_the_body_text_is_never_screened() -> None:
 def test_the_same_name_in_another_region_is_not_rejected() -> None:
     """지역이 다르면 **이단을 봐주는 것이 아니라 애초에 그 교회가 아니다.**
 
-    ⚠️ 이 규칙이 실데이터의 오거부를 아직 **하나도 막지 못한다** — 실제로 걸리는 3곳은
-    목록에 지역이 없기 때문이다(표본 132건 중 1건도 그 경우). 지역을 채우면 그때 산다.
+    ⚠️ 목록에 지역이 있는 항목은 5개뿐이라, 실데이터의 오거부는 이 규칙이 아니라
+    **`is_conclusive`**(지역을 못 본 교회명은 검수로)가 막는다.
     """
     assert _screen("△△교회", region=Region.GYEONGNAM) is None
     assert _screen("△△교회", region=Region.GANGWON) is not None
 
 
-def test_an_unknown_region_still_rejects_when_the_entry_has_one() -> None:
-    """⚠️ 공고에 지역이 없으면 아니라고 말할 근거가 없다 — 기조대로 거절한다."""
-    assert _screen("△△교회", region=None) is not None
+def test_an_unknown_posting_region_is_a_match_but_not_a_rejection() -> None:
+    """⚠️ 공고에 지역이 없으면 **확인한 것이 아니다**(2026-08-19). 목록에 지역이 있어도
+    맞춰본 것이 아니므로 거절까지 가지 않고 사람이 본다."""
+    match = _screen("△△교회", region=None)
+
+    assert match is not None, "일치는 일치다 — 표시와 근거는 남는다"
+    assert match.is_conclusive is False, "확인하지 못한 것으로 거절하면 안 된다"
+
+
+# ── 거절까지 할 수 있나 (`is_conclusive`) ────────────────────────
+
+
+def test_a_group_name_is_rejected_without_a_region() -> None:
+    """단체·사람 이름은 **동명이 생기지 않는다** — 지역을 못 봐도 거절한다.
+
+    지역 없는 항목의 이름 228개 중 176개가 이 꼴이다(실측 2026-08-19).
+    """
+    for name in ("◎◎교", "◇◇교단"):
+        match = _screen(name)
+
+        assert match is not None
+        assert match.is_conclusive is True, name
+
+
+def test_a_mission_group_is_not_mistaken_for_a_church() -> None:
+    """⚠️ **`선교회`는 글자로는 `교회`로 끝난다.** 그걸 교회명으로 보면 단체명이 검수로 새고,
+    그건 이단을 봐주는 쪽으로 틀리는 것이다(실측: 목록에 이런 이름이 6개 있다)."""
+    match = _screen(raw="◇◇선교회")
+
+    assert match is not None
+    assert match.is_conclusive is True
+
+
+def test_a_church_name_without_a_region_waits_for_a_person() -> None:
+    """⚠️ **동명이교회를 가릴 수 없으면 거절하지 않는다**(2026-08-19 실측으로 고쳤다).
+
+    목록 122항목 중 117개(96%)에 지역이 없어 사실상 이름만으로 거절하고 있었고, 실제로 예장합동
+    소속 교회가 이름만 같아서 자동 거절됐다(옛 원장에 같은 이름 21건). 자동 거절은 검수 큐에도
+    뜨지 않아 **무고한 교회가 아무도 모르게 사라진다.**
+    """
+    match = _screen("○○교회")
+
+    assert match is not None, "표시와 근거는 남는다"
+    assert match.is_conclusive is False
+
+
+def test_a_church_name_with_the_region_confirmed_is_rejected() -> None:
+    """양쪽에 지역이 있고 같으면 **그 교회다.**"""
+    match = _screen("△△교회", region=Region.GANGWON)
+
+    assert match is not None
+    assert match.is_conclusive is True
 
 
 # ── 같은 이름이 여럿이면 전부 본다 ───────────────────────────────

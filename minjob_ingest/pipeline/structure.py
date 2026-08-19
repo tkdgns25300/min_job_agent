@@ -539,7 +539,9 @@ def build_draft(
 
 
 def _reject_reason(heresy: HeresyMatch | None, closed: bool) -> RejectReason | None:
-    if heresy is not None:
+    """⚠️ **확정된 일치만 거절한다**(SPEC §5.4). 지역을 못 본 교회명은 동명이교회일 수 있어
+    `heresy_flag`와 근거만 남기고 검수로 보낸다 — 등급이 `medium`이 되어 `PENDING`에 뜬다."""
+    if heresy is not None and heresy.is_conclusive:
         return RejectReason.HERESY
     return RejectReason.CLOSED if closed else None
 
