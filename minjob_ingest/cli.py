@@ -1169,7 +1169,7 @@ def _print_dedup_report(console: Console, report: DedupReport, *, dry_run: bool)
         console.field(
             "  ↳ 판단 못 함",
             console.paint(f"{uncertain}건", "yellow", "bold"),
-            note="부서 또는 접수 이메일이 갈렸다 — 사람이 본다",
+            note="부서가 여럿이거나 접수 이메일이 갈렸다 — 사람이 본다",
         )
     alone = report.count(DedupState.ALONE)
     if alone:

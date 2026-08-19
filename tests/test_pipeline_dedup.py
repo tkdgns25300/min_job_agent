@@ -277,15 +277,43 @@ def test_different_departments_are_different_seats() -> None:
     assert _states(updates) == [DedupState.ALONE, DedupState.ALONE]
 
 
-def test_a_department_named_on_one_side_only_needs_a_person() -> None:
-    """⚠️ 실측 `태평중앙교회`: CALVIN은 `사역자 모집`이라고만 하고 KBTUS는 `찬양인도`라고 했다.
+def test_a_department_named_on_one_side_only_is_the_same_seat() -> None:
+    """⚠️ **침묵은 "다른 부서"가 아니라 안 적은 것이다**(2026-08-19 실측으로 고쳤다).
 
-    같은 자리일 가능성이 높지만 **코드가 알 수 없다**. 연락처가 같아도 마찬가지다 — 같다는
-    것은 같은 자리라는 증거가 아니다(교회 대표번호를 여러 자리에 쓴다).
+    같은 공고가 여러 게시판에 올라오면 **모델이 게시판마다 부서를 다르게 뽑는다** — 2주치
+    694건에서 부서가 섞인 13묶음이 **전부 접수 이메일이 같았고**(= 같은 자리) 부서 값이 실제로
+    서로 다른 묶음은 2개뿐이었다. 섞였다는 것만으로 검수로 보내면 53건이 헛검수다.
     """
     updates = plan([_candidate(), _candidate(department=Department.WORSHIP)])
 
+    assert DedupState.DUPLICATE in _states(updates)
+    assert all("WORSHIP" in u.dedup_key for u in updates), "명시된 부서를 그 자리의 부서로 쓴다"
+
+
+def test_a_department_named_on_one_side_still_waits_when_mailboxes_differ() -> None:
+    """부서가 섞였고 **접수 메일함까지 갈리면** 가를 근거가 생긴다 — 그때는 사람이 본다."""
+    updates = plan(
+        [
+            _candidate(contact_email="one@x.kr"),
+            _candidate(contact_email="two@x.kr", department=Department.WORSHIP),
+        ]
+    )
+
     assert _states(updates) == [DedupState.UNCERTAIN, DedupState.UNCERTAIN]
+
+
+def test_two_named_departments_plus_silence_needs_a_person() -> None:
+    """⚠️ 명시된 부서가 **둘 이상**인데 말하지 않은 글이 있으면, 그 글이 어느 자리에 붙는지
+    알 방법이 없다 — 그건 사람이 정한다."""
+    updates = plan(
+        [
+            _candidate(department=Department.CHILDREN),
+            _candidate(department=Department.YOUTH),
+            _candidate(),
+        ]
+    )
+
+    assert _states(updates) == [DedupState.UNCERTAIN] * 3
 
 
 def test_only_the_others_wait_when_we_cannot_tell() -> None:
@@ -297,6 +325,7 @@ def test_only_the_others_wait_when_we_cannot_tell() -> None:
     updates = plan(
         [
             _candidate(department=Department.WORSHIP, description="찬양인도 사역자를 모십니다."),
+            _candidate(department=Department.CHILDREN),
             _candidate(),
         ]
     )
@@ -304,17 +333,24 @@ def test_only_the_others_wait_when_we_cannot_tell() -> None:
         update.verdict.review_status.value for update in updates if update.verdict is not None
     )
 
-    assert statuses == ["APPROVED", "PENDING"], "대표만 그대로 나가고 나머지가 기다린다"
+    assert statuses == ["APPROVED", "PENDING", "PENDING"], "대표만 그대로 나가고 나머지가 기다린다"
 
 
-def test_an_uncertain_pair_can_be_found_by_the_shared_prefix() -> None:
+def test_an_uncertain_group_can_be_found_by_the_shared_prefix() -> None:
     """키는 각자 제 부서를 말한다(거짓말하지 않는다) — 함께 찾는 것은 앞 3조각으로 한다."""
-    updates = plan([_candidate(), _candidate(department=Department.WORSHIP)])
+    updates = plan(
+        [
+            _candidate(),
+            _candidate(department=Department.WORSHIP),
+            _candidate(department=Department.CHILDREN),
+        ]
+    )
     keys = {update.dedup_key for update in updates}
 
     assert keys == {
         "장성제일교회:JEONNAM:ASSOCIATE_PASTOR:-:R1",
         "장성제일교회:JEONNAM:ASSOCIATE_PASTOR:WORSHIP:R1",
+        "장성제일교회:JEONNAM:ASSOCIATE_PASTOR:CHILDREN:R1",
     }
     assert all(key.startswith("장성제일교회:JEONNAM:ASSOCIATE_PASTOR:") for key in keys)
 

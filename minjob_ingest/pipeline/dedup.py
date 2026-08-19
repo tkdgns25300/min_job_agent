@@ -18,8 +18,8 @@ CSU 23 · DAESHIN 5 · KWANGSHIN 1). 그대로 승격하면 목록 절반이 중
     1. 후보     교회명(정규화)·지역·직분이 **다 있고 다 같아야** 같은 자리 후보다.
                 하나라도 없으면 판정하지 않는다(실측 132건 중 2건 — 지역이 없었다).
     2. 라운드   원문 게시일 순으로 놓고 직전 글과 3개월 초과로 벌어지면 새 라운드(= 재공고).
-    3. 부서     같은 값이거나 둘 다 없으면 4번으로 · 서로 다르면 다른 자리 ·
-                **섞여 있으면 사람이 본다**(`UNCERTAIN` · 일부만 부서를 적은 경우).
+    3. 부서     같은 값 · 둘 다 없음 · **한 값 + 침묵** → 4번으로(침묵은 안 적은 것이다) ·
+                서로 다른 값 → 다른 자리 · **두 값 이상 + 침묵** → 사람이 본다.
     4. 연락처   **접수 이메일**이 양쪽에 있는데 겹치지 않으면 사람이 본다(실측 1묶음).
                 전화·링크·우편은 보지 않는다 — 같은 교회라는 뜻일 뿐 자리를 가르지 못한다.
 
@@ -230,11 +230,19 @@ def _judge(seat: Seat, number: int, members: Sequence[DedupCandidate]) -> list[D
     for candidate in members:
         by_department[candidate.draft.department].append(candidate)
 
-    named = [name for name in by_department if name is not None]
-    if named and None in by_department:
-        # ⚠️ 한쪽은 부서를 말했고 한쪽은 말하지 않았다 — **같은 자리인지 코드가 알 수 없다.**
-        #    연락처가 같아도 마찬가지다(같다는 것은 증거가 아니다). 사람이 본다.
+    named = sorted((name for name in by_department if name is not None), key=_department_order)
+    silent = by_department.get(None, [])
+    if len(named) > 1 and silent:
+        # ⚠️ 명시된 부서가 **둘 이상**인데 말하지 않은 글이 있다 — 그 글이 어느 자리에 붙는지
+        #    알 방법이 없다. 사람이 본다.
         return _hold_for_review(seat, number, members)
+    if len(named) == 1 and silent:
+        # ⚠️ **침묵은 "다른 부서"가 아니라 안 적은 것이다**(2026-08-19 실측으로 고쳤다). 같은
+        #    공고가 여러 게시판에 올라오면 **모델이 게시판마다 부서를 다르게 뽑는다** — 2주치
+        #    694건에서 부서가 섞인 13묶음이 **전부 접수 이메일이 같았고**(= 같은 자리) 부서 값이
+        #    실제로 서로 다른 묶음은 2개뿐이었다. 섞였다는 것만으로 검수로 보내면 53건이 헛검수다.
+        #    명시된 부서를 그 자리의 부서로 보고, 가르는 일은 접수 이메일에 맡긴다(4단계).
+        return _judge_same_department(seat, number, named[0], members)
 
     updates: list[DedupUpdate] = []
     for department in sorted(by_department, key=_department_order):
