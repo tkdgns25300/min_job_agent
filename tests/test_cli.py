@@ -1014,7 +1014,7 @@ def test_dedup_reports_what_it_merged(
         "dedup_all",
         lambda *_a, **_k: DedupReport(
             scanned=132,
-            states={"DUPLICATE": 21, "MASTER": 17, "ALONE": 86, "UNCERTAIN": 2, "SEPARATE": 4},
+            states={"DUPLICATE": 21, "MASTER": 17, "ALONE": 86, "UNCERTAIN": 2},
             groups=17,
             unjudged=2,
             settled=1,
@@ -1028,7 +1028,6 @@ def test_dedup_reports_what_it_merged(
     assert "훑음" in shown and "132건" in shown
     assert "중복" in shown and "21건" in shown and "17개 자리" in shown
     assert "판단 못 함" in shown and "2건" in shown
-    assert "다른 자리" in shown and "4건" in shown
     assert "견줄 수 없음" in shown, "왜 이 중복이 안 잡히나에 답할 수 있어야 한다"
     assert "이미 결론" in shown, "이단·마감 거절을 자물쇠 없음과 섞어 세지 않는다"
     assert "44건 갱신" in shown

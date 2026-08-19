@@ -20,11 +20,13 @@ CSU 23 · DAESHIN 5 · KWANGSHIN 1). 그대로 승격하면 목록 절반이 중
     2. 라운드   원문 게시일 순으로 놓고 직전 글과 3개월 초과로 벌어지면 새 라운드(= 재공고).
     3. 부서     같은 값이거나 둘 다 없으면 4번으로 · 서로 다르면 다른 자리 ·
                 **섞여 있으면 사람이 본다**(`UNCERTAIN` · 일부만 부서를 적은 경우).
-    4. 연락처   같은 채널에서 양쪽 다 값이 있는데 다르면 **다른 자리**(실측 2묶음).
+    4. 연락처   **접수 이메일**이 양쪽에 있는데 겹치지 않으면 사람이 본다(실측 1묶음).
+                전화·링크·우편은 보지 않는다 — 같은 교회라는 뜻일 뿐 자리를 가르지 못한다.
 
-⚠️ **연락처는 가르는 데만 쓴다.** 다르면 지원할 곳이 다르니 다른 자리지만, **같다고 같은
-자리는 아니다**(교회 대표번호를 여러 자리에 쓴다). 그래서 3번에서 부서를 한쪽만 말한 묶음은
-연락처가 같아도 사람에게 넘긴다.
+⚠️ **연락처 중 접수 이메일만 본다**(운영자 결정 2026-08-19). 자물쇠에서 이미 같은 교회임을
+확인했으므로 전화·홈페이지·교회 주소가 겹친다는 것은 "같은 교회"라는 뜻일 뿐이고, 다르다는 것도
+자리를 가르지 못한다 — 게시판마다 대표번호와 담당자 휴대폰을 달리 적는다(실측: 그 셋으로 가르니
+11묶음 중 10개가 잘못 갈렸다). 반면 접수 이메일은 담당자별로 달라 자리를 가른다.
 
 ⚠️ **제목은 보지 않는다**(2026-08-17 결정). 게시판을 넘으면 같은 자리도 제목이 다르고
 (`이스탄불한인교회 담임목사 청빙` / `이스탄불 한인교회(초교파)에서 담임목사를 청빙합니다`),
@@ -77,23 +79,9 @@ NO_DEPARTMENT: Final = "-"
 #: 일반직은 직분이 없고 직무가 있다. 자유 텍스트라 공백·기호를 떼서 쓴다.
 _ROLE_PREFIX: Final = "ROLE:"
 
-#: 충돌을 볼 지원 채널. ⚠️ `contact_post`는 **없다** — 검산을 거치지 않는 조립 칸이라
-#: (SPEC §5.5b) 어긋남이 모델 탓인지 원문 탓인지 구분되지 않는다.
-_MAIL_CHANNEL: Final = "contact_email"
-_LINK_CHANNEL: Final = "contact_link"
-_TEL_CHANNEL: Final = "contact_tel"
-
 #: 한 칸에 **여러 곳이 들어간다** — 연락처는 조립 칸이라 원문에 둘이 적혀 있으면 둘 다 담긴다
-#: (실측 `02-599-0056, 010-4874-9191`). 그래서 조각으로 쪼개 **겹치는지**를 본다.
+#: (실측 `apply@x.org, office@x.org`). 그래서 조각으로 쪼개 **겹치는지**를 본다.
 _MAIL_TOKEN: Final = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
-_URL_TOKEN: Final = re.compile(r"(?:https?://)?[\w-]+(?:\.[\w-]+)+(?:/[^\s,;]*)?")
-#: 링크에서 떼는 표기 차이. `http://www.dech.or.kr/`와 `www.dech.or.kr`는 같은 곳인데
-#: 그대로 견주면 다른 값이 되어 **같은 자리가 갈린다**(2026-08-17 검수에서 잡았다).
-_URL_NOISE: Final = re.compile(r"^(?:https?://)?(?:www\.)?")
-_TEL_TOKEN: Final = re.compile(r"\d[\d\-().]*\d")
-#: 전화번호로 볼 최소 자릿수. `010 4874 9191`처럼 공백으로 끊긴 표기에서 `010`·`4874`가
-#: 번호로 오해되면 겹치는 번호가 없다고 판정된다 — 그런 값은 **아예 안 세는** 쪽이 안전하다.
-_TEL_MIN_DIGITS: Final = 7
 
 #: 이 이유로 거절된 행은 판정에서 뺀다 — 이미 결론이 난 행이다.
 #: ⚠️ `DUPLICATE`는 여기 **없다**: 지난 실행이 내린 우리 판정이라 매번 처음부터 다시 본다.
@@ -265,14 +253,11 @@ def _judge_same_department(
     key = dedup_key(seat, department, round_number=number)
     if len(members) == 1:
         return [_restore(members[0], key, DedupState.ALONE)]
-    if _contacts_clash(members):
-        # ⚠️ 지원할 곳이 다르면 다른 자리다(실측: 광림교회 청장년부/교회학교 — 담당자·마감·
-        #    이메일이 전부 달랐다).
-        # ⚠️ **묶음 전체를 가른다** — 여럿 중 하나만 어긋나는 경우를 가려내지 않는다. 실측에서
-        #    그 모양은 방배교회 11건 하나였고(하나가 번호를 더 적었다), 원인이 비교 방식이라
-        #    `_tokens_clash`가 해결했다 — 그 뒤로는 0건이다. 남는 위험은 중복이 남는 것뿐이고
-        #    자리는 사라지지 않으므로, 근거가 다시 생길 때까지 갈라내지 않는다.
-        return [_restore(candidate, key, DedupState.SEPARATE) for candidate in members]
+    if _mailboxes_differ(members):
+        # ⚠️ 접수 메일함이 다르면 **다른 자리일 수 있다** — 그런데 확정할 수는 없다(한 담당자가
+        #    메일을 바꿔 올렸을 수도 있다). 자동으로 가르면 중복이 남고 자동으로 합치면 자리가
+        #    사라지므로 **사람이 정한다**(운영자 결정 2026-08-19).
+        return _hold_for_review(seat, number, members)
     if _anchors(members) > 1:
         # ⚠️ 사람이 이미 본 행이 둘 이상이면 정리도 사람이 한다 — 어느 쪽을 내릴지 우리가
         #    고를 수 없고(둘 다 승인·게재됐을 수 있다) 판정을 쓸 권한도 없다.
@@ -409,18 +394,25 @@ def _completeness(draft: ReviewData) -> int:
     )
 
 
-def _contacts_clash(members: Sequence[DedupCandidate]) -> bool:
-    """지원 채널이 서로 **겹치지 않는 곳**을 가리키나 — 채널마다 따로 본다.
+def _mailboxes_differ(members: Sequence[DedupCandidate]) -> bool:
+    """**접수 메일함이 서로 다른가** — 그때만 다른 자리일 수 있다.
 
-    ⚠️ **한쪽만 적은 것은 근거가 아니다**(실측 3묶음: 전화는 같은데 이메일을 한쪽만 적었다).
-    ⚠️ **한쪽이 더 많이 적은 것도 근거가 아니다**(실측 2026-08-17: `02-599-0056, 010-4874-9191`
-    와 `010-4874-9191`은 같은 자리인데, 통째로 견줘서 방배교회 11건이 갈라졌다). 겹치는
-    조각이 하나라도 있으면 같은 곳으로 본다.
+    ⚠️ **전화·링크·우편은 보지 않는다**(운영자 결정 2026-08-19 · 실측으로 고쳤다). 자물쇠에서
+    이미 **같은 교회**임을 확인했으므로, 교회 대표번호·홈페이지·교회 주소가 겹친다는 것은
+    "같은 교회"라는 뜻일 뿐 **자리를 가르는 정보가 없다**. 반면 접수 이메일은 담당자별로 달라
+    자리를 가른다(실측: 같은 교회의 두 자리가 `yoon4970` / `klmchwang93`으로 갈렸다).
+
+    그 셋을 어긋남으로 세면 **같은 자리가 갈라진다** — 실측 11묶음 중 10개가 그렇게 갈렸다:
+    전화 8묶음(게시판마다 대표번호·담당자 휴대폰을 달리 적는다 · 광진교회 6건이 6자리로),
+    링크 2묶음(`www.semmul.org`/`http://www.semmul.or` 오타 · 링크 칸에 교회 이름이 들어옴).
+
+    ⚠️ 반대로 전화가 겹치는 것을 "같은 자리" 근거로 쓰면 더 위험하다 — 대표번호 하나를 두 자리에
+    다 적고 담당자 이메일만 다른 교회에서 **한 자리가 사라진다.**
+
+    ⚠️ **한쪽만 적은 것도, 한쪽이 더 많이 적은 것도 근거가 아니다**(실측: 접수용·문의용 이메일을
+    함께 적는다). 겹치는 조각이 하나라도 있으면 같은 곳으로 본다.
     """
-    return any(
-        _tokens_clash([extract(candidate.draft) for candidate in members])
-        for extract in (_mails, _links, _tels)
-    )
+    return _tokens_clash([_mails(candidate.draft) for candidate in members])
 
 
 def _tokens_clash(values: Sequence[frozenset[str]]) -> bool:
@@ -431,15 +423,6 @@ def _tokens_clash(values: Sequence[frozenset[str]]) -> bool:
 
 def _mails(draft: ReviewData) -> frozenset[str]:
     return _tokens(draft.contact_email, _MAIL_TOKEN)
-
-
-def _links(draft: ReviewData) -> frozenset[str]:
-    return frozenset(_URL_NOISE.sub("", token) for token in _tokens(draft.contact_link, _URL_TOKEN))
-
-
-def _tels(draft: ReviewData) -> frozenset[str]:
-    tokens = (re.sub(r"\D", "", token) for token in _TEL_TOKEN.findall(draft.contact_tel or ""))
-    return frozenset(token for token in tokens if len(token) >= _TEL_MIN_DIGITS)
 
 
 def _tokens(value: str | None, pattern: re.Pattern[str]) -> frozenset[str]:

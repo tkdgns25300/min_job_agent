@@ -1030,10 +1030,10 @@ def test_a_duplicate_verdict_and_a_duplicate_rejection_are_one_thing() -> None:
 
 
 def test_the_other_verdicts_leave_the_row_alive() -> None:
-    """`MASTER`·`SEPARATE`·`UNCERTAIN`은 거절이 아니다 — 그 행은 공개될 수 있다."""
+    """`ALONE`·`MASTER`·`UNCERTAIN`은 거절이 아니다 — 그 행은 공개될 수 있다."""
     key = "성원교회:DAEGU:ASSOCIATE_PASTOR:-:R1"
 
-    for state in (DedupState.ALONE, DedupState.MASTER, DedupState.SEPARATE, DedupState.UNCERTAIN):
+    for state in (DedupState.ALONE, DedupState.MASTER, DedupState.UNCERTAIN):
         record = replace(_review_data(), dedup_key=key, dedup_state=state)
 
         assert record.reject_reason is None

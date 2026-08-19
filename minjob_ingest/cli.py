@@ -1169,11 +1169,8 @@ def _print_dedup_report(console: Console, report: DedupReport, *, dry_run: bool)
         console.field(
             "  ↳ 판단 못 함",
             console.paint(f"{uncertain}건", "yellow", "bold"),
-            note="부서를 한쪽만 말했다 — 사람이 본다",
+            note="부서 또는 접수 이메일이 갈렸다 — 사람이 본다",
         )
-    separated = report.count(DedupState.SEPARATE)
-    if separated:
-        console.field("다른 자리", f"{separated}건", note="지원 연락처가 달랐다 — 둘 다 남긴다")
     alone = report.count(DedupState.ALONE)
     if alone:
         console.field("혼자", f"{alone}건", note="같은 자리가 없다")

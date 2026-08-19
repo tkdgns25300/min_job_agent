@@ -322,11 +322,13 @@ def test_an_uncertain_pair_can_be_found_by_the_shared_prefix() -> None:
 # ── 연락처 ────────────────────────────────────────────────────────
 
 
-def test_two_seats_with_different_contacts_stay_apart() -> None:
-    """⚠️ 실측 `광림교회`: MTU 한 게시판에 같은 날 두 건이 올라왔는데 청장년부와 교회학교였다.
+def test_two_different_mailboxes_go_to_a_person() -> None:
+    """⚠️ 실측 `광림교회`: 한 게시판에 같은 날 두 건이 올라왔는데 청장년부와 교회학교였고
+    **접수 이메일이 달랐다**(`klmchwang93` / `yoon4970`). 부서가 둘 다 비어 있어 3단계는 못 잡는다.
 
-    담당자·마감일·이메일이 전부 달랐다 — 합쳤다면 지원자가 다른 부서에 다른 담당자에게
-    지원할 기회가 사라진다. 부서가 둘 다 비어 있어 3단계는 이걸 못 잡는다.
+    ⚠️ **자동으로 가르지 않는다**(운영자 결정 2026-08-19) — 담당자가 메일을 바꿔 올렸을 수도
+    있어 확정할 수 없다. 자동으로 가르면 중복이 남고 자동으로 합치면 자리가 사라지므로 사람이
+    정한다. 어느 쪽이든 대표 하나는 그대로 공개된다.
     """
     updates = plan(
         [
@@ -335,11 +337,10 @@ def test_two_seats_with_different_contacts_stay_apart() -> None:
         ]
     )
 
-    assert _states(updates) == [DedupState.SEPARATE, DedupState.SEPARATE]
-    for update in updates:
-        assert update.verdict is not None
-        assert update.verdict.reject_reason is None, "둘 다 그대로 살아 있다"
-        assert update.verdict.review_status is ReviewStatus.APPROVED
+    assert _states(updates) == [DedupState.UNCERTAIN, DedupState.UNCERTAIN]
+    assert all(u.verdict is None or u.verdict.reject_reason is None for u in updates), (
+        "둘 다 거절되지 않는다"
+    )
 
 
 def test_a_channel_only_one_side_filled_is_not_evidence() -> None:
@@ -372,16 +373,21 @@ def test_listing_one_more_number_is_not_evidence() -> None:
     assert DedupState.DUPLICATE in _states(updates)
 
 
-def test_two_numbers_that_share_nothing_are_two_seats() -> None:
-    """겹치는 번호가 하나도 없으면 지원할 곳이 다르다(실측 `광림교회`)."""
+def test_a_different_phone_number_is_not_a_different_seat() -> None:
+    """⚠️ **전화는 보지 않는다**(운영자 결정 2026-08-19 · 실측으로 고쳤다).
+
+    자물쇠에서 이미 같은 교회임을 확인했으므로 전화가 겹친다는 것은 "같은 교회"라는 뜻일 뿐이고,
+    반대로 다르다는 것도 자리를 가르지 못한다 — 게시판마다 **대표번호와 담당자 휴대폰을 달리
+    적는다**(실측: `광진교회` 6건이 이메일은 같은데 번호가 셋으로 갈려 6자리가 됐다).
+    """
     updates = plan(
         [
             _candidate(contact_email=None, contact_tel="010-4152-6410"),
-            _candidate(contact_email=None, contact_tel="010-7122-4970"),
+            _candidate(contact_email=None, contact_tel="02-2625-0761"),
         ]
     )
 
-    assert _states(updates) == [DedupState.SEPARATE, DedupState.SEPARATE]
+    assert DedupState.DUPLICATE in _states(updates)
 
 
 def test_a_number_broken_by_spaces_is_not_compared() -> None:
@@ -453,16 +459,17 @@ def test_the_same_link_written_differently_is_one_place(left: str, right: str) -
     assert DedupState.DUPLICATE in _states(updates)
 
 
-def test_two_different_apply_links_are_two_seats() -> None:
-    """지원 양식이 다르면 지원할 곳이 다르다."""
+def test_a_different_link_is_not_a_different_seat() -> None:
+    """⚠️ **링크도 보지 않는다** — 표기와 오타가 갈린다(실측 `샘물교회`: `www.semmul.org` /
+    `http://www.semmul.or`(오타) / `부곡교회`: 링크 칸에 교회 이름이 들어왔다)."""
     updates = plan(
         [
-            _candidate(contact_email=None, contact_link="https://forms.gle/abc"),
-            _candidate(contact_email=None, contact_link="https://forms.gle/xyz"),
+            _candidate(contact_email=None, contact_link="https://semmul.org"),
+            _candidate(contact_email=None, contact_link="https://semmul.or"),
         ]
     )
 
-    assert _states(updates) == [DedupState.SEPARATE, DedupState.SEPARATE]
+    assert DedupState.DUPLICATE in _states(updates)
 
 
 def test_a_contact_that_does_not_look_like_one_is_still_compared() -> None:
@@ -479,7 +486,7 @@ def test_a_contact_that_does_not_look_like_one_is_still_compared() -> None:
         ]
     )
 
-    assert _states(updates) == [DedupState.SEPARATE, DedupState.SEPARATE]
+    assert _states(updates) == [DedupState.UNCERTAIN, DedupState.UNCERTAIN]
 
 
 def test_the_postal_address_does_not_split_a_group() -> None:
