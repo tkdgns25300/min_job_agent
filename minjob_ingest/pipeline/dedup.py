@@ -242,11 +242,11 @@ def _judge(seat: Seat, number: int, members: Sequence[DedupCandidate]) -> list[D
         #    694건에서 부서가 섞인 13묶음이 **전부 접수 이메일이 같았고**(= 같은 자리) 부서 값이
         #    실제로 서로 다른 묶음은 2개뿐이었다. 섞였다는 것만으로 검수로 보내면 53건이 헛검수다.
         #    명시된 부서를 그 자리의 부서로 보고, 가르는 일은 접수 이메일에 맡긴다(4단계).
-        return _judge_same_department(seat, number, named[0], members)
+        return _judge_one_seat(seat, number, named[0], members)
 
     updates: list[DedupUpdate] = []
     for department in sorted(by_department, key=_department_order):
-        updates.extend(_judge_same_department(seat, number, department, by_department[department]))
+        updates.extend(_judge_one_seat(seat, number, department, by_department[department]))
     return updates
 
 
@@ -254,10 +254,14 @@ def _department_order(department: Department | None) -> str:
     return department.value if department is not None else ""
 
 
-def _judge_same_department(
+def _judge_one_seat(
     seat: Seat, number: int, department: Department | None, members: Sequence[DedupCandidate]
 ) -> list[DedupUpdate]:
-    """부서까지 같은 후보들 — 연락처가 뒤집지 않으면 같은 자리다(SPEC §4.1 4단계)."""
+    """한 자리로 볼 후보들 — **접수 이메일이 뒤집지 않으면** 같은 자리다(SPEC §4.1 4단계).
+
+    ⚠️ `department`는 이 자리의 부서이고, 부서를 **말하지 않은 글도 함께 받는다**(3단계에서
+    침묵을 그 부서로 읽는다) — 그래서 "부서가 같은 것끼리"가 아니라 "한 자리"다.
+    """
     key = dedup_key(seat, department, round_number=number)
     if len(members) == 1:
         return [_restore(members[0], key, DedupState.ALONE)]
@@ -309,6 +313,9 @@ def _hold_for_review(
 
     같은 자리였다면 어차피 하나만 공개돼야 하니 결과가 맞고, 다른 자리였다면 운영자가 승인하면
     된다. 전원을 검수로 돌리면 같은 자리인 경우에도 두 건을 보게 된다.
+
+    여기로 오는 길은 셋이다: 부서가 **여러 값으로 갈렸는데 침묵도 섞였다**(3단계) · **접수
+    메일함이 다르다**(4단계) · **사람이 이미 본 행이 둘 이상**이다(정리도 사람이 한다).
     """
     master = max(members, key=_master_priority)
     updates: list[DedupUpdate] = []
