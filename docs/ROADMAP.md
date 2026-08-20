@@ -256,7 +256,8 @@
 
 ### 1-6. DB 전환 (JSON → Supabase)
 > 스키마가 여기서 굳음(그 전까진 JSON).
-- [ ] 마이그레이션 — `source_data`·`review_data`·`source_health`·`crawl_run`(+ RLS 운영자 전용)
+- [x] **마이그레이션** — `supabase/migrations/20260820234505_init.sql`(4테이블 + 제약 + 인덱스 · 2026-08-20). 실원장 1,451행을 로컬 Postgres 15에 넣어 검증(위반 0건 · 어긋난 값 12종은 거부). 적용은 Supabase SQL Editor 붙여넣기(운영자 결정) → 나중에 CLI로 옮길 때 `supabase migration repair --status applied 20260820234505`로 이력에 등록해야 두 번 올라가지 않는다
+- [ ] **RLS 정책(staging 4테이블) + 크롤러 롤** — 별도 마이그레이션. ⚠️ 정책 없이 `ENABLE`하면 min_job admin 검수 화면이 통째로 막힌다(그래서 init.sql에 넣지 않았다). 여기서 **크롤러가 어느 롤로 붙는지**를 정한다 — 전권 `service_role`로 붙으면 SPEC §8의 컬럼 단위 GRANT가 아무것도 막지 못한다. `jobs` 권한 자체는 1-6b
 - [ ] Store를 Supabase 구현으로 스왑(파이프라인 코드 불변) + 스모크 테스트
 - [ ] **운영자 전용 쓰기 경로 2개를 Store에 추가**(JSON 단계에선 파일 직접 편집으로 대체 중):
   ① opt-out·법적 삭제(write-once 예외 — SPEC §6 ①), ② 구조화 시도 횟수 리셋

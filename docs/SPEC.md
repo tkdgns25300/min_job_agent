@@ -479,7 +479,7 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 | 이단 | `heresy_flag`·`heresy_evidence` |
 | 검수 이력 **없음** | ⚠️ **검산이 무엇을 비웠는지는 저장하지 않는다**(§5.5b). admin에서 빈 칸을 보면 "원문에 없었다"와 "검산이 지웠다"를 구분할 수 없다 — 실측에서 비운 것이 42개 중 1개라 지금은 두지만, 검수가 답답해지면 `scrubbed_fields text[]`를 추가한다 |
 | 검수 메타 | `confidence`(high/medium/low) · **`dedup_key`·`dedup_state`**(§4.1 · ALONE/MASTER/DUPLICATE/UNCERTAIN) · `review_status`(PENDING/APPROVED/REJECTED) + **`reject_reason`**(DUPLICATE/HERESY/**CLOSED**/OPERATOR) · **`published_job_id`** FK→jobs(공개 결과 · §4.2가 앵커를 가리고 §4.2b가 이걸로 끌어올림 대상을 찾는다) · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
-| 미사용 | ~~`matched_church_id`~~ — 교회 행을 만들지 않기로 해(2026-08-06 · §6 승격 목적지) **채우지 않는다**. 컬럼은 남겨 두되 값은 항상 NULL이다 |
+| 교회 연결 **없음** | ⚠️ ~~`matched_church_id`~~는 2026-08-20에 **컬럼째 삭제**했다(그전엔 "남겨 두되 항상 NULL"). **claim은 min_job이 `jobs.church_id`에 쓴다**(§8) — 우리가 저장할 것이 없다. 원래는 공개 **전에** 교회명으로 어느 교회 행일지 미리 추측해 이어두려던 칸이었고, (교회명+광역) 1,203묶음 중 67개가 연락처가 없어 동명이교회를 가릴 수 없어 폐기됐다(2026-08-06) |
 
 > 게이트1 `NO`(개교회 아님·비채용)는 review_data를 만들지 않는다(§1·§5.1) — 대신 `source_data.structured_at`이 기록돼 재구조화 대상에서 빠진다(§4). `UNCERTAIN`은 confidence=low로 여기 온다.
 > ⚠️ **`source_url`을 복사해 둔다**(2026-08-05 추가). 정규화상으로는 `source_data_id`로 JOIN하면 되니 중복이지만, min_job `jobs.source_url`은 **원문 재게시 금지·출처 표기의 핵심 필드**다 — 승격 코드가 JOIN을 잊으면 출처 없이 공개된다. **승격이 이 테이블 하나만 보고 끝나게** 한다(빈 문자열도 거부).
@@ -646,8 +646,12 @@ GRANT UPDATE (posted_at) ON jobs TO crawler;
 1. ✅ `jobs`에 **`job_kind`(MINISTRY/GENERAL)** + **`role`** — min_job `types/domain.ts`에 반영됨. (목록 UI 필터·마이그레이션 SQL은 min_job 소관·진행 중)
 2. ✅ `jobs`에 **`contact`** + **정책 갱신**("지원용 공개 연락처는 공개") — min_job `types/domain.ts`·`CLAUDE.md`에 반영됨.
 3. ✅ `constants/domain.ts` **`KIJANG` 제거 완료** — min_job 교단 **10키**(9대형+ETC) 확인. → CONTRACT §1의 "11개에서 제거만 하면" 표현은 폐기.
-4. ⬜ **마이그레이션 SQL**(`churches`/`jobs` + staging 4테이블)은 미작성 — staging은 **이 리포 소유**(§8 위), min_job 테이블은 min_job 소관.
-   ⚠️ staging 마이그레이션에 **반드시 넣을 CHECK**: `review_data`의 `(review_status = 'REJECTED') = (reject_reason IS NOT NULL)` — 이유는 §6 ②.
+4. ✅ **마이그레이션 SQL 작성 완료**(2026-08-20) — staging 4테이블은 `supabase/migrations/20260820234505_init.sql`(이 리포 소유), min_job 7테이블은 `min_job/supabase/migrations/20260820231650_init.sql`(min_job 소관). **min_job 것이 먼저 적용돼야 한다** — `review_data.published_job_id`가 `jobs`를 참조하고, 파일명 타임스탬프가 그 순서를 담는다.
+   - 담은 것: CREATE TABLE + 제약 + 인덱스. **RLS 정책·GRANT는 다음 마이그레이션**이다 — 정책 없이 RLS를 켜면 min_job admin 검수 화면이 통째로 빈 화면이 되고 원인을 찾기 어렵다.
+   - ✅ **반드시 넣을 CHECK가 들어갔다**: `(review_status = 'REJECTED') = (reject_reason IS NOT NULL)`(이유는 §6 ②) + 불변식 8개 + enum 16개 + 배열 원소 2개.
+   - ⚠️ **배열 원소도 검사한다**(`job_kind`·`position`) — min_job jobs와 다른 선택이다. 허용값 밖이 들어오면 우리가 그 행을 읽을 때 `SerdeError`가 나고 **그 공고가 조용히 사라진다**(위 CHECK와 같은 이유).
+   - **native enum 타입을 쓰지 않는다** — Postgres에 `ALTER TYPE ... DROP VALUE`가 없고 순서도 못 바꾼다. 우리 어휘는 3주에 6번 바뀌었고 그중 둘이 제거였다(`KIJANG`·`SEPARATE`). `text + CHECK`는 갈 때 기존 행까지 검사해준다.
+   - 검증(2026-08-20): 로컬 Postgres 15에 min_job → 우리 순서로 적용한 뒤 **실원장 1,451행**(`crawl_run` 2 · `source_data` 725 · `review_data` 694 · `source_health` 30)을 넣어 위반 0건. 반대로 어긋난 값 12종은 전부 거부됨.
 
 ### 이 리포 문서 갱신 (✅ 완료 2026-07-28 — SPEC 정본에 맞춰 반영)
 4. ✅ **`source_key`**: DB 저장은 **대문자 정규화**(`YTUS`)로 규칙 명문화(CONTRACT §4 노트), 문서의 소문자는 가독용 라벨로 유지.

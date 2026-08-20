@@ -73,7 +73,8 @@ pipeline → Store(프로토콜) → [Phase 1] JsonStore(로컬) → [1-6] Supab
 ```
 
 - **레코드 필드명 = SPEC §6 컬럼명(snake_case)과 동일**하게 둔다 → 전환이 "그대로 INSERT"가 된다. *(현 TS 뼈대는 camelCase + 스토어에서 매핑하는 구조다 — **Python 이식 때 snake_case로 정리**해 매핑 계층을 없앤다.)*
-- 스키마가 굳기 전까지 마이그레이션을 만들지 않는다(ROADMAP 1-6).
+- ✅ **마이그레이션 작성됨**(2026-08-20 · `supabase/migrations/`). **스키마 정본은 SPEC §6이고 SQL은 그 구현**이다 — 컬럼 집합은 `models.py`, enum 허용값은 `domain.py`와 대조해 맞춘다(허용값 정본은 CONTRACT §1 · DB CHECK는 2차 방어선).
+- ⚠️ **이 리포에서 `supabase db diff`를 쓰지 않는다.** min_job과 Supabase 프로젝트를 공유하는데 diff는 상대 리포의 마이그레이션을 모른다 → min_job 7테이블을 "없어야 할 것"으로 보고 `DROP TABLE jobs`를 만든다.
 
 ## Directory
 
@@ -98,6 +99,7 @@ minjob_ingest/                 ★ 패키지 (= import 이름)
 config/
 ├── sources.json              ★ 소스 레지스트리 (전송 정본 · 라이브 검증값)
 └── heresy-ref.json           이단 참고 목록 (**커밋 금지** — 실명 자료 · 사람이 관리)
+supabase/migrations/           ★ staging 4테이블 스키마 (SPEC §6의 구현 · 적용은 운영자)
 scripts/                       일회성 이관·정리 스크립트 (CLI 명령이 아니다)
 tests/{fixtures/ ← gitignored, test_*.py}
 data/                          로컬 저장소 (gitignored)

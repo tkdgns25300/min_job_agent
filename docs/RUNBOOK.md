@@ -218,7 +218,47 @@ minjob-ingest snapshot --source YTUS       🌐  한 곳만
 .venv/bin/python scripts/migrate_posted_on.py --write   # 옛 파일(version 1) → version 2
 ```
 
+```bash
+.venv/bin/python scripts/drop_matched_church_id.py --write   # 없어진 칸을 원장에서 뗀다
+```
+
+⚠️ **이미 돌렸다**(2026-08-20 · 694행). `matched_church_id`를 삭제했는데(claim은 min_job이 `jobs.church_id`에 쓴다) 저장된 행에 키가 남아 있으면 **잉여 컬럼으로 거부돼 원장을 통째로 읽을 수 없다**.
+
 ⚠️ **`data/` 파일이 version 1이면 모든 명령이 거부한다.** 게시일이 필수가 되면서(2026-08-14) 옛 파일을 그냥 두면 그 공고가 수집도 구조화도 안 되는 **유령**이 되기 때문이다. 이 스크립트가 `PCKWORLD` 게시일을 썸네일 파일명에서 채우고 버전을 올린다(게시판에 요청하지 않는다).
+
+## DB 스키마 — 한 번만 (Supabase)
+
+```bash
+# 붙여넣는 순서가 정해져 있다 — review_data가 jobs를 참조한다
+#  1) ../min_job/supabase/migrations/20260820231650_init.sql   (7테이블)
+#  2)   supabase/migrations/20260820234505_init.sql            (staging 4테이블)
+```
+
+Supabase 대시보드 → SQL Editor에 **위 순서로** 붙여넣는다. 2번을 먼저 넣으면 `jobs`가 없어서 실패한다.
+
+⚠️ **RLS·GRANT는 아직 없다**(ROADMAP 1-6). 지금 스키마는 테이블·제약·인덱스뿐이다 — 정책 없이 RLS를 켜면 min_job admin 검수 화면이 통째로 빈 화면이 된다.
+
+⚠️ **나중에 `supabase db push`로 옮길 때** 손으로 붙여넣은 것을 이력에 등록해야 두 번 올라가지 않는다:
+```bash
+supabase migration repair --status applied 20260820234505
+```
+
+⚠️ **이 리포에서 `supabase db diff`를 쓰지 말 것.** min_job과 프로젝트를 공유하는데 diff는 상대 리포의 마이그레이션을 몰라서 `DROP TABLE jobs`를 만들어낸다.
+
+### 공고 하나를 지울 때 (opt-out · 법적 삭제)
+
+**순서가 정해져 있다** — 거꾸로 하면 FK가 막는다. 막는 것이 안전장치다:
+
+```sql
+-- 1) 공개돼 있으면 먼저 내린다. 이게 정작 지워야 하는 것이다
+delete from jobs where id = (select published_job_id from review_data where source_data_id = '<id>');
+-- 2) 초안 (연락처·교회명·주소 등 추출된 개인정보가 여기 있다)
+delete from review_data where source_data_id = '<id>';
+-- 3) 원자료
+delete from source_data where id = '<id>';
+```
+
+⚠️ **`source_data`부터 지우려 하면 실패한다**(`review_data`가 참조 · restrict). 그게 의도다 — `cascade`였다면 초안이 조용히 사라지면서 `published_job_id`도 함께 사라져 **공개된 공고가 아무도 모르게 남는다**.
 
 ## 게이트 — 커밋 전 4개 통과
 
