@@ -250,7 +250,7 @@ KWANGSHIN 1). 그대로 승격하면 min_job 목록 절반이 중복이 된다.
 
 ```
 대상:  review_data 에서  review_status='APPROVED'  AND  published_job_id IS NULL
-채움:  §6 승격 목적지의 33칸 · church_id=NULL · source='OPERATOR' · source_url=원문 링크
+채움:  §6 승격 목적지의 35칸 · church_id=NULL · source='OPERATOR' · source_url=원문 링크
        posted_at = 그 자리 묶음의 가장 최근 게시일(§4.1)
 순서:  ⚠️ id 를 우리가 만들어 review_data.published_job_id 에 **먼저 적고** → 그 id 로 INSERT
 ```
@@ -503,7 +503,7 @@ v2 스키마: `{version, source_url, captured_on, policy, note, entries:[{name, 
 ### 승격 목적지 — `jobs` **한 테이블** (min_job DATA.md 정본)
 
 ⚠️ **승격은 크롤러가 한다**(2026-08-18 · 절차는 §4.3). 바뀐 것은 "누가 INSERT하나"뿐이고,
-아래 33칸·게이트는 그대로다.
+아래 35칸·게이트는 그대로다.
 
 ⚠️ **`churches`에는 쓰지 않는다**(2026-08-06 확정). 크롤 공고는 `church_id = NULL`로 들어가고,
 교회명은 `jobs.church_name`(텍스트)이 담는다. 그 교회가 min_job에 가입·인증한 뒤 **자기 공고를
