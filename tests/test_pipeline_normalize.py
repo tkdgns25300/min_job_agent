@@ -15,6 +15,7 @@ from minjob_ingest.pipeline.normalize import (
     address_or_none,
     clean_title,
     closed_by_board,
+    pay_note_of,
     pay_of,
     period_of,
 )
@@ -44,6 +45,85 @@ def test_a_pay_phrase_becomes_manwon(given: str | None, low: int | None, high: i
     맡기고 환산은 여기서 한다 — 그러면 답이 흔들릴 자리가 없다.
     """
     assert pay_of(given) == (low, high)
+
+
+@pytest.mark.parametrize(
+    ("given", "why"),
+    [
+        (
+            "전도사 월 160, 강도사 월 170, 목사 월 180",
+            "자리가 셋이라 앞의 둘만 남으면 180이 사라진다",
+        ),
+        ("110만원 (졸업자 : 120만원)", "조건이 다른 두 금액이지 협상 범위가 아니다"),
+        ("1년차 파트전도사 110만원, 최대 450만원 장학금 지급", "450은 장학금이다"),
+        ("교회에서 정한 연봉제(전임전도사는 3000만원, 부목사는 3600만원)", "자리가 둘이다"),
+    ],
+    ids=["금액 셋", "조건부", "장학금 섞임", "자리 둘"],
+)
+def test_amounts_without_a_range_mark_are_not_a_range(given: str, why: str) -> None:
+    """⚠️ **원문이 범위라고 적지 않았으면 범위로 만들지 않는다**(2026-08-20 실측으로 고쳤다).
+
+    앞의 두 금액을 최소·최대로 삼던 규칙이 실데이터에서 틀린 값을 만들었다: `160~170`으로
+    저장돼 **목사 180이 사라졌고**, 장학금 450이 **사례비 최대**가 됐다(화면에 `110~450만원`).
+    19건 중 9건이 이 모양이었다.
+
+    금액을 비우는 대신 `pay_note`가 원문을 담으므로(`pay_note_of`) 지원자가 보는 정보는
+    오히려 자세하다 — 빈 칸이 아니라 원문이다.
+    """
+    assert pay_of(given) == (None, None), why
+
+
+@pytest.mark.parametrize(
+    ("given", "low", "high"),
+    [
+        ("90~120만원(신대원생 등록금 일부 지원)", 90, 120),
+        ("95-100만원", 95, 100),
+        ("연 3400~3600 및 전세금 일부 지원가능", 3400, 3600),
+    ],
+    ids=["물결", "붙임표", "연봉 범위"],
+)
+def test_a_range_the_source_wrote_is_kept(given: str, low: int, high: int) -> None:
+    """교회가 `~`·`-`로 범위를 적었으면 그건 실제 범위다 — 실측 19건 중 7건이 이 모양이다."""
+    assert pay_of(given) == (low, high)
+
+
+def test_a_second_amount_alone_still_needs_the_mark() -> None:
+    """⚠️ 금액이 하나면 범위 표시가 없어도 그대로 쓴다 — 규칙이 넓어져 정상 공고를 비우면 안 된다."""
+    assert pay_of("월 250만원") == (250, None)
+    assert pay_of("부목사 기준 320만원 + 사택 전세 지원 5천만원") == (320, None), (
+        "사례비가 아닌 돈은 애초에 후보에서 빠지므로 금액이 하나다"
+    )
+
+
+# ── 금액을 못 쓸 때 원문을 남긴다 ────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("amount", "note", "expected"),
+    [
+        ("월 250만원", "교회 내규", "교회 내규"),
+        ("전도사 월 160, 강도사 월 170", None, "전도사 월 160, 강도사 월 170"),
+        ("전도사 월 160, 강도사 월 170", "내규", "내규 · 전도사 월 160, 강도사 월 170"),
+        (
+            "교회 연봉제(전임 3000, 부목사 3600)",
+            "교회 연봉제",
+            "교회 연봉제(전임 3000, 부목사 3600)",
+        ),
+        (None, "면접 시 협의", "면접 시 협의"),
+        (None, None, None),
+    ],
+    ids=["금액 살아있음", "설명 없음", "둘 다", "한쪽이 포함", "금액 없음", "빈 값"],
+)
+def test_the_pay_phrase_survives_as_a_note(
+    amount: str | None, note: str | None, expected: str | None
+) -> None:
+    """⚠️ 이게 없으면 금액을 비운 공고에서 **사례비가 통째로 사라진다** — 모델이 뽑은 표현은
+    `pay_amount`에 있지만 그 칸은 저장되지 않는다(만원 환산의 입력일 뿐이다).
+
+    ⚠️ 한쪽이 다른 쪽에 들어 있으면 긴 것만 남긴다 — 모델이 같은 문장을 두 칸에 나눠 담는 일이
+    흔해서 그대로 이으면 같은 말이 두 번 보인다.
+    """
+    assert pay_note_of(amount, note) == expected
 
 
 def test_an_absurd_amount_is_dropped() -> None:

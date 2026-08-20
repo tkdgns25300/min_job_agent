@@ -553,6 +553,27 @@ def test_the_pay_amount_is_converted_here_not_by_the_model() -> None:
     assert (extraction.pay_min, extraction.pay_max) == (3200, None)
 
 
+def test_a_pay_we_cannot_convert_is_kept_as_a_note() -> None:
+    """⚠️ 금액을 비우는 공고에서 **사례비가 통째로 사라지지 않아야 한다**(SPEC §5.6).
+
+    `pay_amount`는 저장되지 않는다(만원 환산의 입력일 뿐이다). 그래서 `pay_of`가 금액을 비울 때
+    그 표현을 `pay_note`로 옮기지 않으면 지원자가 사례비를 볼 방법이 없어진다.
+    """
+    extraction = parse_extraction(
+        _answer(pay_amount="전도사 월 160, 강도사 월 170, 목사 월 180", pay_note=None)
+    )
+
+    assert (extraction.pay_min, extraction.pay_max) == (None, None), "범위 표시가 없다"
+    assert extraction.pay_note == "전도사 월 160, 강도사 월 170, 목사 월 180"
+
+
+def test_a_convertible_pay_leaves_the_note_alone() -> None:
+    """금액을 쓸 수 있으면 설명은 모델이 준 그대로다 — 금액 표현을 덧붙이지 않는다."""
+    extraction = parse_extraction(_answer(pay_amount="월 250만원", pay_note="교회 내규"))
+
+    assert (extraction.pay_min, extraction.pay_note) == (250, "교회 내규")
+
+
 def test_a_pay_written_in_won_becomes_manwon() -> None:
     """min_job은 만원 단위로 저장한다 — 원 단위를 그대로 두면 "250만 만원"이 된다."""
     assert parse_extraction(_answer(pay_amount="2,500,000원")).pay_min == 250

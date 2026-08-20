@@ -76,6 +76,13 @@ _MONEY_UNITS: Final = frozenset({"천만원", "천만", "억원", "억", "만원
 #: 단위 없는 숫자가 이 값을 넘으면 원 단위로 적힌 것이다(`2500000` → 250만원).
 _WON_SCALE: Final = 100_000
 
+#: 원문이 **범위로 적은 표시**. 이것이 있을 때만 최대값을 만든다(`90~120만원`·`95-100만원`).
+#: ⚠️ 이 표시가 없는데 금액이 여럿이면 **범위가 아니다** — 자리마다 다른 금액이거나
+#: (`전도사 월 160, 강도사 월 170, 목사 월 180`) 사례비가 아닌 돈이 섞인 것이다
+#: (`파트전도사 110만원, 최대 450만원 장학금`). 실측 19건 중 9건이 그 모양이었고, 앞의 둘만
+#: 집어 `160~170`(180 유실)·`110~450`(장학금을 사례비로)이 저장됐다.
+_PAY_RANGE: Final = re.compile(r"\d[\d,]*\s*(?:만원|만)?\s*[~\u223c\u301c\u2013\u2014-]\s*\d")
+
 #: 사례비로 볼 하한(만원). ⚠️ 이게 없으면 **목록 번호가 금액이 된다** — `(1) 사례비는 교회
 #: 내규에 따릅니다`가 1만원으로 읽혔다(실측). 사례비가 월 10만원 아래일 수는 없다.
 MIN_PAY_MANWON: Final = 10
@@ -152,14 +159,47 @@ def pay_of(text: str | None) -> tuple[int | None, int | None]:
 
     ⚠️ **최대는 최소와 같은 주기여야 한다** — `부목사 기준 320만원 + 사택 전세 지원 5천만원`에서
     5,000을 최대로 삼으면 화면에 `월 320~5,000만원`이 뜬다(실측).
+
+    ⚠️ **범위는 원문이 범위라고 적었을 때만 만든다**(`_PAY_RANGE`). 금액이 여럿인데 그 표시가
+    없으면 **둘 다 비우고** 원문을 `pay_note`가 담는다 — 그 자리에서 금액을 고르면 틀린 값이
+    공개된다(실측: `160~170`으로 목사 180이 사라지고, 장학금 450이 사례비 최대가 됐다).
+    빈 칸이 아니라 원문이 남으므로 지원자가 보는 정보는 오히려 자세하다.
     """
     found = _money_in(text)
     if not found:
         return None, None
     low = found[0].manwon
     ceiling = MAX_PAY_MANWON if low > _MONTHLY_CEILING else _MONTHLY_CEILING
-    high = next((item.manwon for item in found[1:] if low < item.manwon <= ceiling), None)
-    return low, high
+    others = [item.manwon for item in found[1:] if low < item.manwon <= ceiling]
+    if not others:
+        return low, None
+    if _PAY_RANGE.search((text or "").replace(" ", "")) is None:
+        return None, None
+    return low, others[0]
+
+
+def pay_note_of(amount: str | None, note: str | None) -> str | None:
+    """저장할 사례비 설명. **금액을 쓸 수 없을 때 그 표현을 여기로 옮긴다.**
+
+    ⚠️ `pay_of`가 금액을 비우는 경우(범위 표시 없이 금액이 여럿 · 위)에 이 함수가 없으면
+    **사례비가 통째로 사라진다** — 모델이 뽑은 표현은 `pay_amount`에 있는데 그 칸은 저장되지
+    않는다(만원 환산의 입력일 뿐이다). 실측 19건 중 9건이 그 모양이었다.
+
+    모델이 준 설명(`교회 내규에 따름`)이 이미 있으면 **그것을 앞에 두고** 금액 표현을 잇는다 —
+    둘 다 원문이고 어느 쪽도 버릴 이유가 없다. ⚠️ 한쪽이 다른 쪽에 들어 있으면 긴 것만 남긴다:
+    모델이 같은 문장을 두 칸에 나눠 담는 일이 흔해서(`교회에서 정한 연봉제` / `교회에서 정한
+    연봉제(전임 3000, 부목사 3600)`) 그대로 이으면 같은 말이 두 번 보인다.
+    """
+    if pay_of(amount) != (None, None):
+        return note
+    parts = [value.strip() for value in (note, amount) if value and value.strip()]
+    kept = [
+        value
+        for index, value in enumerate(parts)
+        if not any(value in other for position, other in enumerate(parts) if position != index)
+    ]
+    joined = " · ".join(dict.fromkeys(kept or parts[:1]))
+    return joined or None
 
 
 def period_of(text: str | None) -> StipendPeriod | None:

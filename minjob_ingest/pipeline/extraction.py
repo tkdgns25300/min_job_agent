@@ -42,7 +42,7 @@ from minjob_ingest.domain import (
 from minjob_ingest.lib.gemini import GeminiClient
 from minjob_ingest.models import JsonValue, SourceData
 from minjob_ingest.pipeline.media import Media
-from minjob_ingest.pipeline.normalize import address_or_none, pay_of, period_of
+from minjob_ingest.pipeline.normalize import address_or_none, pay_note_of, pay_of, period_of
 
 #: 본문이 비었을 때 프롬프트에 넣는 자리표시자. 빈 칸을 그냥 두면 모델이 앞 문단을 본문으로
 #: 오해한다. ⚠️ 본문이 없는 것은 실패가 아니다 — 포스터 한 장이거나 첨부에 내용이 있다.
@@ -309,12 +309,13 @@ _PROMPT_TEMPLATE: Final = """\
 - deadline: 마감일을 **원문 표기 그대로**(`2026-08-31`·`2026년 8월 31일까지`).
   ⚠️ 연도가 없으면(`8/31`) null — 어느 해인지 지어내지 않는다.
 - pay_amount: 사례비 **금액 표현만**(`연봉 3,200이상`·`월 250만원`). ⚠️ 계산하지 않고,
-  `연봉`·`월` 같은 말이 붙어 있으면 **떼지 않는다**.
+  `연봉`·`월` 같은 말이 붙어 있으면 **떼지 않는다**. 자리마다·조건마다 다르면 원문 순서대로
+  이어 쓴다(`전도사 월 160, 강도사 월 170, 목사 월 180`) — 하나만 골라 버리지 않는다.
 - start_timing: 부임·사역 시작 시기를 **원문 표기 그대로**. 자리마다 다르면 원문 순서대로
   이어 쓴다 — 하나만 골라 버리지 않는다.
 - work_days: 나오는 요일·근무 형태를 **원문 표기 그대로**. 자리마다 다르면 원문 순서대로
   이어 쓴다(`준전임- 수, 금, 토, 주일 / 파트- 토, 주일`) — 하나만 골라 버리지 않는다.
-- pay_note: 금액이 아닌 사례비 표현(`교회 내규에 따름`).
+- pay_note: 금액이 아닌 사례비 표현(`교회 내규에 따름`·`면접 시 협의`).
 - housing_note: 사택 조건 그대로(`사택 제공`·`24평 아파트`·`전세 지원 5천만원`).
 - benefit_note: 사례비·사택 **말고** 그 밖 처우(`4대보험`·`상여금 200%`·`연차 15일`).
 - region: **교회가 있는** 광역을 우리 key로. 공고가 도시만 말해도 그 도시가 속한 광역을
@@ -504,7 +505,7 @@ def parse_extraction(payload: str) -> Extraction:
         housing_note=_short_text(decoded, "housing_note"),
         pay_min=pay_min,
         pay_max=pay_max,
-        pay_note=_short_text(decoded, "pay_note"),
+        pay_note=pay_note_of(pay_amount, _short_text(decoded, "pay_note")),
         pay_period=period_of(pay_amount),
         benefit_note=_short_text(decoded, "benefit_note"),
         work_days=_short_text(decoded, "work_days"),
