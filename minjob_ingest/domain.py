@@ -251,3 +251,16 @@ class Encoding(StrEnum):
                 return "utf-8"
             case Encoding.EUC_KR:
                 return "cp949"
+
+
+class StoreBackend(StrEnum):
+    """저장소 구현 선택(`MINJOB_STORE`).
+
+    ⚠️ **암묵 전환을 두지 않는다** — `SUPABASE_URL`이 있으면 자동으로 넘어가게 하면, 키를
+    넣어 두기만 한 상태에서 돌린 수집이 원장을 어느 쪽에 남겼는지 사람이 알 수 없다.
+    유료·되돌리기 어려운 경로는 항상 명시로 고른다(`structure`가 `--limit` 없이 거부하는 것과
+    같은 이유). 기본은 `JSON`이고, 넘어갈 때 운영자가 `.env`에 한 줄을 적는다.
+    """
+
+    JSON = "json"
+    SUPABASE = "supabase"

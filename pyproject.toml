@@ -50,6 +50,14 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RET", "ARG", "PTH", "RUF", "TID", "D
 "minjob_ingest/fetch/*" = ["TID251"]
 "tests/test_fetch*" = ["TID251"]
 "tests/test_pipeline_*" = ["TID251"]
+# ⚠️ **우리 DB는 크롤 대상이 아니다.** fetch 층의 정책(브라우저 UA 위장 · robots
+# `Crawl-delay` · 소스별 1.5초 간격)이 PostgREST 요청에 붙으면 행 하나 쓸 때마다 기다리고,
+# 우리 DB에 대고 남의 브라우저를 흉내낸다. 그래서 저장소 전송은 별도 창구를 갖는다.
+# ⚠️ **파일 하나만 푼다** — `store/*`로 넓히면 `supabase_store.py`가 전송 층을 우회할 수 있다.
+"minjob_ingest/store/postgrest.py" = ["TID251"]
+"tests/test_store_*" = ["TID251"]
+"tests/fake_postgrest.py" = ["TID251"]
+"tests/test_supabase_store.py" = ["TID251"]
 
 [tool.mypy]
 python_version = "3.12"
