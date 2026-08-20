@@ -41,7 +41,8 @@ from minjob_ingest.store.base import (
     Store,
     StoreError,
 )
-from minjob_ingest.store.json_store import _MUTABLE_STATE_FIELDS, FILE_VERSION, JsonStore
+from minjob_ingest.store.guards import MUTABLE_STATE_FIELDS
+from minjob_ingest.store.json_store import FILE_VERSION, JsonStore
 from minjob_ingest.store.serde import SerdeError, to_row
 
 FIXED_NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
@@ -311,7 +312,7 @@ _EVIDENCE_TAMPERINGS: Final = {
 
 def test_evidence_tampering_cases_cover_every_immutable_field() -> None:
     """필드가 추가되면 이 테스트가 먼저 깨진다 — 새 필드가 조용히 보호에서 빠지는 걸 막는다."""
-    immutable = {f.name for f in fields(SourceData)} - set(_MUTABLE_STATE_FIELDS) - {"id"}
+    immutable = {f.name for f in fields(SourceData)} - set(MUTABLE_STATE_FIELDS) - {"id"}
     assert immutable == set(_EVIDENCE_TAMPERINGS)
 
 

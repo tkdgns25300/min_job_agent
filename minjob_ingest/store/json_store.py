@@ -21,7 +21,6 @@ import logging
 import os
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import fields, replace
 from pathlib import Path
 from typing import Final
 
@@ -34,6 +33,12 @@ from minjob_ingest.store.base import (
     LedgerEntry,
     RequeueResult,
     StoreError,
+)
+from minjob_ingest.store.guards import (
+    REQUEUED_STATE,
+    check_only_state_changed,
+    check_state_moves_forward,
+    with_dedup,
 )
 from minjob_ingest.store.serde import (
     Row,
@@ -60,22 +65,6 @@ _SOURCE_DATA_FILE: Final = "source_data.json"
 _REVIEW_DATA_FILE: Final = "review_data.json"
 _SOURCE_HEALTH_FILE: Final = "source_health.json"
 _CRAWL_RUN_FILE: Final = "crawl_run.json"
-
-#: 되돌릴 때 처리 상태를 이 값으로 되돌린다. ⚠️ `_MUTABLE_STATE_FIELDS`와 **같은 집합**이어야
-#: 한다 — 넷째 상태 칸이 생겼을 때 여기만 모르면 그 값이 남아 재구조화가 조용히 달라진다.
-_REQUEUED_STATE: Final[Row] = {
-    "structured_at": None,
-    "structure_attempts": 0,
-    "last_structure_error": None,
-}
-
-#: `update_structure_state`가 갱신할 수 있는 **유일한** 필드들(SPEC §6 ① 처리 상태).
-#: 나머지 전부가 자동으로 write-once가 된다 — 증거 필드를 나열하는 방식이면 `SourceData`에
-#: 필드가 추가될 때마다 보호에서 빠져(예: `content_hash`) 갱신 경로로 새는 걸 못 막는다.
-_MUTABLE_STATE_FIELDS: Final = ("structured_at", "structure_attempts", "last_structure_error")
-
-if set(_REQUEUED_STATE) != set(_MUTABLE_STATE_FIELDS):  # pragma: no cover - 임포트 시 계약 검사
-    raise RuntimeError(f"되돌리기 상태가 갱신 허용 칸과 다르다: {set(_MUTABLE_STATE_FIELDS)}")
 
 #: 손상 행 보고 훅 — (파일명, 예외). 기본은 경고 로그.
 type CorruptRowHandler = Callable[[str, SerdeError], None]
@@ -159,8 +148,8 @@ class JsonStore:
             if index is None:
                 raise StoreError(f"source_data {record.id} 없음 — 상태를 갱신할 대상이 없다")
             stored = row_to_source_data(rows[index])
-            self._check_only_state_changed(stored, record)
-            self._check_state_moves_forward(stored, record)
+            check_only_state_changed(stored, record)
+            check_state_moves_forward(stored, record)
             rows[index] = to_row(record)
             self._write_rows(_SOURCE_DATA_FILE, rows)
 
@@ -188,7 +177,7 @@ class JsonStore:
                     rewritten.append(row)
                     continue
                 requeued.add(str(record.id))
-                rewritten.append({**row, **_REQUEUED_STATE})
+                rewritten.append({**row, **REQUEUED_STATE})
 
             if not requeued:
                 return RequeueResult(skipped=tuple(skipped))
@@ -273,7 +262,7 @@ class JsonStore:
                         f"초안이 없어 판정을 적용할 수 없다 (id={update.review_data_id})"
                     )
                 stored = row_to_review_data(rows[index])
-                judged = _with_dedup(stored, update)
+                judged = with_dedup(stored, update)
                 if judged == stored:
                     continue
                 rows[index] = to_row(judged)
@@ -407,58 +396,3 @@ class JsonStore:
             if row.get(key) == value:
                 return index
         return None
-
-    @staticmethod
-    def _check_only_state_changed(stored: SourceData, incoming: SourceData) -> None:
-        """원문 증거는 write-once — 갱신 경로로 바뀌면 구현이 막는다."""
-        changed = [
-            f.name
-            for f in fields(SourceData)
-            if f.name not in _MUTABLE_STATE_FIELDS
-            and getattr(stored, f.name) != getattr(incoming, f.name)
-        ]
-        if changed:
-            raise StoreError(f"원문 증거 필드는 갱신할 수 없음: {changed}")
-
-    @staticmethod
-    def _check_state_moves_forward(stored: SourceData, incoming: SourceData) -> None:
-        """구조화 상태는 단조 증가만 허용한다 — 뒤로 가면 돈과 데이터가 같이 샌다.
-
-        낡은 in-memory 레코드(attempts=0, structured_at=None)로 이 메서드를 부르면
-        (a) 판정 끝난 공고가 재구조화 대상으로 돌아가 Gemini에 재과금되고,
-        (b) 시도 횟수가 상한에 영원히 도달하지 못해 영구 실패 공고를 무한 재호출하며,
-        (c) 재구조화가 운영자 교정을 덮어쓰는 경로(`upsert_review_data`)까지 열린다.
-        운영자의 정당한 시도 리셋은 전용 경로로 들어온다(`SourceData.with_attempts_reset`).
-        """
-        if stored.has_verdict and not incoming.has_verdict:
-            raise StoreError(
-                f"source_data {stored.id}: 기록된 판정({stored.structured_at})을 지울 수 없음"
-                " — 낡은 레코드로 갱신하려는 것으로 보인다"
-            )
-        if incoming.structure_attempts < stored.structure_attempts:
-            raise StoreError(
-                f"source_data {stored.id}: 시도 횟수를 줄일 수 없음"
-                f" ({stored.structure_attempts} → {incoming.structure_attempts})"
-            )
-
-
-def _with_dedup(stored: ReviewData, update: DedupUpdate) -> ReviewData:
-    """판정을 반영한 초안. **라벨과 판정을 나눠 적용한다**(`DedupUpdate.verdict`).
-
-    ⚠️ 운영자가 손댄 행에 판정이 실려 오면 버그다 — 조용히 무시하면 사람이 한 일이 덮인 뒤에도
-    아무 표시가 없다(`pipeline/dedup`이 그런 행에는 라벨만 만든다).
-    """
-    if update.verdict is None:
-        return replace(stored, dedup_key=update.dedup_key, dedup_state=update.dedup_state)
-    if stored.is_operator_owned:
-        raise StoreError(f"운영자가 손댄 초안에는 판정을 쓸 수 없다 (id={stored.id})")
-    # ⚠️ **한 번에 바꾼다.** 라벨을 먼저 붙이면 `dedup_state=DUPLICATE`인데 아직 거절이 아닌
-    #    중간 상태가 생기고, 레코드 불변식이 그걸 막는다(`_check_dedup`) — 옳은 거부다.
-    return replace(
-        stored,
-        dedup_key=update.dedup_key,
-        dedup_state=update.dedup_state,
-        review_status=update.verdict.review_status,
-        reject_reason=update.verdict.reject_reason,
-        posted_at=update.verdict.posted_at,
-    )
