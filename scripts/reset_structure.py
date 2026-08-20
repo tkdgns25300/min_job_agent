@@ -21,7 +21,7 @@ import argparse
 from minjob_ingest.domain import normalize_source_key
 from minjob_ingest.settings import Settings
 from minjob_ingest.store.base import StoreError
-from minjob_ingest.store.json_store import JsonStore
+from minjob_ingest.store.factory import opened_store
 
 #: 건너뛴 공고를 화면에 몇 개까지 적을까. 전부 찍으면 되돌린 수가 안 보인다.
 _SKIPPED_SAMPLE = 10
@@ -36,22 +36,28 @@ def main() -> int:
     args = parser.parse_args()
 
     source = None if args.source is None else normalize_source_key(str(args.source))
-    store = JsonStore(Settings.load().data_dir)
     scope_label = "전체" if source is None else source
 
-    if not args.write:
-        # ⚠️ 미리보기는 **세기만 한다** — 되돌리기는 `Store`가 하나로 처리하므로 여기서
-        #    같은 판정을 흉내 내면 두 기준이 갈린다. 남은 미판정 수로 규모만 보여준다.
-        pending = store.list_unstructured(100_000, source_key=source)
-        print(f"{scope_label}: 지금 미판정 {len(pending)}건 — 되돌리면 여기에 더해진다")
-        print("미리보기다 — 되돌리려면 --write 를 준다.")
-        return 0
+    # ⚠️ **팩토리를 거친다.** `JsonStore`를 직접 만들면 Supabase로 넘어간 뒤 이 스크립트만
+    #    로컬 파일을 되돌려, 운영자는 되돌린 줄 알지만 원장은 그대로다. CLAUDE.md가
+    #    "되돌리기 스크립트 없이 전량 저장하지 않는다"고 못 박은 이유가 그것이다.
+    with opened_store(Settings.load()) as session:
+        store = session.store
+        print(f"저장소: {session.label}")
 
-    try:
-        result = store.requeue_for_structure(source_key=source)
-    except StoreError as err:
-        print(f"⚠️ 되돌리지 않았다 — {err}")
-        return 1
+        if not args.write:
+            # ⚠️ 미리보기는 **세기만 한다** — 되돌리기는 `Store`가 하나로 처리하므로 여기서
+            #    같은 판정을 흉내 내면 두 기준이 갈린다. 남은 미판정 수로 규모만 보여준다.
+            pending = store.list_unstructured(100_000, source_key=source)
+            print(f"{scope_label}: 지금 미판정 {len(pending)}건 — 되돌리면 여기에 더해진다")
+            print("미리보기다 — 되돌리려면 --write 를 준다.")
+            return 0
+
+        try:
+            result = store.requeue_for_structure(source_key=source)
+        except StoreError as err:
+            print(f"⚠️ 되돌리지 않았다 — {err}")
+            return 1
 
     print(f"{scope_label}: {result.requeued}건을 미판정으로 되돌렸다")
     if result.skipped:

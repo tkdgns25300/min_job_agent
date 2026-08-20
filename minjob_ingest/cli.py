@@ -89,7 +89,7 @@ from minjob_ingest.sources.registry import (
     load_sources,
 )
 from minjob_ingest.store.base import Store, StoreError
-from minjob_ingest.store.json_store import JsonStore
+from minjob_ingest.store.factory import opened_store
 from minjob_ingest.store.serde import to_row
 
 _PROGRAM = "minjob-ingest"
@@ -223,39 +223,41 @@ def _collect_all(
     dry_run: bool,
 ) -> int:
     sources = _collect_targets(load_sources(config_path), only)
-    store = JsonStore(Settings.load().data_dir)
-    # dry-run은 아무것도 쓰지 않는다 — 실행 기록(crawl_run)도 남기지 않는다.
-    run = None if dry_run else store.start_run(CrawlMode.BACKFILL)
+    with opened_store(Settings.load()) as session:
+        store = session.store
+        console.field("저장소", session.label)
+        # dry-run은 아무것도 쓰지 않는다 — 실행 기록(crawl_run)도 남기지 않는다.
+        run = None if dry_run else store.start_run(CrawlMode.BACKFILL)
 
-    failures: dict[str, str] = {}
-    saved_total = 0
-    states: list[SourceHealth] = []
-    # ⚠️ `finally`가 필요하다: 예상 못 한 예외·Ctrl-C가 실행 기록을 **열린 채**(`finished_at`
-    # null) 남기면 그 run은 영구히 미완으로 보이고 `status`가 거짓말을 한다(2026-08-05 실측).
-    try:
-        for source in sources:
-            report = _collect_one(
-                console,
-                source,
-                store,
-                run_id=None if run is None else run.id,
-                options=CollectOptions(months=months, days=days, dry_run=dry_run),
-                failures=failures,
-                states=states,
-            )
-            if report is not None:
-                saved_total += report.saved
-                _print_report(console, report, dry_run=dry_run)
-    except BaseException as err:
-        if run is not None:
-            failures[_ABORTED] = f"{type(err).__name__}: {err}"
-            _finish(store, run, sources, failures, saved_total)
-        raise
-    else:
-        if run is not None:
-            _finish(store, run, sources, failures, saved_total)
-    _print_summary(console, len(sources), failures, saved_total, states, dry_run=dry_run)
-    return 1 if failures else 0
+        failures: dict[str, str] = {}
+        saved_total = 0
+        states: list[SourceHealth] = []
+        # ⚠️ `finally`가 필요하다: 예상 못 한 예외·Ctrl-C가 실행 기록을 **열린 채**(`finished_at`
+        # null) 남기면 그 run은 영구히 미완으로 보이고 `status`가 거짓말을 한다(2026-08-05 실측).
+        try:
+            for source in sources:
+                report = _collect_one(
+                    console,
+                    source,
+                    store,
+                    run_id=None if run is None else run.id,
+                    options=CollectOptions(months=months, days=days, dry_run=dry_run),
+                    failures=failures,
+                    states=states,
+                )
+                if report is not None:
+                    saved_total += report.saved
+                    _print_report(console, report, dry_run=dry_run)
+        except BaseException as err:
+            if run is not None:
+                failures[_ABORTED] = f"{type(err).__name__}: {err}"
+                _finish(store, run, sources, failures, saved_total)
+            raise
+        else:
+            if run is not None:
+                _finish(store, run, sources, failures, saved_total)
+        _print_summary(console, len(sources), failures, saved_total, states, dry_run=dry_run)
+        return 1 if failures else 0
 
 
 #: 중단 사유를 담는 `error_detail` 키. `source_key`와 겹치지 않게 소문자·밑줄로 둔다.
@@ -359,7 +361,7 @@ def _print_snapshot_summary(console: Console, total: int, failures: Mapping[str,
 def _collect_one(
     console: Console,
     source: SourceConfig,
-    store: JsonStore,
+    store: Store,
     *,
     run_id: UUID | None,
     options: CollectOptions,
@@ -631,48 +633,50 @@ def _run_structure(
     options = StructureOptions(limit=limit, source_key=_registered_key(source_key), dry_run=dry_run)
     console = Console()
     settings = Settings.load()
-    store = JsonStore(settings.data_dir)
-    # ⚠️ **유료 호출을 시작하기 전에** 이단 목록을 읽는다. 뒤로 미루면 3,000건을 부른 뒤
-    #    목록이 없다는 것을 알게 되고, 그때는 이미 이단 교회 공고가 검수 큐에 들어가 있다.
-    heresy = load_ref(settings.heresy_path)
-    client = GeminiClient(settings.require_vertex(lite=lite))
-    extractor = GeminiExtractor(client)
+    with opened_store(settings) as session:
+        store = session.store
+        # ⚠️ **유료 호출을 시작하기 전에** 이단 목록을 읽는다. 뒤로 미루면 3,000건을 부른 뒤
+        #    목록이 없다는 것을 알게 되고, 그때는 이미 이단 교회 공고가 검수 큐에 들어가 있다.
+        heresy = load_ref(settings.heresy_path)
+        client = GeminiClient(settings.require_vertex(lite=lite))
+        extractor = GeminiExtractor(client)
 
-    console.heading(
-        "구조화 미리보기" if dry_run else "구조화", note=_structure_scope(options, workers)
-    )
-    # ⚠️ 모델 이름을 **실행마다 찍는다** — 두 모델을 견주는 실행에서 어느 쪽 결과인지
-    #    화면으로 확인할 수 없으면 `--out` 파일이 뒤바뀐 것을 알아낼 방법이 없다.
-    console.field("모델", client.model, note="--lite" if lite else ENV_VERTEX_MODEL)
-    console.field("이단 목록", str(settings.heresy_path.name), note=f"{len(heresy.entries)}건")
-    line = console.progress()
-    preview = None if out is None else _PreviewFile(out, model=client.model)
-    sinks: list[ResultSink] = [_structure_renderer(console, line, dry_run=dry_run)]
-    if preview is not None:
-        sinks.append(preview.add)
-    with _console_logging(console, verbose=verbose), board_media(_open_source_client) as images:
-        report = structure_pending(
-            store,
-            extractor,
-            options,
-            heresy=heresy,
-            on_result=_fan_out(sinks),
-            images=images,
-            workers=workers,
+        console.heading(
+            "구조화 미리보기" if dry_run else "구조화", note=_structure_scope(options, workers)
         )
-    line.clear()
-    if preview is not None:
-        preview.write()
-        console.field("미리보기 파일", str(out), note=f"{preview.count}건")
-    _print_structure_report(console, report, dry_run=dry_run)
-    if not dry_run:
-        # ⚠️ **잊어버릴 자리에 두지 않는다.** 자동 승인이 켜진 이상(SPEC §5.7) dedup을 빼먹으면
-        #    같은 자리가 최대 26번 그대로 공개된다. 무료·무네트워크·멱등이라 매번 돌려도 된다.
-        #    `--dry-run`에서는 돌리지 않는다 — 저장된 것이 없으니 판정할 것도 없다.
-        console.heading("중복 판정", note="구조화 결과 전체를 다시 훑는다")
-        _print_dedup_report(console, dedup_all(store, dry_run=False), dry_run=False)
-    # 멈춘 실행은 실패도 함께 세어져 있다(`_Tally._watch_store` — 저장 실패는 FAILED다).
-    return 1 if report.failed else 0
+        # ⚠️ 모델 이름을 **실행마다 찍는다** — 두 모델을 견주는 실행에서 어느 쪽 결과인지
+        #    화면으로 확인할 수 없으면 `--out` 파일이 뒤바뀐 것을 알아낼 방법이 없다.
+        console.field("저장소", session.label)
+        console.field("모델", client.model, note="--lite" if lite else ENV_VERTEX_MODEL)
+        console.field("이단 목록", str(settings.heresy_path.name), note=f"{len(heresy.entries)}건")
+        line = console.progress()
+        preview = None if out is None else _PreviewFile(out, model=client.model)
+        sinks: list[ResultSink] = [_structure_renderer(console, line, dry_run=dry_run)]
+        if preview is not None:
+            sinks.append(preview.add)
+        with _console_logging(console, verbose=verbose), board_media(_open_source_client) as images:
+            report = structure_pending(
+                store,
+                extractor,
+                options,
+                heresy=heresy,
+                on_result=_fan_out(sinks),
+                images=images,
+                workers=workers,
+            )
+        line.clear()
+        if preview is not None:
+            preview.write()
+            console.field("미리보기 파일", str(out), note=f"{preview.count}건")
+        _print_structure_report(console, report, dry_run=dry_run)
+        if not dry_run:
+            # ⚠️ **잊어버릴 자리에 두지 않는다.** 자동 승인이 켜진 이상(SPEC §5.7) dedup을 빼먹으면
+            #    같은 자리가 최대 26번 그대로 공개된다. 무료·무네트워크·멱등이라 매번 돌려도 된다.
+            #    `--dry-run`에서는 돌리지 않는다 — 저장된 것이 없으니 판정할 것도 없다.
+            console.heading("중복 판정", note="구조화 결과 전체를 다시 훑는다")
+            _print_dedup_report(console, dedup_all(store, dry_run=False), dry_run=False)
+        # 멈춘 실행은 실패도 함께 세어져 있다(`_Tally._watch_store` — 저장 실패는 FAILED다).
+        return 1 if report.failed else 0
 
 
 def _open_source_client(source_key: str) -> SourceClient:
@@ -1144,13 +1148,18 @@ def _run_dedup(*, dry_run: bool, verbose: bool) -> int:
     같은 데이터면 같은 결과가 나온다.
     """
     console = Console()
-    store = JsonStore(Settings.load().data_dir)
+    with opened_store(Settings.load()) as session:
+        store = session.store
 
-    console.heading("중복 판정 미리보기" if dry_run else "중복 판정", note="게시판에 요청하지 않음")
-    with _console_logging(console, verbose=verbose):
-        report = dedup_all(store, dry_run=dry_run)
-    _print_dedup_report(console, report, dry_run=dry_run)
-    return 0
+        console.heading(
+            "중복 판정 미리보기" if dry_run else "중복 판정",
+            note="게시판에 요청하지 않음",
+        )
+        console.field("저장소", session.label)
+        with _console_logging(console, verbose=verbose):
+            report = dedup_all(store, dry_run=dry_run)
+        _print_dedup_report(console, report, dry_run=dry_run)
+        return 0
 
 
 def _print_dedup_report(console: Console, report: DedupReport, *, dry_run: bool) -> None:

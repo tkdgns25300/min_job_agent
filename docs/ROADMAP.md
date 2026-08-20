@@ -273,7 +273,9 @@
 > **20건 값으로 3,188건을 지킨다**.
 - [x] **마이그레이션** — `supabase/migrations/20260820234505_init.sql`(4테이블 + 제약 + 인덱스 · 2026-08-20). 실원장 1,451행을 로컬 Postgres 15에 넣어 검증(위반 0건 · 어긋난 값 12종은 거부). 적용은 Supabase SQL Editor 붙여넣기(운영자 결정) → 나중에 CLI로 옮길 때 `supabase migration repair --status applied 20260820234505`로 이력에 등록해야 두 번 올라가지 않는다
 - [ ] **RLS 정책(staging 4테이블) + `crawler` 롤 + `jobs` GRANT** — 별도 마이그레이션. ⚠️ **기한: min_job 검수 화면이 살아나기 전까지**(SPEC §8). 지금은 전권 `service_role`로 간다 — 지킬 운영자 교정값이 아직 0건이고, 정책 없이 `ENABLE`하면 검수 화면이 통째로 막힌다. RLS·롤·GRANT가 다 DB 권한 층이라 한 파일에 넣는다
-- [ ] Store를 Supabase 구현으로 스왑(파이프라인 코드 불변) + 스모크 테스트
+- [x] **Store를 Supabase 구현으로 스왑** — 파이프라인 코드 **한 줄도 바뀌지 않았다**(2026-08-21). `store/postgrest.py`(전송) · `supabase_store.py`(12개) · `guards.py`(두 구현 공유 판정) · `factory.py`(`MINJOB_STORE`). 규칙을 공유해 `json_store.py`가 464→398줄로 줄었다. 오프라인 계약 테스트 `tests/fake_postgrest.py` — **없는 컬럼 참조를 거부**해서 `source_health`를 `order=id`로 조회하던 실 서버 400 버그를 잡았다
+- [x] **`jobs` 경로**(1-6b 코드) — `base.PublishTarget` 7개 + `jobs_gateway.py`. 앵커가 `dedup.seat_of`를 **같이 지나게** 구조적 프로토콜로 넓혀 키 계산이 한 벌이다
+- [ ] 스모크 — 게시판 1곳·3일치 `collect`(무료) → `structure --limit 20` + 공개 소수(💰) → **`jobs` 행을 원문과 손으로 대조 + 두 번 돌려 멱등성**. ⚠️ 여기서 PostgREST OpenAPI 루트가 열려 있는지도 확인된다(`check_jobs_columns`가 그걸로 드리프트를 본다)
   - ⚠️ **`dedup_candidates`는 페이지네이션 + 개수 검산이 필수다.** 설계상 **전량**을 한 번에 봐야 하는데(배치로 쪼개면 대표가 순서에 따라 달라진다 · `store/base.py`), PostgREST가 응답 행 수를 조용히 자르면 **에러 없이** 일부만 보고 대표를 잘못 뽑아 **중복이 공개된다**. 실측(2026-08-21): 롤 수준 `pgrst.db_max_rows`는 설정 없음이지만 **PostgREST 자체 설정은 SQL로 볼 수 없어 믿을 수 없다**. 게다가 `statement_timeout`이 **8초**(`authenticator` 세션)라 3,188건 JOIN은 그쪽에서도 터질 수 있다. → **`range`로 끊어 받고, `count`로 총 행수를 먼저 물어 받은 수와 다르면 `StoreError`로 멈춘다**(조용한 손실을 요란한 실패로 바꾼다)
 - [ ] **운영자 전용 쓰기 경로 2개를 Store에 추가**(JSON 단계에선 파일 직접 편집으로 대체 중):
   ① opt-out·법적 삭제(write-once 예외 — SPEC §6 ①), ② 구조화 시도 횟수 리셋

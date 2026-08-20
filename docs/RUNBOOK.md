@@ -260,6 +260,24 @@ delete from source_data where id = '<id>';
 
 ⚠️ **`source_data`부터 지우려 하면 실패한다**(`review_data`가 참조 · restrict). 그게 의도다 — `cascade`였다면 초안이 조용히 사라지면서 `published_job_id`도 함께 사라져 **공개된 공고가 아무도 모르게 남는다**.
 
+## 저장소 바꾸기 — 로컬 파일 → Supabase
+
+```bash
+# .env 에 세 줄
+MINJOB_STORE=supabase
+SUPABASE_URL=https://<project>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<service_role 키>
+```
+
+명령은 하나도 바뀌지 않는다 — `collect`·`structure`·`dedup`이 그대로 돌고 결과가 DB로 간다.
+**어디에 쓰는지는 실행마다 화면에 찍힌다**(`저장소` 줄).
+
+⚠️ **명시하지 않으면 로컬 파일에 쓴다.** `MINJOB_STORE`를 빼면 지금까지와 똑같이 `data/`에 쌓인다 — 키만 넣어 두는 것으로는 넘어가지 않는다(어디에 쌓였는지 모르는 실행을 만들지 않기 위해서다).
+
+⚠️ **오타는 멈춘다.** `MINJOB_STORE=supabse`는 기본값으로 조용히 떨어지지 않고 오류를 낸다.
+
+⚠️ **원장을 이관하지 않는다**(운영자 결정 2026-08-21 · ROADMAP 1-6). 넘어가면 DB는 비어 있고, 3개월 전량을 새로 돌리면서 수집·구조화·중복·공개가 한 번에 된다. 로컬 `data/`는 지우지 말고 비교용으로 둔다.
+
 ## 게이트 — 커밋 전 4개 통과
 
 ```bash

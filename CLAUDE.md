@@ -69,7 +69,10 @@
 파이프라인은 저장소 구현을 모른다. `Store` 프로토콜만 호출하고 구현을 갈아끼운다.
 
 ```
-pipeline → Store(프로토콜) → [Phase 1] JsonStore(로컬) → [1-6] SupabaseStore
+pipeline → Store(프로토콜) ─┬─ JsonStore(로컬 파일 · 기본)
+                            └─ SupabaseStore → PostgrestClient(전송)
+
+공개 경로 → PublishTarget(별도 프로토콜) → SupabaseJobs   ← JSON 저장소에는 없다
 ```
 
 - **레코드 필드명 = SPEC §6 컬럼명(snake_case)과 동일**하게 둔다 → 전환이 "그대로 INSERT"가 된다. *(현 TS 뼈대는 camelCase + 스토어에서 매핑하는 구조다 — **Python 이식 때 snake_case로 정리**해 매핑 계층을 없앤다.)*
@@ -90,7 +93,15 @@ minjob_ingest/                 ★ 패키지 (= import 이름)
 ├── settings.py               env 로딩 1곳 (import 시점 캡처 금지)
 ├── sources/{registry.py, adapters/}   소스 레지스트리 · 게시판 1곳 = 파일 1개(30곳)
 ├── fetch/{client.py, robots.py}   전송 단일 창구 · robots 준수
-├── store/{base.py, serde.py, json_store.py}   Store 프로토콜 · 행 변환 · JSON 구현
+├── store/                   저장 seam — 파이프라인은 구현을 모른다
+│   ├── base.py             Store·PublishTarget 프로토콜 + DTO
+│   ├── serde.py            레코드 ↔ 행 변환 (컬럼 집합 엄격 대조)
+│   ├── guards.py           두 구현이 공유하는 순수 판정 (write-once·단조 증가·중복 반영)
+│   ├── factory.py          저장소를 여는 단 한 곳 (`MINJOB_STORE`)
+│   ├── json_store.py       로컬 파일 구현 (Phase 1 기본)
+│   ├── postgrest.py        PostgREST 전송 (⚠️ httpx 예외 1곳 · 페이지네이션·개수 검산)
+│   ├── supabase_store.py   Store 12개의 원격 구현
+│   └── jobs_gateway.py     jobs 접근 — 앵커·INSERT·posted_at (공개 테이블)
 │                                              (+ supabase_store.py 예정 = 1-6)
 ├── lib/gemini.py             Vertex 클라이언트 (재시도는 SDK 설정)
 └── pipeline/                collect·structure·extraction(프롬프트·스키마)·normalize(변환)·
@@ -170,7 +181,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 - **게시판 1곳 = 파일 1개.** 파일명 = `source_key` 소문자(`YTUS` → `ytus.py`). 여러 게시판을 한 파일에 담지 않고, **계열 base 클래스를 만들지 않는다**(위 3층 분리 참조). 공통은 `base.py` 함수로만 올린다.
 
 ### Fetch (`fetch/*.py`) — 전송 단일 창구
-- 모든 HTTP는 여기를 지난다. **어댑터·파이프라인이 직접 `httpx.get`을 부르지 않는다.**
+- **게시판 HTTP는 전부 여기를 지난다.** 어댑터·파이프라인이 직접 `httpx.get`을 부르지 않는다(ruff가 `httpx` import를 막는다). ⚠️ **예외는 저장소 전송 하나**(`store/postgrest.py`) — 우리 DB는 크롤 대상이 아니라서 UA 위장·`Crawl-delay`·소스별 간격이 붙으면 안 된다. 그 파일만 풀려 있고 `supabase_store.py`도 직접 HTTP를 만들 수 없다.
 - 정책은 SPEC §3, 소스별 값은 config. 이 층이 단독 구현한다: **UA(31곳 전부 동일한 브라우저 UA)** + 브라우저 헤더 세트 · `encoding` **config 값 우선**(서버 헤더가 틀린 보드가 있음) · 타임아웃 · 재시도 · `Retry-After` 준수 · rate limit · robots `Crawl-delay` · 세션 쿠키(`needs_session`).
 - **동시성은 SPEC §3이 정본**: **소스 간 병렬 · 소스 내 순차** — 한 호스트에는 항상 요청 1개만 흐른다(그래서 31곳 동시 실행이 예의에 어긋나지 않는다). 자원 보호용 상한이 필요하면 **정책이 아니라 실행 옵션**으로 둔다.
 - **기본값(config 미지정 시)**: 요청 타임아웃 **20s** · 재시도 **3회**(지수 백오프+지터, 429·5xx·연결오류) · 같은 소스 요청 간격 **≥1.5s** · 목록 페이지 **안전 상한 100p**(⚠️ 범위를 정하는 값이 아니다 — 범위는 게시일 컷오프가 정하고, **CLI 옵션으로 노출하지 않는다**). 상수는 모듈 상단에 둔다.
