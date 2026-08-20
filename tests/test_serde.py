@@ -132,7 +132,6 @@ def _full_review_data() -> ReviewData:
         dedup_state=DedupState.DUPLICATE,
         review_status=ReviewStatus.REJECTED,
         reject_reason=RejectReason.DUPLICATE,
-        matched_church_id=new_id(),
         published_job_id=new_id(),
         reviewed_by="operator@minjob",
         reviewed_at=FIXED_NOW,

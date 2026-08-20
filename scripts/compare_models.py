@@ -20,9 +20,7 @@ from typing import Final
 _PREVIEW_CHARS: Final = 88
 
 #: 모델이 답하지 않는 칸 — 코드가 채우거나 다음 단계가 채운다. 갈릴 수 없으니 세지 않는다.
-_NOT_FROM_MODEL: Final = frozenset(
-    {"dedup_key", "matched_church_id", "heresy_flag", "heresy_evidence", "posted_at"}
-)
+_NOT_FROM_MODEL: Final = frozenset({"dedup_key", "heresy_flag", "heresy_evidence", "posted_at"})
 
 #: `--out` 파일이 같은 모델로 두 번 만들어졌을 때의 안내. 비교가 성립하지 않는다.
 _SAME_MODEL_WARNING: Final = (

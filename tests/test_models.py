@@ -729,7 +729,6 @@ def test_redraft_preserves_identity_and_review_state() -> None:
         review_status=ReviewStatus.APPROVED,
         reviewed_by="operator@minjob",
         reviewed_at=FIXED_NOW,
-        matched_church_id=new_id(),
         published_job_id=new_id(),
     )
     fresh = replace(_review_data(), title="다시 구조화한 제목")
@@ -747,7 +746,6 @@ def test_restructuring_keeps_the_admin_references_of_an_untouched_row() -> None:
     """
     previous = replace(
         _review_data(),
-        matched_church_id=new_id(),
         published_job_id=new_id(),
     )
     fresh = replace(_review_data(), title="다시 구조화한 제목")
@@ -756,7 +754,6 @@ def test_restructuring_keeps_the_admin_references_of_an_untouched_row() -> None:
 
     assert merged.id == previous.id  # admin 참조가 끊기지 않는다
     assert merged.created_at == previous.created_at  # 큐 정렬·감사 기준 유지
-    assert merged.matched_church_id == previous.matched_church_id
     assert merged.published_job_id == previous.published_job_id
     assert merged.title == "다시 구조화한 제목"  # 새 구조화 결과는 반영
 

@@ -72,7 +72,6 @@ REVIEW_STATE_FIELDS: tuple[str, ...] = (
     "created_at",
     "review_status",
     "reject_reason",
-    "matched_church_id",
     "published_job_id",
     "reviewed_by",
     "reviewed_at",
@@ -483,7 +482,6 @@ class ReviewData:
     #: `REJECTED`일 때 **왜**인지. 자동 거부(중복·이단)를 되짚는 유일한 통로다 —
     #: 구분이 없으면 "우리 dedup이 틀렸나"·"이단 오판인가"를 확인할 방법이 없다.
     reject_reason: RejectReason | None = None
-    matched_church_id: UUID | None = None
     published_job_id: UUID | None = None
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None

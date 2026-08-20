@@ -184,7 +184,6 @@ def row_to_review_data(row: Row) -> ReviewData:
             dedup_state=_optional_enum(row, "dedup_state", DedupState),
             review_status=_enum(row, "review_status", ReviewStatus),
             reject_reason=_optional_enum(row, "reject_reason", RejectReason),
-            matched_church_id=_optional_uuid(row, "matched_church_id"),
             published_job_id=_optional_uuid(row, "published_job_id"),
             reviewed_by=_optional_str(row, "reviewed_by"),
             reviewed_at=_optional_timestamp(row, "reviewed_at"),
