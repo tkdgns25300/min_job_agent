@@ -14,6 +14,7 @@ import pytest
 
 from minjob_ingest.clock import kst_now
 from minjob_ingest.domain import (
+    PUBLISHABLE_DENOMINATIONS,
     Confidence,
     CrawlMode,
     DedupState,
@@ -345,6 +346,48 @@ def test_stated_source_is_publishable() -> None:
     record = _review_data()
     assert record.needs_operator_review is False
     assert record.is_denomination_publishable is True
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, Denomination.TONGHAP),
+        (
+            {
+                "denomination": Denomination.UNKNOWN,
+                "denomination_source": DenominationSource.UNKNOWN,
+            },
+            None,
+        ),
+        ({"denomination": None, "denomination_source": DenominationSource.UNKNOWN}, None),
+        ({"denomination_source": DenominationSource.AI_GUESS}, None),
+    ],
+    ids=["stated", "UNKNOWN", "값 없음", "ai_guess"],
+)
+def test_only_a_confirmed_denomination_goes_out(
+    overrides: dict[str, object], expected: Denomination | None
+) -> None:
+    """⚠️ **`UNKNOWN`을 그대로 넘기면 `jobs`의 CHECK가 거부한다** — 공개 계약(CONTRACT §1)의
+    10키에 없는 `review_data` 전용 임시값이다(실측 2026-08-20: 자동 승인 338건 중 84건).
+
+    ⚠️ `ai_guess`도 넘기지 않는다 — 공개된 교단은 **필터축**이라 틀리면 그 공고가 엉뚱한 교단으로
+    검색된다(SPEC §5.3).
+    """
+    record = replace(_review_data(), **overrides)  # type: ignore[arg-type]
+
+    assert record.denomination_for_publish is expected
+
+
+def test_the_publish_value_never_leaves_the_contract() -> None:
+    """⚠️ 계약 밖 값이 공개 테이블에 들어가면 CHECK가 거부하고, 그 공고는 공개되지 않는다."""
+    for source in DenominationSource:
+        for value in Denomination:
+            try:
+                record = replace(_review_data(), denomination=value, denomination_source=source)
+            except ValueError:
+                continue  # 레코드 불변식이 막는 조합
+            published = record.denomination_for_publish
+            assert published is None or published in PUBLISHABLE_DENOMINATIONS
 
 
 def test_operator_resolution_is_readable_back() -> None:

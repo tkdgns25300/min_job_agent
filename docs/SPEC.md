@@ -211,6 +211,9 @@ KWANGSHIN 1). 그대로 승격하면 min_job 목록 절반이 중복이 된다.
 ```
 앵커 = jobs 중  status='OPEN'  AND  (deadline IS NULL OR deadline >= 오늘)
                 AND  posted_at >= 오늘 - 3개월
+       ⚠️ status 는 OPEN·CLOSED·**PENDING** 세 값이다(2026-08-20 min_job 추가 · 전수 검수용
+          예약값). PENDING 은 아직 공개되지 않은 공고라 **앵커가 아니다** — 목록에 없는 것을
+          앵커로 쓰면 그 자리의 재게시가 영영 안 뜬다(마감 지난 공고와 같은 이유).
        ⚠️ 우리 review_data.published_job_id 로 이어진 행은 제외한다
           (그 행은 후보에 이미 우리 초안으로 들어와 있다 — 자기 자신과 중복 판정하게 된다)
 ```
@@ -512,23 +515,26 @@ claim하면** `church_id`가 채워진다.
 다르다 — **다른 교회를 합치면**(B교회 페이지에 A교회 공고) 되돌리기 어렵고 이미 공개돼 있고,
 **같은 교회를 나누면** 중복 행이 생길 뿐이다. 끝까지 밀어 **아예 만들지 않는** 쪽으로 갔다.
 
-**승격 시 우리가 채우는 것(34개)** — `jobs` 42칸 중 나머지 8칸은 고정값·DB 기본값이다
+**승격 시 우리가 채우는 것(35개)** — `jobs` 43칸 중 나머지 8칸은 고정값·DB 기본값이다(2026-08-20 min_job이 `jobs.denomination`을 추가했다)
 
 | 그룹 | 컬럼 |
 |---|---|
-| 교회 | `church_id`=**NULL** · `church_name`(NOT NULL) · `region` |
+| 교회 | `church_id`=**NULL** · `church_name`(NOT NULL) · `region` · **`city`** · **`address`**(2026-08-17) · **`denomination`**(2026-08-20 · ⚠️ `UNKNOWN`은 `NULL`로 바꿔 넘긴다) — 전부 의도적 비정규화라 `church_id`가 NULL이어도 필터·지도·표시가 된다 |
 | 분류 | `job_kind` · `position` 또는 `role` · `department` |
 | 조건 | `employment_type` · `qualification` · `headcount` · `start_timing` |
 | 처우 | `pay_min`·`pay_max`·`pay_note`·`pay_period` · `housing_provided`·`housing_note` · `benefit_note` |
 | 지원 | `contact_email`·`contact_tel`·`contact_link`·`contact_post` · `required_docs[]`·`optional_docs[]`·`process_steps[]`·`work_days` · `requirements[]`·`preferred[]` |
 | 본문 | `title` · `description`(**요약** · 원문 복제 금지) · `source_url` · `posted_at` · `deadline` |
 
-⚠️ **`jobs`에 교단 컬럼이 없다.** 교단은 `churches.denomination`에만 있고 우리는 교회 행을 만들지
-않으므로(`church_id=NULL`), **`denomination`은 공개로 나가지 않는다** — `review_data`에 남아 검수·
-교회 claim 이후를 위한 값이다. 이단 대조(§5.4)와 교단 확정(§5.3)이 무의미한 것은 아니다: 전자는
-거절 근거이고 후자는 claim·매칭 때 쓰인다.
+✅ **교단도 공개로 나간다**(2026-08-20 · min_job이 `jobs.denomination`을 추가했다). 그전까지는 교단이
+`churches`에만 있어, 교회 행을 만들지 않는(`church_id=NULL`) 크롤 공고는 **교단 필터에서 전부
+탈락**했다. `region`과 같은 근거의 의도적 비정규화다(min_job DATA §1 예외 1: 필터축인데 `church_id`가
+NULL이면 JOIN이 죽는다). 우리는 `review_data.denomination`을 그대로 넘긴다.
 
-**나머지 칸**: `id`(⚠️ **우리가 만들어 넣는다** — §4.3 크래시 안전) · `status`(OPEN) ·
+⚠️ **`UNKNOWN`은 넘기지 않는다** — `review_data` 전용 임시값이고 공개 계약(CONTRACT §1)의 10키에
+없다. 미상은 `NULL`로 간다(min_job도 `NULL=미상`이다).
+
+**나머지 칸**: `id`(⚠️ **우리가 만들어 넣는다** — §4.3 크래시 안전) · `status`(**OPEN** — ⚠️ min_job이 `PENDING`을 예약했지만 우리는 확인이 끝난 초안만 공개하므로 `OPEN`으로 넣는다 · §5.7) ·
 `source`(OPERATOR) · `featured_tier`(NONE) · `created_at` · `updated_at`은 DB 기본값·고정값이다.
 ⚠️ `owner_id`는 **컬럼에서 제거됐다**(2026-08-06 · `church_id`로 충분).
 

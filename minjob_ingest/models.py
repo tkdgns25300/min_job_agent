@@ -445,12 +445,13 @@ class ReviewData:
     posted_at: date
     deadline: date | None = None
 
-    # 교회 초안 (승인 시 churches로 매칭·생성)
+    # 교회 정보 — ⚠️ `churches` 행을 만들지 않는다(SPEC §6). 네 칸 모두 **`jobs`로 그대로
+    # 간다**(min_job이 의도적으로 비정규화해 둔 칸들 · `church_id`가 NULL이어도 화면이 그려진다).
     church_name: str | None = None
     region: Region | None = None
     city: str | None = None
     #: 교회 위치 상세(도로명·지번) — 지도 연동용(SPEC §5.5b). ⚠️ `contact_post`(서류 접수처)와
-    #: 다른 칸이다. min_job `jobs`에 칸이 생기기 전까지는 여기에만 쌓인다.
+    #: 다른 칸이다 — 교회는 부산인데 접수처가 노회 사무실일 수 있다.
     address: str | None = None
 
     # 교단 — UNKNOWN은 여기서만 허용되는 임시값(승격 전 운영자가 해소)
@@ -656,12 +657,25 @@ class ReviewData:
 
     @property
     def is_denomination_publishable(self) -> bool:
-        """공개(`churches.denomination`)로 내보낼 수 있는 상태인가."""
+        """공개(`jobs.denomination`)로 내보낼 수 있는 상태인가."""
         return (
             self.denomination is not None
             and self.denomination is not Denomination.UNKNOWN
             and not self.needs_operator_review
         )
+
+    @property
+    def denomination_for_publish(self) -> Denomination | None:
+        """공개 테이블에 넣을 교단. 내보낼 수 없으면 **`None`**(= 미상)이다.
+
+        ⚠️ **`UNKNOWN`을 그대로 넘기면 `jobs`의 CHECK가 거부한다** — 그 값은 `review_data`
+        전용 임시값이고 공개 계약(CONTRACT §1)의 10키에 없다(실측 2026-08-20: 자동 승인 338건 중
+        84건이 `UNKNOWN`이었다). min_job도 미상을 `NULL`로 쓴다.
+
+        ⚠️ **`ai_guess`도 넘기지 않는다**(SPEC §5.3). 값이 있어도 확정이 아니라 운영자가 확인할
+        대상이고, 공개된 교단은 필터축이라 틀리면 그 공고가 엉뚱한 교단으로 검색된다.
+        """
+        return self.denomination if self.is_denomination_publishable else None
 
     @property
     def is_operator_touched(self) -> bool:
