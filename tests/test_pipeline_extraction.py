@@ -221,6 +221,31 @@ def test_the_prompt_still_demands_a_summary() -> None:
     assert "원문을 통째로 옮기지 않는다" in build_prompt(_source_data())
 
 
+def test_the_prompt_tells_the_model_what_process_steps_holds() -> None:
+    """⚠️ 이 칸만 설명이 없어서 **접수 안내가 든 26건이 전부 비었다**(실측 2026-08-20).
+
+    `메일 제목에 지원자 이름 기입` 같은 것은 지원자가 그대로 따라야 하는데, 담을 칸을
+    모델이 몰라 어디에도 들어가지 않았다.
+    """
+    prompt = build_prompt(_source_data())
+
+    assert "그대로 따라야 하는 것" in prompt, "이 칸이 무엇을 담는지 말해야 한다"
+    assert "메일 제목" in prompt, "접수 방법도 이 칸이라는 예가 필요하다"
+    assert "서류 이름은 required_docs다" in prompt, "겹쳐 쓰지 말라는 경계가 필요하다"
+
+
+def test_the_prompt_keeps_a_constraint_the_enum_cannot_hold() -> None:
+    """⚠️ `qualification`은 다섯 값뿐이라 **`본 교단 신학대학원`을 담지 못한다**(실측 23건).
+
+    `SEMINARIAN`으로 요약되며 "우리 교단만"이 사라지면 다른 교단 지원자가 헛지원한다 —
+    원문을 `requirements`에 남기라고 프롬프트가 말해야 한다.
+    """
+    prompt = build_prompt(_source_data())
+
+    assert "본 교단 신학대학원" in prompt
+    assert "requirements에 원문 그대로" in prompt
+
+
 # ── 응답 스키마 ──────────────────────────────────────────────────
 
 

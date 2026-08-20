@@ -387,6 +387,12 @@ KWANGSHIN 1). 그대로 승격하면 min_job 목록 절반이 중복이 된다.
 ### 5.6 나머지 필드
 min_job `jobs` 미러(title·position·role·department·employment_type·qualification·headcount·start_timing·housing_provided·housing_note·pay_*·benefit_note·work_days·requirements[]·preferred[]·required_docs[]·optional_docs[]·process_steps[]·description·posted_at·deadline·**연락처 4컬럼**) + 교회 초안(church_name·region·city·address)을 raw에서 추출. `raw_text`(원문 전체)는 항상 보존.
 
+**목록 칸**(`requirements`·`preferred`·`required_docs`·`optional_docs`·`process_steps`) — 프롬프트가 각 칸에 무엇을 담을지 말한다. ⚠️ **말하지 않으면 그 칸은 빈다**(2026-08-20 실측): `process_steps`만 설명이 없어서 접수 안내가 든 **26건이 전부 비었다** — `메일 제목에 지원자 이름 기입`처럼 지원자가 그대로 따라야 하는 것이 어디에도 들어가지 않았다. 이 칸은 전형 절차와 접수 방법을 함께 담는다(둘 다 "따라야 하는 것"이다).
+
+**enum 칸이 담지 못하는 조건은 목록 칸으로** — `qualification`은 다섯 값뿐이라 `본 교단 신학대학원`·`총회 인준 신학교`를 표현할 수 없다. 요약만 남기면 **다른 교단 지원자가 헛지원한다**(실측: 172건 중 23건에서 `본 교단`이 사라졌다). 프롬프트가 그 원문을 `requirements`에 남기라고 말한다.
+
+⚠️ **빠뜨린 값은 검산이 잡지 못한다.** `verify`는 *지어낸 값*을 비우는 장치이고(SPEC §5.5b), *빠뜨린 값*에는 검사가 없다 — 자동 검출을 시도해 봤지만 같은 뜻이 여러 형태로 저장돼(`사택 제공` → `housing_provided=True` · `각 1부씩` → 서류 두 항목에 분배) 문자열 대조로는 오탐이 압도적이었다(사택 197건으로 셌는데 원문 대조하니 1건). **원문을 사람이 읽는 것이 지금 유일하게 믿을 수 있는 방법이다.**
+
 **사례비**(`pay_min`·`pay_max`·`pay_period`·`pay_note`) — 모델은 **금액 표현만** 고르고 환산은 코드가 한다(`pipeline/normalize`).
 
 ```
