@@ -55,10 +55,18 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from datetime import date
 from itertools import combinations
-from typing import Final
+from typing import Final, Protocol
 
 from minjob_ingest.clock import months_before
-from minjob_ingest.domain import Confidence, DedupState, Department, RejectReason, ReviewStatus
+from minjob_ingest.domain import (
+    Confidence,
+    DedupState,
+    Department,
+    Position,
+    Region,
+    RejectReason,
+    ReviewStatus,
+)
 from minjob_ingest.models import REVIEW_STATE_FIELDS, ReviewData
 from minjob_ingest.pipeline.confidence import review_status_for
 from minjob_ingest.store.base import DedupCandidate, DedupUpdate, DedupVerdict, Store
@@ -176,7 +184,25 @@ def plan(candidates: Sequence[DedupCandidate]) -> tuple[DedupUpdate, ...]:
     return tuple(updates)
 
 
-def seat_of(draft: ReviewData) -> Seat | None:
+class SeatSource(Protocol):
+    """자물쇠 셋을 만들 수 있는 것 — `ReviewData`와 `JobAnchor`가 **둘 다** 만족한다.
+
+    ⚠️ **앵커도 같은 키 함수를 지나야 한다**(SPEC §4.2 "§4.1과 같은 키"). 타입을 `ReviewData`로
+    좁혀 두면 앵커용 키를 따로 만들게 되고, 두 계산이 갈라진 순간 **이미 공개된 자리를 못
+    알아봐 같은 자리가 두 번 공개된다**. 그래서 구조적 프로토콜로 받는다.
+    """
+
+    @property
+    def church_name(self) -> str | None: ...
+    @property
+    def region(self) -> Region | None: ...
+    @property
+    def position(self) -> tuple[Position, ...]: ...
+    @property
+    def role(self) -> str | None: ...
+
+
+def seat_of(draft: SeatSource) -> Seat | None:
     """자물쇠 셋. 하나라도 없으면 `None` — 그 공고는 아무와도 견주지 않는다.
 
     ⚠️ 근거가 없을 때 묶지 않는 쪽이 안전하다: 중복이 남는 것은 되돌릴 수 있지만, **다른

@@ -27,7 +27,15 @@ from datetime import date
 from typing import Protocol
 from uuid import UUID
 
-from minjob_ingest.domain import CrawlMode, DedupState, RejectReason, ReviewStatus
+from minjob_ingest.domain import (
+    CrawlMode,
+    DedupState,
+    Department,
+    Position,
+    Region,
+    RejectReason,
+    ReviewStatus,
+)
 from minjob_ingest.models import CrawlRun, ReviewData, SourceData, SourceHealth
 
 
@@ -260,4 +268,94 @@ class Store(Protocol):
 
     def upsert_health(self, record: SourceHealth) -> None:
         """게시판 상태를 기록한다. 이어붙이기는 `SourceHealth.advance`가 계산한다."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class JobAnchor:
+    """이미 공개돼 **지금 목록에 보이는** `jobs` 한 행(SPEC §4.2).
+
+    ⚠️ **필드 이름을 `ReviewData`와 똑같이 둔다.** 앵커는 §4.1과 **같은 키 함수**를 지나야
+    하는데(`pipeline.dedup.seat_of`), 이름이 다르면 앵커용 키를 따로 만들게 되고 두 계산이
+    갈라진 순간 **이미 공개된 자리를 못 알아봐 중복이 공개된다**. 구조적 프로토콜
+    (`dedup.SeatSource`)이 둘을 함께 받는 것이 그 보장이다.
+
+    ⚠️ 담는 것은 **키를 만드는 데 필요한 것 + 끌어올림 대상 판정**뿐이다. `jobs`의 나머지 칸은
+    읽지 않는다 — 크롤러는 그 테이블을 앵커로만 본다(§8).
+    """
+
+    job_id: UUID
+    church_name: str | None
+    region: Region | None
+    position: tuple[Position, ...]
+    role: str | None
+    department: Department | None
+    posted_at: date
+
+
+class PublishTarget(Protocol):
+    """`jobs` 접근 — **공개 경로만** 쓰는 별도 계약(SPEC §4.2·§4.2b·§4.3).
+
+    `Store`와 나눠 두는 이유: `JsonStore`에는 `jobs`가 없다. `Store`에 넣고 로컬 구현이 예외를
+    던지게 하면 "JSON 저장소로 공개를 시도하는" 코드가 **런타임까지 살아 있다** — 프로토콜을
+    나누면 그 조합이 타입에서 표현 불가능해진다(CLAUDE.md: 잘못된 상태를 타입으로 막는다).
+
+    ⚠️ **크롤러가 `jobs`에 쓰는 것은 두 가지뿐이다** — INSERT(§4.3)와 `posted_at` 한 칸
+    UPDATE(§4.2b). 그 외 모든 행은 읽기만 한다(§8 소유권 경계). `churches`에는 접근하지 않는다.
+    """
+
+    def check_jobs_columns(self) -> None:
+        """`jobs`가 우리가 아는 모양인지 **INSERT 전에** 대조한다(SPEC §4.3).
+
+        `jobs`는 min_job 소유라 컬럼이 늘 수 있고, 그때 깨지는 곳은 **공개 테이블**이다.
+        한 건 넣고 실패하면 절반만 공개된 상태가 남으므로 시작 전에 멈춘다.
+
+        ⚠️ **확인할 수 없으면 그것도 실패다.** 모양을 모른 채 공개를 시작하지 않는다.
+        """
+        ...
+
+    def visible_anchors(
+        self, *, today: date, exclude: frozenset[UUID] = frozenset()
+    ) -> tuple[JobAnchor, ...]:
+        """지금 목록에 보이는 공고들(SPEC §4.2).
+
+        `exclude`는 **우리 `published_job_id`로 이어진 job id**다 — 그 행은 후보에 이미 우리
+        초안으로 들어와 있어서, 빼지 않으면 자기 자신과 중복 판정한다.
+
+        ⚠️ 노출 조건은 **min_job DATA.md §6-1을 글자 그대로** 따라야 한다. 어긋나면 중복이
+        새거나 자리가 사라진다(SPEC §4.2의 2026-08-21 정정이 그 사례다).
+        """
+        ...
+
+    def reserve_publication(self, review_data_id: UUID) -> UUID:
+        """공개할 job id를 만들어 `review_data.published_job_id`에 **먼저 적고** 돌려준다.
+
+        ⚠️ **순서를 뒤집으면 안 된다**(SPEC §4.3). INSERT를 먼저 하고 죽으면 "공개됐는데 우리는
+        모르는 행"이 남아 **매 실행 다시 공개**한다. 먼저 적어두면 다음 실행이 "적혔는데 `jobs`에
+        없음"을 보고 이어서 넣는다.
+        """
+        ...
+
+    def publish(self, draft: ReviewData, *, job_id: UUID, posted_at: date) -> None:
+        """초안을 `jobs`에 INSERT한다(SPEC §4.3).
+
+        `posted_at`은 **그 자리 묶음의 가장 최근 게시일**이다(§4.1) — 초안의 값이 아니다.
+        `church_id`는 NULL이고 `source`는 `OPERATOR`다(교회 행은 만들지 않는다 · §8).
+        """
+        ...
+
+    def bump_posted_at(self, job_id: UUID, posted_at: date) -> bool:
+        """끌어올림 — `posted_at` **한 칸만** 갱신한다(SPEC §4.2b).
+
+        Returns: 갱신했으면 True. **교회가 claim했으면 False**(그 순간 소유권이 넘어가고
+        크롤러는 손을 뗀다 · §8) — 실패가 아니라 정상적인 결말이다.
+        """
+        ...
+
+    def existing_job_ids(self, job_ids: Sequence[UUID]) -> frozenset[UUID]:
+        """그중 실제로 `jobs`에 남아 있는 id. 운영자가 지운 공고를 찾는 데 쓴다(SPEC §4.3)."""
+        ...
+
+    def release_publication(self, review_data_id: UUID, job_id: UUID) -> None:
+        """공개했던 job이 사라졌을 때 링크를 비운다 — 다음 실행이 다시 공개한다(SPEC §4.3)."""
         ...
