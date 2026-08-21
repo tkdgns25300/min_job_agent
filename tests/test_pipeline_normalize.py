@@ -464,6 +464,31 @@ def test_a_value_in_the_dead_band_gets_no_period() -> None:
     assert period_of("700만원") is None
 
 
+def test_an_amount_without_a_period_is_not_stored_at_all() -> None:
+    """⚠️ **주기를 모르면 금액도 비운다**(2026-08-21 · min_job 지적).
+
+    `jobs.pay_period`가 `NOT NULL DEFAULT 'MONTH'`라 주기 없이 금액만 내보내면 **연봉이
+    월급으로 굳는다**(12배). 금액 하나만으로는 어느 쪽인지 말할 수 없다.
+    """
+    assert pay_of("700만원") == (None, None)
+    assert pay_of("999만원") == (None, None)
+
+
+def test_the_dropped_amount_survives_in_the_note() -> None:
+    """정보가 사라지는 것이 아니다 — 원문 표현이 `pay_note`로 옮겨간다."""
+    assert pay_note_of("700만원", None) == "700만원"
+
+
+@pytest.mark.parametrize(
+    "given",
+    ["월 700만원", "연 700만원", "연봉 700만원"],
+    ids=["월이라 적었다", "연이라 적었다", "연봉이라 적었다"],
+)
+def test_a_stated_period_rescues_a_dead_band_amount(given: str) -> None:
+    """죽은 구간이라도 **원문이 주기를 말했으면** 금액을 쓴다 — 크기로만 판정하지 않는다."""
+    assert pay_of(given) == (700, None)
+
+
 def test_a_bare_number_in_won_is_scaled_down() -> None:
     """⚠️ `원` 없이 큰 수로 적는 게시판이 있다 — 250만원을 `2500000`으로 쓴다.
 

@@ -164,9 +164,17 @@ def pay_of(text: str | None) -> tuple[int | None, int | None]:
     없으면 **둘 다 비우고** 원문을 `pay_note`가 담는다 — 그 자리에서 금액을 고르면 틀린 값이
     공개된다(실측: `160~170`으로 목사 180이 사라지고, 장학금 450이 사례비 최대가 됐다).
     빈 칸이 아니라 원문이 남으므로 지원자가 보는 정보는 오히려 자세하다.
+
+    ⚠️⚠️ **주기를 못 정한 금액도 비운다**(2026-08-21 · min_job 지적). 금액 하나만으로는 월급인지
+    연봉인지 말할 수 없고, `jobs.pay_period`가 `NOT NULL DEFAULT 'MONTH'`라 **주기 없이 금액만
+    내보내면 연봉이 월급으로 굳는다**(12배). 위험 구간은 `501~999`만원 — 그 아래는 월,
+    그 위는 연으로 정해진다(`period_of`). 지금까지 그런 행이 0건이었던 것은 사역직 게시판이
+    주기를 대개 적기 때문이고, **일반직 소스가 붙으면 깨질 관찰**이라 규칙으로 못 박는다.
     """
     found = _money_in(text)
     if not found:
+        return None, None
+    if period_of(text) is None:
         return None, None
     low = found[0].manwon
     ceiling = MAX_PAY_MANWON if low > _MONTHLY_CEILING else _MONTHLY_CEILING
