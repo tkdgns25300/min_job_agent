@@ -229,9 +229,10 @@ minjob-ingest snapshot --source YTUS       🌐  한 곳만
 ## DB 스키마 — 한 번만 (Supabase)
 
 ```bash
-# 붙여넣는 순서가 정해져 있다 — review_data가 jobs를 참조한다
-#  1) ../min_job/supabase/migrations/20260820231650_init.sql   (7테이블)
-#  2)   supabase/migrations/20260820234505_init.sql            (staging 4테이블)
+# 붙여넣는 순서가 정해져 있다
+#  1) ../min_job/supabase/migrations/20260820231650_init.sql        (7테이블)
+#  2)   supabase/migrations/20260820234505_init.sql                 (staging 4테이블)
+#  3)   supabase/migrations/20260822010000_review_page_columns.sql  (검수 화면용 칸 2개)
 ```
 
 Supabase 대시보드 → SQL Editor에 **위 순서로** 붙여넣는다. 2번을 먼저 넣으면 `jobs`가 없어서 실패한다.
@@ -244,6 +245,27 @@ supabase migration repair --status applied 20260820234505
 ```
 
 ⚠️ **이 리포에서 `supabase db diff`를 쓰지 말 것.** min_job과 프로젝트를 공유하는데 diff는 상대 리포의 마이그레이션을 몰라서 `DROP TABLE jobs`를 만들어낸다.
+
+### 포스터 버킷 — 한 번만
+
+검수 화면이 포스터를 띄우려면 Storage 버킷이 있어야 한다(`docs/REVIEW_PAGE.md` §7.1). **코드가 만들지 않는다** — 한 번 하는 일이라 실패 경로를 코드에 늘리지 않는다.
+
+Supabase 대시보드 → Storage → **New bucket**:
+
+| 항목 | 값 | 왜 |
+|---|---|---|
+| Name | `postings` | 코드가 이 이름을 쓴다(`store/storage.py`). ⚠️ **만든 뒤에는 못 바꾼다** |
+| Public bucket | **OFF** | 포스터에 담당자 이름·연락처가 있다. 인증 없이 읽히면 그게 그대로 공개된다 |
+| Restrict file size | **ON · 8 MB** | 우리 코드 상한(`MAX_MEDIA_BYTES`)과 같은 값. ⚠️ **더 낮추지 말 것** — 스캔 포스터가 5~8MB인 경우가 있고, 낮추면 그 파일만 조용히 안 올라간다 |
+| Restrict MIME types | **ON** · 아래 6개 | 우리가 만들 수 있는 형식 전부. 그 밖의 것이 올라가면 버그다 |
+
+```
+image/jpeg, image/png, image/webp, image/gif, image/bmp, application/pdf
+```
+
+⚠️ **여섯을 다 넣어야 한다.** 우리 코드는 파일 앞머리를 읽어 실제 형식을 판정하므로(헤더를 믿지 않는다) 이 여섯이 실제로 나온다. `jpeg`·`png`만 넣으면 나머지 포스터가 415로 거절된다.
+
+**확인**: `structure`를 돌리면 화면에 `포스터 보관  함`이 찍힌다. 버킷이 없으면 **한 건도 부르기 전에** 멈춘다(유료 호출 낭비 없음).
 
 ### 공고 하나를 지울 때 (opt-out · 법적 삭제)
 
