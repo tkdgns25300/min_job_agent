@@ -40,8 +40,10 @@ _REVIEW_DATA: Final = "review_data"
 #: 근본 해결은 min_job이 `jobs_visible` 뷰를 내는 것이다(ROADMAP 1-6b).
 ALWAYS_OPEN_MAX_DAYS: Final = 90
 
-#: 앵커가 아닌 상태들. `PENDING`은 아직 공개되지 않은 공고라 앵커가 아니다(SPEC §4.2) —
-#: 목록에 없는 것을 앵커로 쓰면 그 자리의 재게시가 영영 안 뜬다.
+#: 목록에 보이는 상태. ⚠️ **화이트리스트다**(제외 목록이 아니다) — 그래서 min_job이 값을
+#: 지워도(2026-08-21 `PENDING` 제거) 우리는 안전하고, 반대로 **보이는 값이 추가되면 조용히
+#: 깨진다**(그 자리의 재게시를 새 공고로 공개해 같은 자리 2건이 뜬다). 지금 남는 값은
+#: `OPEN`·`CLOSED` 둘뿐이라 "보이는 것 = OPEN"이 유일한 판정이다.
 _VISIBLE_STATUS: Final = "OPEN"
 
 #: 크롤러가 넣는 공고의 출처. ⚠️ `jobs.source`로는 우리 것인지 알 수 없다(운영자 수동 등록도
