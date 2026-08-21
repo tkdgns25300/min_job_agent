@@ -168,7 +168,16 @@ class PostgrestClient:
         ⚠️ `GET /{table}?limit=1`로는 알 수 없다 — **행이 없으면 키도 없다**. 공개 전 드리프트
         검사는 빈 테이블에서도 돌아야 하므로(SPEC §4.3) 스키마를 직접 묻는다.
         """
-        response = self._send("GET", "/", params={}, body=None, headers={})
+        # ⚠️ 루트는 OpenAPI 문서라 `application/openapi+json`으로 온다. 클라이언트 기본
+        #    `Accept: application/json`만 보내면 PostgREST가 415로 거절할 수 있어, 이 요청만
+        #    둘을 함께 받는다고 알린다.
+        response = self._send(
+            "GET",
+            "/",
+            params={},
+            body=None,
+            headers={"Accept": "application/openapi+json, application/json"},
+        )
         try:
             payload: object = response.json()
         except ValueError as err:
