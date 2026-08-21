@@ -17,10 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import re
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Final
 
 import httpx
@@ -28,28 +27,19 @@ import httpx
 from minjob_ingest.models import JsonValue
 from minjob_ingest.settings import SupabaseSettings
 from minjob_ingest.store.base import StoreError
+from minjob_ingest.store.transport import (
+    REQUEST_TIMEOUT_SECONDS,
+    Sleeper,
+    send_with_retry,
+)
 
 _LOG = logging.getLogger(__name__)
-
-#: 요청 상한. 서버 쪽 `statement_timeout`이 8초라 그보다 넉넉히 잡는다 — 짧게 잡으면 DB가
-#: 보내주는 "왜 느렸나"를 못 보고 클라이언트가 먼저 끊어 원인을 잃는다.
-REQUEST_TIMEOUT_SECONDS: Final = 30.0
 
 #: 전량 조회 한 페이지 크기. 서버가 응답 행 수를 자르더라도 우리가 먼저 끊어 받는다.
 PAGE_SIZE: Final = 1000
 
 #: `in.(...)` 한 번에 넣을 값 수. URL이 길어지면 서버·프록시가 414로 거절한다.
 MAX_IN_VALUES: Final = 200
-
-#: 총 시도 횟수(최초 1 + 재시도 2) — `fetch/client.py`와 같은 셈법.
-MAX_ATTEMPTS: Final = 3
-_RETRY_BASE_DELAY_SECONDS: Final = 0.5
-_RETRY_MAX_DELAY_SECONDS: Final = 8.0
-_MAX_RETRY_AFTER_SECONDS: Final = 30.0
-_RETRY_JITTER_FLOOR: Final = 0.5
-
-#: 일시적 오류만 재시도한다. 4xx는 대개 우리 요청이 틀린 것이라 다시 보내도 같은 답이 온다.
-_RETRYABLE_STATUS: Final = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 #: `Content-Range`에서 총 행 수. ⚠️ **범위 쪽이 `*`인 형식도 온다** — 돌려줄 행이 없으면
 #: PostgREST가 `*/0`(빈 표)·`*/2`(offset이 끝을 넘음)로 답한다(2026-08-21 실측). 그 형식을
@@ -60,10 +50,6 @@ _CONTENT_RANGE: Final = re.compile(r"^(?:\d+-\d+|\*)/(?P<total>\d+|\*)$")
 #: ⚠️ `serde.Row`(= `Mapping[str, object]`)와 **이름을 겹치지 않게** 둔다 — 같은 이름이 두 뜻을
 #: 가지면 어느 계약을 읽는지 사람이 매번 확인해야 한다. 디코딩은 serde가 하고 여기는 옮기기만 한다.
 type JsonRow = Mapping[str, JsonValue]
-
-#: 백오프 대기. 테스트가 실제로 기다리지 않게 주입한다(`fetch/client.py`와 같은 방식) —
-#: 재시도 간격도 검증 대상이다.
-type Sleeper = Callable[[float], None]
 
 
 class PostgrestClient:
@@ -321,65 +307,22 @@ class PostgrestClient:
         body: object,
         headers: Mapping[str, str],
     ) -> httpx.Response:
-        """재시도·백오프·`Retry-After`. 실패는 전부 `StoreError`로 바꿔 던진다."""
-        last_error = "(원인 미기록)"
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            try:
-                response = self._client.request(
-                    method,
-                    path,
-                    params=dict(params),
-                    content=(
-                        None
-                        if body is None
-                        # allow_nan=False — NaN·Infinity는 유효한 JSON이 아니고 jsonb가
-                        # 거부한다(`JsonStore._write_rows`와 같은 규칙).
-                        else json.dumps(body, ensure_ascii=False, allow_nan=False)
-                    ),
-                    headers=dict(headers),
-                )
-            except httpx.HTTPError as err:
-                # 메시지에 URL만 남는다 — 헤더(=키)는 절대 넣지 않는다.
-                last_error = f"{type(err).__name__}: {err}"
-            else:
-                if response.is_success:
-                    return response
-                last_error = _error_message(response)
-                if response.status_code not in _RETRYABLE_STATUS:
-                    raise StoreError(f"{method} {path}: {last_error}")
-                self._wait(attempt, _retry_after_seconds(response))
-                continue
-            self._wait(attempt, None)
-        raise StoreError(f"{method} {path}: {MAX_ATTEMPTS}회 시도 실패 ({last_error})")
+        """본문을 JSON으로 만들어 보낸다. 재시도·백오프는 `store/transport.py`가 한다.
 
-    def _wait(self, attempt: int, retry_after: float | None) -> None:
-        if attempt >= MAX_ATTEMPTS:
-            return
-        # 서버가 알려준 대기 시간이 우리 추측보다 정확하다(fetch 층과 같은 규칙).
-        backoff = min(_RETRY_BASE_DELAY_SECONDS * 2 ** (attempt - 1), _RETRY_MAX_DELAY_SECONDS)
-        if retry_after is not None:
-            backoff = max(backoff, min(retry_after, _MAX_RETRY_AFTER_SECONDS))
-        delay = backoff * random.uniform(_RETRY_JITTER_FLOOR, 1.0)
-        _LOG.debug("PostgREST 재시도 %d/%d — %.1fs 대기", attempt, MAX_ATTEMPTS, delay)
-        self._sleep(delay)
-
-
-def _retry_after_seconds(response: httpx.Response) -> float | None:
-    """429·503의 `Retry-After`(초). 서버가 알려준 대기 시간이 우리 추측보다 정확하다.
-
-    `fetch/client.py`와 같은 규칙이다 — 날짜 형식(HTTP-date)은 쓰는 곳이 드물어 초 단위만
-    읽고, 비정상적으로 긴 값은 실행을 붙잡지 않도록 상한을 둔다.
-    """
-    header = response.headers.get("retry-after")
-    if header is None:
-        return None
-    try:
-        seconds = float(header.strip())
-    except ValueError:
-        return None
-    if seconds <= 0:
-        return None
-    return min(seconds, _MAX_RETRY_AFTER_SECONDS)
+        ⚠️ `allow_nan=False` — NaN·Infinity는 유효한 JSON이 아니고 jsonb가 거부한다
+        (`JsonStore._write_rows`와 같은 규칙).
+        """
+        return send_with_retry(
+            self._client,
+            method,
+            path,
+            params=params,
+            content=(
+                None if body is None else json.dumps(body, ensure_ascii=False, allow_nan=False)
+            ),
+            headers=headers,
+            sleep=self._sleep,
+        )
 
 
 def eq(value: str) -> str:
@@ -448,18 +391,3 @@ def _total_of(response: httpx.Response) -> int | None:
         return None
     total = matched.group("total")
     return None if total == "*" else int(total)
-
-
-def _error_message(response: httpx.Response) -> str:
-    """PostgREST 오류 본문에서 사람이 읽을 부분만. ⚠️ 헤더는 담지 않는다(키가 있다)."""
-    try:
-        payload: object = response.json()
-    except ValueError:
-        return f"HTTP {response.status_code}"
-    if not isinstance(payload, dict):
-        return f"HTTP {response.status_code}"
-    parts = [
-        str(payload[key]) for key in ("message", "details", "hint", "code") if payload.get(key)
-    ]
-    status = f"HTTP {response.status_code}"
-    return f"{status} — {' · '.join(parts)}" if parts else status

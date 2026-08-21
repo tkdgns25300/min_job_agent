@@ -54,9 +54,14 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RET", "ARG", "PTH", "RUF", "TID", "D
 # `Crawl-delay` · 소스별 1.5초 간격)이 PostgREST 요청에 붙으면 행 하나 쓸 때마다 기다리고,
 # 우리 DB에 대고 남의 브라우저를 흉내낸다. 그래서 저장소 전송은 별도 창구를 갖는다.
 # ⚠️ **파일 하나만 푼다** — `store/*`로 넓히면 `supabase_store.py`가 전송 층을 우회할 수 있다.
+# ⚠️ 우리 DB로 가는 HTTP만. 게시판 정책(UA 위장·Crawl-delay·소스별 간격)이 붙으면 안 되는
+#    자리라 fetch 층을 지나지 않는다 — `store/transport.py` 주석이 이유를 적어 둔다.
+"minjob_ingest/store/transport.py" = ["TID251"]
 "minjob_ingest/store/postgrest.py" = ["TID251"]
+"minjob_ingest/store/storage.py" = ["TID251"]
 "tests/test_store_*" = ["TID251"]
 "tests/fake_postgrest.py" = ["TID251"]
+"tests/fake_storage.py" = ["TID251"]
 "tests/test_supabase_store.py" = ["TID251"]
 
 [tool.mypy]
