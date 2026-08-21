@@ -137,7 +137,9 @@ class SupabaseJobs:
         #    어긋남을 찾기 쉽다. 서버에서는 `status`만 좁힌다.
         rows = self._client.select(
             _JOBS,
-            columns="id,church_name,region,position,role,department,posted_at,deadline",
+            columns=(
+                "id,church_name,region,position,role,department,posted_at,deadline,contact_email"
+            ),
             order="id",
             filters={"status": eq(_VISIBLE_STATUS)},
         )
@@ -186,16 +188,22 @@ class SupabaseJobs:
         )
         return bool(changed)
 
-    def existing_job_ids(self, job_ids: Sequence[UUID]) -> frozenset[UUID]:
+    def published_state(self, job_ids: Sequence[UUID]) -> Mapping[UUID, date]:
         if not job_ids:
-            return frozenset()
-        found: set[UUID] = set()
+            return {}
+        state: dict[UUID, date] = {}
         for chunk in chunked(sorted(str(job_id) for job_id in job_ids)):
             for row in self._client.select(
-                _JOBS, columns="id", order="id", filters={"id": in_values(list(chunk))}
+                _JOBS,
+                columns="id,posted_at",
+                order="id",
+                filters={"id": in_values(list(chunk))},
             ):
-                found.add(_uuid(row, "id"))
-        return frozenset(found)
+                state[_uuid(row, "id")] = _day(row, "posted_at")
+        return state
+
+    def count_jobs(self) -> int:
+        return self._client.count(_JOBS)
 
     def release_publication(self, review_data_id: UUID, job_id: UUID) -> None:
         released = self._client.patch(
@@ -285,6 +293,7 @@ def _anchor_of(row: Mapping[str, JsonValue], *, job_id: UUID, posted_at: date) -
             role=_text(row, "role"),
             department=_enum(row, "department", Department),
             posted_at=posted_at,
+            contact_email=_text(row, "contact_email"),
         )
     except ValueError as err:
         _LOG.warning("jobs %s: 모르는 값이 있어 앵커에서 뺐다 (%s)", job_id, err)

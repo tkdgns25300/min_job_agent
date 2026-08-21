@@ -57,6 +57,7 @@ from minjob_ingest.pipeline.health import (
 )
 from minjob_ingest.pipeline.heresy import HeresyRefError, load_ref
 from minjob_ingest.pipeline.media import board_media
+from minjob_ingest.pipeline.publish import PublishReport, publish_all
 from minjob_ingest.pipeline.snapshot import (
     SnapshotResult,
     fixture_dir,
@@ -99,6 +100,7 @@ _COLLECT = "collect"
 _SNAPSHOT = "snapshot"
 _STRUCTURE = "structure"
 _DEDUP = "dedup"
+_PUBLISH = "publish"
 #: 요청마다 한 줄씩 찍어 리포트를 덮는 로거들. `--verbose`에서만 켠다.
 #: ⚠️ 구조화는 공고마다 한 줄을 찍는다 — 빼두면 전량 실행에서 진행 줄이 수천 줄에 묻힌다.
 _NOISY_LOGGERS = ("httpx", "httpcore", "minjob_ingest.lib.gemini")
@@ -189,6 +191,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
     if command == _DEDUP:
         return _run_dedup(dry_run=bool(args.dry_run), verbose=bool(args.verbose))
+    if command == _PUBLISH:
+        return _run_publish(dry_run=bool(args.dry_run), verbose=bool(args.verbose))
     # argparse가 이미 미등록 명령을 걸러내므로, 여기 오는 건 "서브파서는 추가했는데 연결을
     # 잊은" 경우다 — 조용히 성공(0)하는 대신 크래시로 알린다.
     raise RuntimeError(f"명령 '{command}'이 _dispatch에 연결되지 않았다")
@@ -680,7 +684,11 @@ def _run_structure(
             #    같은 자리가 최대 26번 그대로 공개된다. 무료·무네트워크·멱등이라 매번 돌려도 된다.
             #    `--dry-run`에서는 돌리지 않는다 — 저장된 것이 없으니 판정할 것도 없다.
             console.heading("중복 판정", note="구조화 결과 전체를 다시 훑는다")
-            _print_dedup_report(console, dedup_all(store, dry_run=False), dry_run=False)
+            # ⚠️ **여기에도 앵커를 넘긴다.** 빼먹으면 `dedup` 명령과 답이 갈려, 이미 공개된
+            #    자리가 `ALONE`이 되고 공개 패스가 그것을 또 올린다(2026-08-21 실측).
+            _print_dedup_report(
+                console, dedup_all(store, session.jobs, dry_run=False), dry_run=False
+            )
         # 멈춘 실행은 실패도 함께 세어져 있다(`_Tally._watch_store` — 저장 실패는 FAILED다).
         return 1 if report.failed else 0
 
@@ -1144,6 +1152,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="판정만 하고 저장 안 함 (무엇이 묶이는지 확인용)"
     )
     dedup.add_argument("--verbose", action="store_true", help="로그까지 표시")
+
+    publish = subcommands.add_parser(
+        _PUBLISH, help="승인된 공고를 jobs 에 공개 (무료 · 게시판에 요청하지 않음)"
+    )
+    publish.add_argument(
+        "--dry-run", action="store_true", help="무엇이 나갈지만 보여주고 쓰지 않음"
+    )
+    publish.add_argument("--verbose", action="store_true", help="로그까지 표시")
     return parser
 
 
@@ -1163,13 +1179,20 @@ def _run_dedup(*, dry_run: bool, verbose: bool) -> int:
         )
         console.field("저장소", session.label)
         with _console_logging(console, verbose=verbose):
-            report = dedup_all(store, dry_run=dry_run)
+            report = dedup_all(store, session.jobs, dry_run=dry_run)
         _print_dedup_report(console, report, dry_run=dry_run)
         return 0
 
 
 def _print_dedup_report(console: Console, report: DedupReport, *, dry_run: bool) -> None:
     console.field("훑음", f"{report.scanned}건")
+    # ⚠️ **앵커 수만 찍으면 이상함이 드러나지 않는다** — 0건은 정상일 수도 있다(전부 마감).
+    #    `1,204행 중 0건`이라야 노출 규칙이 어긋났음을 사람이 알아본다(SPEC §4.2).
+    console.field(
+        "앵커",
+        f"{report.anchors}건",
+        note=f"jobs {report.jobs_rows}행 중 지금 목록에 보이는 것",
+    )
     duplicates = report.count(DedupState.DUPLICATE)
     if duplicates:
         # ⚠️ **거절한 수를 화면에 내놓는다.** 중복은 검수 큐에 뜨지 않으므로, 잘못 묶어도
@@ -1204,6 +1227,66 @@ def _print_dedup_report(console: Console, report: DedupReport, *, dry_run: bool)
         "저장",
         "하지 않음(미리보기)" if dry_run else f"{report.changed}건 갱신",
     )
+
+
+def _run_publish(*, dry_run: bool, verbose: bool) -> int:
+    """승인된 초안을 `jobs`에 공개하고, 이미 공개된 자리의 날짜를 최신으로 민다(SPEC §4.3·§4.2b).
+
+    ⚠️ **유료 호출도 게시판 요청도 없다.** 저장된 판정만 보고 움직이므로 몇 번을 돌려도 안전하다.
+
+    ⚠️ **공개 테이블에 쓴다.** 그래서 자동으로 이어 돌지 않는다 — `dedup`이 `structure` 뒤에
+    붙는 것과 다르다. 운영자가 직접 부른다.
+    """
+    console = Console()
+    with opened_store(Settings.load()) as session:
+        console.heading("공개 미리보기" if dry_run else "공개", note="게시판에 요청하지 않음")
+        console.field("저장소", session.label)
+        if session.jobs is None:
+            # 로컬 파일에는 `jobs`가 없다 — 조용히 0건으로 끝내면 "왜 안 나갔나"를 알 수 없다.
+            console.field(
+                "공개",
+                console.paint("할 수 없음", "yellow", "bold"),
+                note="이 저장소에는 jobs 가 없다 — MINJOB_STORE=supabase 로 바꿀 것",
+            )
+            return 1
+        with _console_logging(console, verbose=verbose):
+            report = publish_all(session.store, session.jobs, dry_run=dry_run)
+        _print_publish_report(console, report, dry_run=dry_run)
+        return 1 if report.failed else 0
+
+
+def _print_publish_report(console: Console, report: PublishReport, *, dry_run: bool) -> None:
+    console.field(
+        "공개",
+        "하지 않음(미리보기)" if dry_run else f"{report.published}건",
+        note=f"{report.published}건이 나갈 것" if dry_run else None,
+    )
+    if report.bumped:
+        console.field("끌어올림", f"{report.bumped}건", note="계속 올린다 = 아직 뽑고 있다")
+    if report.claimed:
+        # 실패가 아니다 — 교회가 claim하면 소유권이 넘어가고 크롤러는 손을 뗀다(SPEC §8).
+        console.field("교회 것", f"{report.claimed}건", note="claim된 공고라 손대지 않았다")
+    if report.released:
+        console.field(
+            "링크 비움",
+            f"{report.released}건",
+            note="공개했던 공고가 사라졌다 — 다음 실행이 다시 공개한다",
+        )
+    if report.unjudged:
+        # ⚠️ 조용히 빠지면 "왜 안 올라갔나"에 답할 수 없다.
+        console.field(
+            "판정 안 됨",
+            console.paint(f"{report.unjudged}건", "yellow"),
+            note="중복 판정을 먼저 돌릴 것 — `minjob-ingest dedup`",
+        )
+    if report.failed:
+        console.field(
+            "실패",
+            console.paint(f"{len(report.failed)}건", "red", "bold"),
+            note="공고별로 격리됐다 — 아래 사유를 볼 것",
+        )
+        for review_data_id, reason in list(report.failed.items())[:5]:
+            console.field(f"  {review_data_id[:8]}", reason)
 
 
 def _run_check_gemini(*, lite: bool) -> int:

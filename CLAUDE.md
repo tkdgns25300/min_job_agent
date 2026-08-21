@@ -106,7 +106,8 @@ minjob_ingest/                 ★ 패키지 (= import 이름)
 ├── lib/gemini.py             Vertex 클라이언트 (재시도는 SDK 설정)
 └── pipeline/                collect·structure·extraction(프롬프트·스키마)·normalize(변환)·
                             verify(원문 대조)·denomination(교단 확정)·heresy(이단 대조)·confidence(등급)·
-                            dedup(같은 자리 묶기)·media(그림·PDF 바이트)·health·snapshot
+                            dedup(같은 자리 묶기)·publish(jobs 공개·끌어올림)·
+                            media(그림·PDF 바이트)·health·snapshot
 config/
 ├── sources.json              ★ 소스 레지스트리 (전송 정본 · 라이브 검증값)
 └── heresy-ref.json           이단 참고 목록 (**커밋 금지** — 실명 자료 · 사람이 관리)
@@ -147,6 +148,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/minjob-ingest structure --limit 20   # AI 구조화 (⚠️ 유료 · 범위 필수 · `--lite`로 값싼 모델)
 .venv/bin/minjob-ingest structure --all --workers 8   # 전량 (게시판 8곳씩 동시 · 게시판 안은 순차)
 .venv/bin/minjob-ingest dedup                  # 같은 자리 묶기 (무료 · structure 뒤 자동 실행됨)
+.venv/bin/minjob-ingest publish                # jobs 에 공개 + 끌어올림 (무료 · Supabase 전용)
 ```
 ⚠️ **`structure`는 `--limit N` 또는 `--all`이 없으면 실행을 거부한다** — 유료 호출이 옵션 없이 전량으로 도는 경로를 두지 않는다. 확인용은 `--dry-run`(호출은 하되 저장 안 함).
 아직 없는 명령(Phase 1): `daily`·`backfill`·`status`.

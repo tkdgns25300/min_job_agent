@@ -426,21 +426,33 @@ def test_a_claimed_posting_is_left_alone(jobs: SupabaseJobs, server: FakePostgre
 # ── 지워진 공고 복구 (SPEC §4.3) ────────────────────────────────
 
 
-def test_only_the_ids_that_still_exist_come_back(jobs: SupabaseJobs, server: FakePostgrest) -> None:
-    alive = _job()
+def test_the_state_answers_both_questions_in_one_read(
+    jobs: SupabaseJobs, server: FakePostgrest
+) -> None:
+    """키가 없으면 지워진 것 · 날짜가 다르면 끌어올릴 것 — 읽기 한 번이 둘 다 답한다."""
+    alive = _job(posted_at=date(2026, 8, 1))
     server.seed("jobs", alive)
     gone = uuid4()
 
-    found = jobs.existing_job_ids([UUID(str(alive["id"])), gone])
+    state = jobs.published_state([UUID(str(alive["id"])), gone])
 
-    assert found == frozenset({UUID(str(alive["id"]))})
+    assert state == {UUID(str(alive["id"])): date(2026, 8, 1)}
+    assert gone not in state  # 운영자가 지웠다
 
 
 def test_asking_about_nothing_asks_the_server_nothing(
     jobs: SupabaseJobs, server: FakePostgrest
 ) -> None:
-    assert jobs.existing_job_ids([]) == frozenset()
+    assert jobs.published_state([]) == {}
     assert server.requests == []
+
+
+def test_counting_rows_needs_no_column(jobs: SupabaseJobs, server: FakePostgrest) -> None:
+    """⚠️ 앵커 0건은 정상일 수도 있다 — `N행 중 0건`이라야 이상함이 드러난다."""
+    server.seed("jobs", _job(), _job())
+
+    assert jobs.count_jobs() == 2
+    assert "select" not in server.params[-1]
 
 
 def test_a_dead_link_is_cleared_so_the_next_run_republishes(

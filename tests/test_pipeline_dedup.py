@@ -34,7 +34,7 @@ from minjob_ingest.pipeline.dedup import (
     plan,
     seat_of,
 )
-from minjob_ingest.store.base import DedupCandidate, DedupUpdate
+from minjob_ingest.store.base import DedupCandidate, DedupUpdate, JobAnchor
 
 _NOW: Final = datetime(2026, 8, 17, 9, 0, tzinfo=KST)
 _DAY: Final = date(2026, 8, 4)
@@ -695,3 +695,114 @@ def test_applying_the_plan_twice_changes_nothing_the_second_time() -> None:
     assert {key: value.dedup_state for key, value in again.items()} == {
         key: value.dedup_state for key, value in updates.items()
     }
+
+
+# ── 앵커: 이미 공개된 자리와의 대조 (SPEC §4.2) ──────────────────
+
+
+def _anchor(*, on: date = _DAY, **overrides: object) -> JobAnchor:
+    """이미 공개돼 지금 목록에 보이는 `jobs` 한 행. 기본은 초안과 **같은 자리**다."""
+    base: dict[str, object] = {
+        "job_id": new_id(),
+        "church_name": "장성제일교회",
+        "region": Region.JEONNAM,
+        "position": (Position.ASSOCIATE_PASTOR,),
+        "role": None,
+        "department": None,
+        "posted_at": on,
+        "contact_email": "shoutlord@hanmail.net",
+    }
+    base.update(overrides)
+    return JobAnchor(**base)  # type: ignore[arg-type]
+
+
+def test_no_anchors_leaves_the_judgment_exactly_as_before() -> None:
+    """⚠️ **회귀 그물.** 앵커를 받게 고쳤어도 앵커가 없으면 결과가 전과 같아야 한다 —
+    694건으로 검증한 판정이 조용히 달라지면 안 된다."""
+    candidates = [_candidate(), _candidate(), _candidate(on=_DAY.replace(day=2))]
+
+    assert plan(candidates) == plan(candidates, anchors=[])
+
+
+def test_an_anchor_makes_the_new_posting_a_duplicate() -> None:
+    """이미 공개된 자리를 새 공고가 밀어내지 않는다(SPEC §4.2) — 앵커는 항상 대표다."""
+    candidate = _candidate()
+
+    (update,) = plan([candidate], anchors=[_anchor()])
+
+    assert update.review_data_id == candidate.draft.id
+    assert update.dedup_state is DedupState.DUPLICATE
+    assert update.verdict is not None
+    assert update.verdict.reject_reason is RejectReason.DUPLICATE
+
+
+def test_nothing_is_written_for_the_anchor_itself() -> None:
+    """`jobs` 행이라 `review_data`에 쓸 칸이 없다 — 판정이 나가면 저장소가 없는 id를 찾는다."""
+    candidate = _candidate()
+
+    updates = plan([candidate], anchors=[_anchor(), _anchor()])
+
+    assert {update.review_data_id for update in updates} == {candidate.draft.id}
+
+
+def test_an_anchor_alone_produces_nothing() -> None:
+    """공개된 자리만 있고 새 공고가 없으면 할 일이 없다."""
+    assert plan([], anchors=[_anchor()]) == ()
+
+
+def test_an_anchor_for_another_seat_does_not_interfere() -> None:
+    candidate = _candidate()
+
+    (update,) = plan([candidate], anchors=[_anchor(church_name="다른교회")])
+
+    assert update.dedup_state is DedupState.ALONE
+
+
+def test_an_anchor_older_than_a_round_does_not_suppress_the_reposting() -> None:
+    """⚠️ 3개월을 넘기면 **재공고**다 — 옛 공개가 새 자리를 삼키면 그 자리가 영영 안 뜬다."""
+    candidate = _candidate(on=date(2026, 8, 1))
+
+    (update,) = plan([candidate], anchors=[_anchor(on=date(2026, 1, 1))])
+
+    assert update.dedup_state is DedupState.ALONE
+
+
+def test_a_different_mailbox_goes_to_a_human_instead_of_being_rejected() -> None:
+    """⚠️ 접수 메일함이 다르면 **다른 자리일 수 있다** — 자동으로 거절하면 우리 공고가 사라진다.
+
+    그래서 앵커에 `contact_email`을 담는다(2026-08-21). 없으면 이 검사가 통째로 무력해진다.
+    """
+    candidate = _candidate()
+
+    (update,) = plan([candidate], anchors=[_anchor(contact_email="another@hanmail.net")])
+
+    assert update.dedup_state is DedupState.UNCERTAIN
+    assert update.verdict is not None
+    assert update.verdict.review_status is ReviewStatus.PENDING
+
+
+def test_an_anchor_without_a_seat_cannot_suppress_anything() -> None:
+    """자물쇠가 비면 앵커가 되지 못한다 — 중복이 남는 쪽이 안전하다(`seat_of`와 같은 규칙)."""
+    candidate = _candidate()
+
+    (update,) = plan([candidate], anchors=[_anchor(region=None)])
+
+    assert update.dedup_state is DedupState.ALONE
+
+
+def test_the_anchor_beats_even_a_human_checked_draft() -> None:
+    """앵커와 사람이 본 초안이 함께 있으면 **둘 다 손대지 않는다** — 정리도 사람이 한다."""
+    reviewed = _candidate(reviewed_by="operator@minjob")
+
+    (update,) = plan([reviewed], anchors=[_anchor()])
+
+    assert update.dedup_state is DedupState.UNCERTAIN
+    assert update.verdict is None  # 사람이 손댄 행에는 라벨만 쓴다
+
+
+def test_judging_with_anchors_is_idempotent() -> None:
+    """같은 입력이면 같은 결과다 — 앵커가 끼어도 흔들리지 않는다."""
+    candidates = [_candidate(), _candidate(on=_DAY.replace(day=3))]
+    anchors = [_anchor()]
+
+    assert plan(candidates, anchors=anchors) == plan(candidates, anchors=anchors)

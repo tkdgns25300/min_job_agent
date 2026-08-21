@@ -291,6 +291,9 @@ class JobAnchor:
     role: str | None
     department: Department | None
     posted_at: date
+    #: 접수 이메일. ⚠️ **자리를 가르는 유일한 연락처다**(SPEC §4.1 4단계) — 앵커에 이 값이
+    #: 없으면 메일함이 다른 다른 자리를 자동으로 거절하게 되고, 그때 **우리 공고가 사라진다**.
+    contact_email: str | None = None
 
 
 class PublishTarget(Protocol):
@@ -352,8 +355,22 @@ class PublishTarget(Protocol):
         """
         ...
 
-    def existing_job_ids(self, job_ids: Sequence[UUID]) -> frozenset[UUID]:
-        """그중 실제로 `jobs`에 남아 있는 id. 운영자가 지운 공고를 찾는 데 쓴다(SPEC §4.3)."""
+    def published_state(self, job_ids: Sequence[UUID]) -> Mapping[UUID, date]:
+        """우리가 공개한 공고들의 **지금 `posted_at`**. 없는 id는 키가 없다.
+
+        읽기 한 번이 두 가지에 답한다:
+        - **키가 없다** = 운영자가 지웠다 → 링크를 비우고 다시 공개한다(SPEC §4.3).
+        - **날짜가 다르다** = 끌어올릴 것이 있다(SPEC §4.2b). ⚠️ 이 비교가 없으면 매 실행
+          같은 값을 다시 써서 리포트가 "끌어올림 N건"을 영원히 보고한다.
+        """
+        ...
+
+    def count_jobs(self) -> int:
+        """`jobs` 전체 행 수 — 앵커 계기판용.
+
+        ⚠️ 앵커 0건은 정상일 수도 있다(전부 마감). `1,204행 중 0건`이라야 이상함이 드러난다 —
+        노출 규칙이 어긋났는지 사람이 알아볼 유일한 신호다(SPEC §4.2).
+        """
         ...
 
     def release_publication(self, review_data_id: UUID, job_id: UUID) -> None:

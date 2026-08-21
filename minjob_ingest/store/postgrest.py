@@ -164,6 +164,19 @@ class PostgrestClient:
             )
         return rows
 
+    def count(self, table: str, *, filters: Mapping[str, str] | None = None) -> int:
+        """행 수만 센다(본문을 받지 않는다).
+
+        ⚠️ `select`를 보내지 않는다 — `id`를 넣어 두면 그 컬럼이 없는 테이블에서 깨진다
+        (`source_health`의 PK는 `source_key`다). 세는 데는 컬럼 지정이 필요 없다.
+        """
+        _, total = self._request_with_total(
+            "HEAD", table, params=dict(filters or {}), want_total=True
+        )
+        if total is None:
+            raise StoreError(f"{table}: 행 수를 세지 못했다")
+        return total
+
     def column_names(self, table: str) -> frozenset[str]:
         """`table`의 컬럼 이름 — PostgREST가 내주는 OpenAPI 스키마에서 읽는다.
 

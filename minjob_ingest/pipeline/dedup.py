@@ -57,7 +57,7 @@ from datetime import date
 from itertools import combinations
 from typing import Final, Protocol
 
-from minjob_ingest.clock import months_before
+from minjob_ingest.clock import months_before, today_kst
 from minjob_ingest.domain import (
     Confidence,
     DedupState,
@@ -69,7 +69,14 @@ from minjob_ingest.domain import (
 )
 from minjob_ingest.models import REVIEW_STATE_FIELDS, ReviewData
 from minjob_ingest.pipeline.confidence import review_status_for
-from minjob_ingest.store.base import DedupCandidate, DedupUpdate, DedupVerdict, Store
+from minjob_ingest.store.base import (
+    DedupCandidate,
+    DedupUpdate,
+    DedupVerdict,
+    JobAnchor,
+    PublishTarget,
+    Store,
+)
 
 #: 라운드 경계. 이만큼 벌어지면 **재공고**로 보고 따로 남긴다(SPEC §4.1).
 #: ⚠️ 짧게 잡는 쪽이 안전하다 — 안 묶이면 중복이 남을 뿐이고, 길게 잡으면 다시 열린 자리가
@@ -111,6 +118,59 @@ type Seat = tuple[str, str, str]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class _Member:
+    """판정에 참가하는 한 자리 — **우리 초안**이거나 **이미 공개된 앵커**다(SPEC §4.2).
+
+    사슬(라운드·부서·메일함·대표 순위)이 초안을 직접 들여다보지 않게 필요한 것만 꺼내 둔다.
+    그래서 `jobs` 행도 같은 규칙을 그대로 지나간다 — 앵커용 판정을 따로 만들면 두 계산이
+    갈라지고, 갈라진 순간 **이미 공개된 자리를 못 알아봐 같은 자리가 두 번 공개된다.**
+
+    ⚠️ **앵커는 `draft`가 `None`이다** — `jobs` 행이라 `review_data`에 쓸 칸이 없다. 묶임과
+    대표 선정에만 참여하고 판정은 나가지 않는다.
+    """
+
+    #: 라운드 경계의 기준. 초안은 원문 게시일(불변), 앵커는 `jobs.posted_at`.
+    posted_on: date
+    department: Department | None
+    #: 접수 이메일 조각. 자리를 가르는 유일한 연락처다(SPEC §4.1 4단계).
+    mailboxes: frozenset[str]
+    #: 크롤러가 판정을 덮어선 안 되는 자리인가 — **대표 순위 1번**.
+    #: 초안은 `ReviewData.is_operator_owned`, **앵커는 항상 True**(이미 공개돼 있다).
+    is_owned: bool
+    #: 채워진 칸 수. ⚠️ 앵커는 위 순위에서 이미 이기므로 이 값이 판정을 바꾸지 않는다.
+    completeness: int
+    #: 동점일 때의 **고정된** 순서. 흔들리면 라운드 경계도 흔들린다.
+    identity: str
+    #: 판정을 쓸 대상. **앵커면 `None`.**
+    draft: ReviewData | None = None
+
+
+def _member_of(candidate: DedupCandidate) -> _Member:
+    draft = candidate.draft
+    return _Member(
+        posted_on=candidate.posted_on,
+        department=draft.department,
+        mailboxes=_tokens(draft.contact_email, _MAIL_TOKEN),
+        is_owned=draft.is_operator_owned,
+        completeness=_completeness(draft),
+        identity=str(draft.id),
+        draft=draft,
+    )
+
+
+def _member_of_anchor(anchor: JobAnchor) -> _Member:
+    """이미 공개된 `jobs` 행. **항상 대표**다 — 새 공고가 공개된 자리를 밀어내지 않는다."""
+    return _Member(
+        posted_on=anchor.posted_at,
+        department=anchor.department,
+        mailboxes=_tokens(anchor.contact_email, _MAIL_TOKEN),
+        is_owned=True,
+        completeness=0,
+        identity=str(anchor.job_id),
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class DedupReport:
     """실행 요약. ⚠️ **상태별로 센다** — 합계만 보면 "무엇이 사라졌나"를 알 수 없다."""
 
@@ -128,19 +188,39 @@ class DedupReport:
     settled: int = 0
     #: 실제로 바뀐 행 수. `--dry-run`이면 0이다.
     changed: int = 0
+    #: `jobs` 전체 행 수. ⚠️ **앵커 수만 찍으면 이상함이 드러나지 않는다** — 0건은 정상일
+    #: 수도 있다(전부 마감). `1,204행 중 0건`이라야 노출 규칙이 어긋났음을 사람이 알아본다.
+    jobs_rows: int = 0
+    #: 그중 지금 목록에 보여 판정에 참가한 것(SPEC §4.2).
+    anchors: int = 0
 
     def count(self, state: DedupState) -> int:
         return self.states.get(state.value, 0)
 
 
-def dedup_all(store: Store, *, dry_run: bool) -> DedupReport:
+def dedup_all(store: Store, jobs: PublishTarget | None, *, dry_run: bool) -> DedupReport:
     """전체를 훑어 중복을 판정하고 저장한다.
 
     ⚠️ **배치로 쪼개지 않는다**(SPEC §4.1) — 한 글만 보고는 대표를 고를 수 없다. 3,188건이
-    메모리에 다 들어오고 유료 호출도 네트워크도 없다.
+    메모리에 다 들어오고 유료 호출도 없다.
+
+    `jobs`를 주면 **이미 공개된 자리(앵커)** 도 함께 본다(SPEC §4.2).
+
+    ⚠️ **`jobs`에 기본값을 두지 않는다.** 기본값이 있으면 호출부 하나가 잊고, 그러면 같은
+    데이터에 답이 둘이 된다 — 앵커 없이 판정한 쪽이 이미 공개된 자리를 `ALONE`으로 만들고
+    공개 패스가 그것을 또 올린다(2026-08-21에 실제로 `structure`의 자동 dedup이 그 상태였다).
+    `jobs`가 없는 저장소(로컬 파일)에서는 **호출부가 `None`을 명시**한다.
     """
     candidates = store.dedup_candidates()
-    updates = plan(candidates)
+    published = frozenset(
+        candidate.draft.published_job_id
+        for candidate in candidates
+        if candidate.draft.published_job_id is not None
+    )
+    # ⚠️ 우리가 공개한 행은 앵커로 읽지 않는다 — 후보에 이미 초안으로 들어와 있어서
+    #    자기 자신과 중복 판정하게 된다(SPEC §4.2).
+    anchors = () if jobs is None else jobs.visible_anchors(today=today_kst(), exclude=published)
+    updates = plan(candidates, anchors=anchors)
     judged = {update.review_data_id for update in updates}
     skipped = [candidate.draft for candidate in candidates if candidate.draft.id not in judged]
     settled = sum(1 for draft in skipped if draft.reject_reason in _SETTLED_REASONS)
@@ -153,6 +233,8 @@ def dedup_all(store: Store, *, dry_run: bool) -> DedupReport:
         unjudged=len(skipped) - settled,
         settled=settled,
         changed=0 if dry_run else store.apply_dedup(updates),
+        jobs_rows=0 if jobs is None else jobs.count_jobs(),
+        anchors=len(anchors),
     )
 
 
@@ -163,19 +245,32 @@ def normalize_church_name(name: str | None) -> str | None:
     return _NOISE.sub("", _BRACKETS.sub("", name)) or None
 
 
-def plan(candidates: Sequence[DedupCandidate]) -> tuple[DedupUpdate, ...]:
+def plan(
+    candidates: Sequence[DedupCandidate], *, anchors: Sequence[JobAnchor] = ()
+) -> tuple[DedupUpdate, ...]:
     """중복 판정. **순수 함수** — 같은 입력이면 항상 같은 결과다(멱등).
 
     돌려주지 않은 행은 **판정하지 않았다는 뜻**이다(자물쇠가 비었거나 이미 결론이 난 행).
+
+    `anchors`는 **이미 공개돼 지금 목록에 보이는 `jobs` 행**이다(SPEC §4.2). 후보와 같은
+    사슬을 지나 **항상 대표**가 되고, 판정은 받지 않는다 — 그래서 그 자리의 새 공고가
+    중복으로 걸러진다. ⚠️ 우리가 공개한 행은 여기 오지 않는다(이미 초안으로 들어와 있다) —
+    저장소가 `published_job_id`로 빼고 넘긴다.
     """
-    seats: dict[Seat, list[DedupCandidate]] = defaultdict(list)
+    seats: dict[Seat, list[_Member]] = defaultdict(list)
     for candidate in candidates:
         if candidate.draft.reject_reason in _SETTLED_REASONS:
             continue
         seat = seat_of(candidate.draft)
         if seat is None:
             continue
-        seats[seat].append(candidate)
+        seats[seat].append(_member_of(candidate))
+    for anchor in anchors:
+        seat = seat_of(anchor)
+        if seat is None:
+            # ⚠️ 자물쇠가 비면 앵커가 되지 못한다 — 중복이 남는 쪽이 안전하다(`seat_of`).
+            continue
+        seats[seat].append(_member_of_anchor(anchor))
 
     updates: list[DedupUpdate] = []
     for seat in sorted(seats):
@@ -232,29 +327,29 @@ def dedup_key(seat: Seat, department: Department | None, *, round_number: int) -
     return f"{church}:{region}:{role}:{slot}:R{round_number}"
 
 
-def _rounds(members: Sequence[DedupCandidate]) -> list[list[DedupCandidate]]:
+def _rounds(members: Sequence[_Member]) -> list[list[_Member]]:
     """게시일 순으로 놓고 3개월 넘게 벌어지는 곳에서 자른다."""
     ordered = sorted(members, key=_ordering)
-    rounds: list[list[DedupCandidate]] = [[ordered[0]]]
-    for candidate in ordered[1:]:
+    rounds: list[list[_Member]] = [[ordered[0]]]
+    for member in ordered[1:]:
         previous = rounds[-1][-1]
-        if months_before(candidate.posted_on, ROUND_MONTHS) <= previous.posted_on:
-            rounds[-1].append(candidate)
+        if months_before(member.posted_on, ROUND_MONTHS) <= previous.posted_on:
+            rounds[-1].append(member)
         else:
-            rounds.append([candidate])
+            rounds.append([member])
     return rounds
 
 
-def _ordering(candidate: DedupCandidate) -> tuple[date, str]:
-    """시간순. 같은 날이면 id로 — **순서가 흔들리면 라운드 경계도 흔들린다**."""
-    return (candidate.posted_on, str(candidate.draft.id))
+def _ordering(member: _Member) -> tuple[date, str]:
+    """시간순. 같은 날이면 식별자로 — **순서가 흔들리면 라운드 경계도 흔들린다**."""
+    return (member.posted_on, member.identity)
 
 
-def _judge(seat: Seat, number: int, members: Sequence[DedupCandidate]) -> list[DedupUpdate]:
+def _judge(seat: Seat, number: int, members: Sequence[_Member]) -> list[DedupUpdate]:
     """한 라운드를 부서로 가른다(SPEC §4.1 3단계)."""
-    by_department: dict[Department | None, list[DedupCandidate]] = defaultdict(list)
-    for candidate in members:
-        by_department[candidate.draft.department].append(candidate)
+    by_department: dict[Department | None, list[_Member]] = defaultdict(list)
+    for member in members:
+        by_department[member.department].append(member)
 
     named = sorted((name for name in by_department if name is not None), key=_department_order)
     silent = by_department.get(None, [])
@@ -281,7 +376,7 @@ def _department_order(department: Department | None) -> str:
 
 
 def _judge_one_seat(
-    seat: Seat, number: int, department: Department | None, members: Sequence[DedupCandidate]
+    seat: Seat, number: int, department: Department | None, members: Sequence[_Member]
 ) -> list[DedupUpdate]:
     """한 자리로 볼 후보들 — **접수 이메일이 뒤집지 않으면** 같은 자리다(SPEC §4.1 4단계).
 
@@ -290,51 +385,55 @@ def _judge_one_seat(
     """
     key = dedup_key(seat, department, round_number=number)
     if len(members) == 1:
-        return [_restore(members[0], key, DedupState.ALONE)]
+        # ⚠️ 앵커 혼자면 아무것도 쓰지 않는다(`_restore`가 `None`) — `jobs` 행이라 쓸 칸이 없다.
+        alone = _restore(members[0], key, DedupState.ALONE)
+        return [] if alone is None else [alone]
     if _mailboxes_differ(members):
         # ⚠️ 접수 메일함이 다르면 **다른 자리일 수 있다** — 그런데 확정할 수는 없다(한 담당자가
         #    메일을 바꿔 올렸을 수도 있다). 자동으로 가르면 중복이 남고 자동으로 합치면 자리가
         #    사라지므로 **사람이 정한다**(운영자 결정 2026-08-19).
         return _hold_for_review(seat, number, members)
-    if _anchors(members) > 1:
-        # ⚠️ 사람이 이미 본 행이 둘 이상이면 정리도 사람이 한다 — 어느 쪽을 내릴지 우리가
+    if _owned(members) > 1:
+        # ⚠️ 사람이 이미 본 자리가 둘 이상이면 정리도 사람이 한다 — 어느 쪽을 내릴지 우리가
         #    고를 수 없고(둘 다 승인·게재됐을 수 있다) 판정을 쓸 권한도 없다.
         return _hold_for_review(seat, number, members)
     return _merge(members, key)
 
 
-def _merge(members: Sequence[DedupCandidate], key: str) -> list[DedupUpdate]:
-    """같은 자리 확정 — 대표 하나만 남기고 나머지는 거절한다."""
+def _merge(members: Sequence[_Member], key: str) -> list[DedupUpdate]:
+    """같은 자리 확정 — 대표 하나만 남기고 나머지는 거절한다.
+
+    ⚠️ 대표가 **앵커**면 대표 몫 판정이 없다(`jobs` 행이라 쓸 칸이 없다) — 나머지가 전부
+    거절되고, 그게 SPEC §4.2가 말하는 "이미 공개된 자리를 새 공고가 밀어내지 않는다"다.
+    """
     master = max(members, key=_master_priority)
-    newest = max(candidate.posted_on for candidate in members)
-    updates = [
+    newest = max(member.posted_on for member in members)
+    planned = [
         _apply(
             master,
             key,
             DedupState.MASTER,
-            review_status=review_status_for(master.draft.confidence, None),
+            review_status=_status_of(master),
             reject_reason=None,
             posted_at=newest,
         )
     ]
-    updates.extend(
+    planned.extend(
         _apply(
-            candidate,
+            member,
             key,
             DedupState.DUPLICATE,
             review_status=ReviewStatus.REJECTED,
             reject_reason=RejectReason.DUPLICATE,
-            posted_at=candidate.draft.posted_at,
+            posted_at=_posted_at_of(member),
         )
-        for candidate in members
-        if candidate is not master
+        for member in members
+        if member is not master
     )
-    return updates
+    return [update for update in planned if update is not None]
 
 
-def _hold_for_review(
-    seat: Seat, number: int, members: Sequence[DedupCandidate]
-) -> list[DedupUpdate]:
+def _hold_for_review(seat: Seat, number: int, members: Sequence[_Member]) -> list[DedupUpdate]:
     """판단 불가 — **대표는 그대로 내보내고 나머지만** 검수로 돌린다(운영자 결정 2026-08-17).
 
     같은 자리였다면 어차피 하나만 공개돼야 하니 결과가 맞고, 다른 자리였다면 운영자가 승인하면
@@ -344,26 +443,26 @@ def _hold_for_review(
     메일함이 다르다**(4단계) · **사람이 이미 본 행이 둘 이상**이다(정리도 사람이 한다).
     """
     master = max(members, key=_master_priority)
-    updates: list[DedupUpdate] = []
-    for candidate in members:
-        key = dedup_key(seat, candidate.draft.department, round_number=number)
-        if candidate is master:
-            updates.append(_restore(candidate, key, DedupState.UNCERTAIN))
+    planned: list[DedupUpdate | None] = []
+    for member in members:
+        key = dedup_key(seat, member.department, round_number=number)
+        if member is master:
+            planned.append(_restore(member, key, DedupState.UNCERTAIN))
             continue
-        updates.append(
+        planned.append(
             _apply(
-                candidate,
+                member,
                 key,
                 DedupState.UNCERTAIN,
                 review_status=ReviewStatus.PENDING,
                 reject_reason=None,
-                posted_at=candidate.draft.posted_at,
+                posted_at=_posted_at_of(member),
             )
         )
-    return updates
+    return [update for update in planned if update is not None]
 
 
-def _restore(candidate: DedupCandidate, key: str, state: DedupState) -> DedupUpdate:
+def _restore(member: _Member, key: str, state: DedupState) -> DedupUpdate | None:
     """거절이 아닌 상태로 되돌린다 — **지난 실행이 잘못 거절한 행이 되살아나야 한다.**
 
     ⚠️ 라벨만 붙이면 지난 실행의 `DUPLICATE` 거절이 그대로 남는다. 규칙을 고쳐 다시 돌렸는데
@@ -371,34 +470,37 @@ def _restore(candidate: DedupCandidate, key: str, state: DedupState) -> DedupUpd
     상태는 등급이 정한다 — `confidence`를 건드리지 않으므로 처음 저장될 때와 같은 값이 나온다.
     """
     return _apply(
-        candidate,
+        member,
         key,
         state,
-        review_status=review_status_for(candidate.draft.confidence, None),
+        review_status=_status_of(member),
         reject_reason=None,
-        posted_at=candidate.draft.posted_at,
+        posted_at=_posted_at_of(member),
     )
 
 
-def _label(candidate: DedupCandidate, key: str, state: DedupState) -> DedupUpdate:
-    """라벨만. **운영자가 손댄 행에만** 쓴다 — 사람이 한 일을 크롤러가 덮지 않는다."""
-    return DedupUpdate(review_data_id=candidate.draft.id, dedup_key=key, dedup_state=state)
-
-
 def _apply(
-    candidate: DedupCandidate,
+    member: _Member,
     key: str,
     state: DedupState,
     *,
     review_status: ReviewStatus,
     reject_reason: RejectReason | None,
     posted_at: date,
-) -> DedupUpdate:
-    """라벨 + 판정. ⚠️ **운영자가 손댔거나 이미 공개된 행에는 판정을 쓰지 않는다.**"""
-    if candidate.draft.is_operator_owned:
-        return _label(candidate, key, state)
+) -> DedupUpdate | None:
+    """라벨 + 판정.
+
+    ⚠️ **앵커에는 아무것도 쓰지 않는다**(`None`) — `jobs` 행이라 `review_data`에 쓸 칸이 없다.
+    ⚠️ **운영자가 손댔거나 이미 공개된 초안에는 라벨만** 쓴다 — 사람이 한 일을 크롤러가 덮지
+    않는다. 그래도 라벨은 붙여야 SPEC §4.2가 "이미 공개된 같은 자리"를 찾을 수 있다.
+    """
+    draft = member.draft
+    if draft is None:
+        return None
+    if draft.is_operator_owned:
+        return DedupUpdate(review_data_id=draft.id, dedup_key=key, dedup_state=state)
     return DedupUpdate(
-        review_data_id=candidate.draft.id,
+        review_data_id=draft.id,
         dedup_key=key,
         dedup_state=state,
         verdict=DedupVerdict(
@@ -407,24 +509,42 @@ def _apply(
     )
 
 
-def _anchors(members: Iterable[DedupCandidate]) -> int:
-    return sum(1 for candidate in members if candidate.draft.is_operator_owned)
+def _owned(members: Iterable[_Member]) -> int:
+    """크롤러가 판정을 덮어선 안 되는 자리 수 — 앵커와 사람이 손댄 초안.
+
+    ⚠️ 이름을 `_anchors`에서 바꿨다(2026-08-21). "앵커"는 이제 `jobs` 행을 뜻하므로 같은
+    낱말이 두 뜻을 갖게 됐다 — 읽는 사람이 매번 확인해야 하는 이름을 두지 않는다.
+    """
+    return sum(1 for member in members if member.is_owned)
 
 
-def _master_priority(candidate: DedupCandidate) -> tuple[bool, bool, int, date, str]:
+def _status_of(member: _Member) -> ReviewStatus:
+    """등급이 정하는 상태. 앵커는 판정이 나가지 않으므로 값이 쓰이지 않는다."""
+    draft = member.draft
+    return ReviewStatus.PENDING if draft is None else review_status_for(draft.confidence, None)
+
+
+def _posted_at_of(member: _Member) -> date:
+    """제 몫 게시일. 앵커는 판정이 나가지 않으므로 값이 쓰이지 않는다."""
+    draft = member.draft
+    return member.posted_on if draft is None else draft.posted_at
+
+
+def _master_priority(member: _Member) -> tuple[bool, bool, int, date, str]:
     """대표 순위: **사람이 확인한 것** > 자동 승인된 것 > 빈 칸 적은 것 > 최신 > id.
 
     ⚠️ "가장 충실한 것"이 최신보다 앞이다(운영자 결정 2026-08-17). 교차게시는 같은 날 여러
     게시판에 올라와 날짜가 자주 동점이고, 포스터 공고가 대표가 되면 사람이 볼 건수가 늘어난다.
-    ⚠️ 마지막이 id인 이유: 여기까지 동점이면 **무엇이든 고정된 순서**여야 한다(멱등).
+    ⚠️ 마지막이 식별자인 이유: 여기까지 동점이면 **무엇이든 고정된 순서**여야 한다(멱등).
+    ⚠️ **앵커는 첫 기준에서 이긴다** — 이미 공개된 자리를 새 공고가 밀어내지 않는다(SPEC §4.2).
     """
-    draft = candidate.draft
+    draft = member.draft
     return (
-        draft.is_operator_owned,
-        draft.confidence is Confidence.HIGH,
-        _completeness(draft),
-        candidate.posted_on,
-        str(draft.id),
+        member.is_owned,
+        draft is not None and draft.confidence is Confidence.HIGH,
+        member.completeness,
+        member.posted_on,
+        member.identity,
     )
 
 
@@ -435,7 +555,7 @@ def _completeness(draft: ReviewData) -> int:
     )
 
 
-def _mailboxes_differ(members: Sequence[DedupCandidate]) -> bool:
+def _mailboxes_differ(members: Sequence[_Member]) -> bool:
     """**접수 메일함이 서로 다른가** — 그때만 다른 자리일 수 있다.
 
     ⚠️ **전화·링크·우편은 보지 않는다**(운영자 결정 2026-08-19 · 실측으로 고쳤다). 자물쇠에서
@@ -453,17 +573,13 @@ def _mailboxes_differ(members: Sequence[DedupCandidate]) -> bool:
     ⚠️ **한쪽만 적은 것도, 한쪽이 더 많이 적은 것도 근거가 아니다**(실측: 접수용·문의용 이메일을
     함께 적는다). 겹치는 조각이 하나라도 있으면 같은 곳으로 본다.
     """
-    return _tokens_clash([_mails(candidate.draft) for candidate in members])
+    return _tokens_clash([member.mailboxes for member in members])
 
 
 def _tokens_clash(values: Sequence[frozenset[str]]) -> bool:
     """양쪽 다 적었는데 **겹치는 조각이 하나도 없으면** 다른 곳이다."""
     known = [value for value in values if value]
     return any(not (left & right) for left, right in combinations(known, 2))
-
-
-def _mails(draft: ReviewData) -> frozenset[str]:
-    return _tokens(draft.contact_email, _MAIL_TOKEN)
 
 
 def _tokens(value: str | None, pattern: re.Pattern[str]) -> frozenset[str]:

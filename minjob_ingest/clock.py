@@ -32,6 +32,15 @@ def kst_now() -> datetime:
     return datetime.now(KST)
 
 
+def today_kst() -> date:
+    """오늘(KST). **날짜 경계 판정은 이 창구를 쓴다.**
+
+    ⚠️ `date.today()`를 쓰면 서버 시간대로 계산돼 자정 무렵 하루가 어긋난다 — 앵커 판정
+    (SPEC §4.2 마감일·90일)이 그만큼 틀린 답을 낸다. 게시판 31곳과 운영자가 모두 한국이다.
+    """
+    return kst_now().date()
+
+
 def ensure_kst(value: datetime) -> datetime:
     """타임존 인식 KST로 **정규화한 값을 반환**한다. naive면 거부.
 

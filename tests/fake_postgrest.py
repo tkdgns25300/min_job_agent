@@ -49,6 +49,11 @@ class FakePostgrest:
         #: OpenAPI 루트가 알려줄 컬럼(스키마 드리프트 검사용). `None`이면 스키마를 안 내준다 —
         #: 그 경우에도 공개가 시작되지 않아야 한다(SPEC §4.3).
         self.schema: dict[str, set[str]] | None = None
+        #: 컬럼 DEFAULT — INSERT 본문에 키가 없으면 채운다.
+        #: ⚠️ **없으면 가짜가 진짜와 달라진다.** `jobs.status`는 `DEFAULT 'OPEN'`이라 우리가 칸을
+        #: 빼고 넣어도 `OPEN`이 되는데, 가짜가 비워 두면 그 행이 앵커 조회(`status=eq.OPEN`)에
+        #: 아예 안 걸린다 — 공개한 자리가 앵커가 되는 경로가 통째로 검증되지 않는다(2026-08-21).
+        self.defaults: dict[str, dict[str, object]] = {}
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self._handle)
@@ -59,6 +64,10 @@ class FakePostgrest:
     @property
     def methods(self) -> list[str]:
         return [request.method for request in self.requests]
+
+    @property
+    def params(self) -> list[dict[str, str]]:
+        return [dict(request.url.params) for request in self.requests]
 
     # ── 요청 처리 ───────────────────────────────────────────────
 
@@ -103,7 +112,9 @@ class FakePostgrest:
         self._check_columns(table, _referenced_columns(params))
         matched = self._matching(table, params)
         total = len(matched)
-        ordered = _ordered(matched, params.get("order"))
+        # ⚠️ 행을 돌려줄 때만 정렬을 요구한다 — 개수만 세는 HEAD는 순서가 의미 없고, 진짜
+        #    PostgREST도 `order`를 요구하지 않는다.
+        ordered = _ordered(matched, params.get("order")) if body else list(matched)
         offset = int(params.get("offset", "0"))
         limit = params.get("limit")
         window = ordered[offset : offset + int(limit)] if limit is not None else ordered[offset:]
@@ -128,7 +139,8 @@ class FakePostgrest:
             self._check_columns(table, frozenset(row))
         conflict = _conflict_columns(table, params.get("on_conflict"))
         landed: list[Row] = []
-        for row in incoming:
+        filled = [{**self.defaults.get(table, {}), **row} for row in incoming]
+        for row in filled:
             existing = self._find_conflict(table, row, conflict)
             if existing is None:
                 self.rows[table].append(dict(row))

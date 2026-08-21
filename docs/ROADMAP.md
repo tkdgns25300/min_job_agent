@@ -290,11 +290,11 @@
 > **완료 기준**: 자동 승인된 공고가 사람 손 없이 `jobs`에 뜨고, 끌어올림이 목록 순서에 반영된다.
 > 규칙·경계는 **SPEC §4.2·§4.2b·§4.3·§8이 정본**이다.
 
-- [ ] **앵커 읽기**(SPEC §4.2) — 지금 목록에 보이는 `jobs`를 읽어 자리 키를 계산해 dedup 후보에 넣는다. `published_job_id`로 이어진 행은 제외
-- [ ] **공개**(§4.3) — `APPROVED`이고 안 나간 행을 `jobs`에 INSERT. ⚠️ **id를 우리가 만들어 `review_data`에 먼저 적고** INSERT(크래시 시 두 번 공개 방지) · **컬럼 드리프트 검사**를 통과해야 시작
-- [ ] **끌어올림**(§4.2b) — `UPDATE jobs SET posted_at=? WHERE id=? AND church_id IS NULL`
+- [x] **앵커 읽기**(SPEC §4.2) — `dedup.plan(anchors=...)`이 `_Member`로 받아 **같은 사슬**을 지난다(2026-08-21). 앵커는 항상 대표 · 판정은 받지 않음 · 접수 이메일이 다르면 `UNCERTAIN`. `dedup` 리포트에 `jobs N행 중 앵커 M건`
+- [x] **공개**(§4.3) — `pipeline/publish.py`(2026-08-21). 스키마 대조 → 링크 먼저 → INSERT · 글 단위 격리 + 연속 5회 실패 시 중단 · `dedup_state`가 없는 초안은 보류
+- [x] **끌어올림**(§4.2b) — `dedup_key` 묶음의 최신 원문 게시일로. **`jobs`의 현재 값과 다를 때만** 쓴다(안 그러면 매 실행 같은 값을 다시 쓴다) · claim된 공고는 손대지 않음
 - [ ] **권한**(§8) — `GRANT SELECT, INSERT ON jobs` + `GRANT UPDATE (posted_at) ON jobs`. `churches`·DELETE·다른 컬럼 없음
-- [ ] 공개된 job이 지워진 경우 `published_job_id` 정리 후 재공개
+- [x] 공개된 job이 지워진 경우 `published_job_id` 정리 → **다음 실행이 재공개**(같은 실행에서 되돌리지 않는다 — 각 단계가 저장된 사실만 본다)
 - [ ] (min_job) **`jobs_visible` 뷰** — 노출 규칙(마감·3개월)이 한 곳에만 있게. 없으면 우리가 조건을 베껴야 하고 어긋나면 중복이 샌다
 
 ### 1-7. 배포 (GitHub Actions) — ⚠️ **1-6 이후에만**
