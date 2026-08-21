@@ -242,9 +242,15 @@ create table review_data (
   reject_reason   text check (reject_reason in ('DUPLICATE','CLOSED','HERESY','OPERATOR')),
   -- 공개 결과. §4.2가 이걸로 앵커를 가리고, §4.2b가 끌어올림 대상을 찾고, §8이 "이 jobs 행이
   -- 우리 것인가"를 이걸로 판정한다.
-  -- ⚠️ `on delete set null`이다 — 공고가 지워졌으면 연결도 없어야 한다. cascade면 우리 원장
-  --    행이 함께 사라지고(증거 유실), 기본값(restrict)이면 운영자가 jobs 행을 지울 수 없다.
-  published_job_id uuid references jobs (id) on delete set null,
+  -- ⚠️⚠️ **FK를 걸지 않는다**(2026-08-21 정정 · 실행에서 잡혔다). SPEC §4.3은 **id를 여기 먼저
+  --    적고 그 다음 `jobs`에 INSERT**하라고 한다 — 반대로 하면 중간에 죽었을 때 "공개됐는데
+  --    우리는 모르는 행"이 남아 매 실행 다시 공개한다. FK는 그 순서를 **물리적으로 금지**하고
+  --    (`23503`), SPEC이 복구 경로까지 설계해 둔 "적혔는데 `jobs`에 없음" 상태를 도달 불가능하게
+  --    만든다. 처음엔 `references jobs (id) on delete set null`로 두었는데, 그건 스키마가
+  --    설계를 이긴 것이었다 — 정본은 SPEC이고 이 파일은 그 구현이다(CLAUDE.md).
+  -- ⚠️ 그래서 이 값은 **없는 job을 가리킬 수 있다** — 그게 정상 상태다. 다음 `publish` 실행이
+  --    `published_state`로 존재를 확인해 비우고 다시 공개한다(§4.3).
+  published_job_id uuid,
   reviewed_by      text,
   reviewed_at      timestamptz,
   -- 검수 큐 정렬·감사. 코드가 KST로 채운다 — 이 default는 **admin이 손으로 INSERT할 때의
