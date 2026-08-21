@@ -1,6 +1,6 @@
 # CLAUDE.md — min_job_agent
 
-> **이 파일은 HOW** — 아키텍처·레이어 책임·코드 컨벤션. **운영자가 타이핑하는 명령은 [`docs/RUNBOOK.md`](./docs/RUNBOOK.md)**. 파이프라인 동작·판정 규칙·스키마는 [`docs/SPEC.md`](./docs/SPEC.md), 크롤 대상 소스는 [`docs/SOURCES.md`](./docs/SOURCES.md), 출력 계약·교단 정규화는 [`docs/CONTRACT.md`](./docs/CONTRACT.md), 작업 단위는 [`docs/ROADMAP.md`](./docs/ROADMAP.md), 시점 핸드오프는 [`docs/SNAPSHOT.md`](./docs/SNAPSHOT.md).
+> **이 파일은 HOW** — 아키텍처·레이어 책임·코드 컨벤션. **운영자가 타이핑하는 명령은 [`docs/RUNBOOK.md`](./docs/RUNBOOK.md)**. 파이프라인 동작·판정 규칙·스키마는 [`docs/SPEC.md`](./docs/SPEC.md), 크롤 대상 소스는 [`docs/SOURCES.md`](./docs/SOURCES.md), 출력 계약·교단 정규화는 [`docs/CONTRACT.md`](./docs/CONTRACT.md), 작업 단위는 [`docs/ROADMAP.md`](./docs/ROADMAP.md), 시점 핸드오프는 [`docs/SNAPSHOT.md`](./docs/SNAPSHOT.md), **min_job admin 검수 페이지 명세는 [`docs/REVIEW_PAGE.md`](./docs/REVIEW_PAGE.md)**(min_job 쪽에 넘기는 문서 · 정본은 SPEC).
 >
 > **문서 책임 분리** — 같은 사실을 두 곳에 쓰지 않는다. **여기는 "코드를 어떻게 쓰는가"만** 담고, 정책·판정 규칙·소스 목록·스키마 필드는 위 문서를 **가리킨다**(복사하지 않는다).
 >
@@ -45,7 +45,9 @@
 
 - 크롤러의 종착지는 **`jobs` 공개까지**다(운영자 결정 2026-08-18 · 경계는 SPEC §8). 확인할 것이 없는 초안은 크롤러가 승인하고 직접 공개한다 — 사람이 보는 것은 `PENDING`뿐이다.
 - ⚠️ **`jobs`에서 건드리는 것은 "자기가 만들었고 아직 교회 것이 아닌" 공고뿐**이다: INSERT(SPEC §4.3)와 `posted_at` 갱신(§4.2b). 그 외 모든 행은 **읽기만**(중복 대조용 앵커 · §4.2). `churches`에는 쓰지 않는다.
-- **검수(`PENDING`)는 min_job 쪽 책임**이며 이 리포 밖이다. 승인은 `review_status`만 바꾸고, 공개는 다음 실행이 한다.
+- **검수(`PENDING`)는 min_job 쪽 책임**이며 이 리포 밖이다. **공개는 min_job이 하지 않는다** — 승인하면 `review_status`가 바뀌고 **다음 실행의 크롤러가 `jobs`에 넣는다**(SPEC §4.3).
+  - ⚠️ **min_job은 `review_data`를 자유롭게 고친다**(SPEC §8의 표 · 값 교정 포함 · 운영자 결정 2026-08-21). "4테이블은 우리 것"은 **스키마를 정의·마이그레이션할 권한**을 뜻하고, 데이터를 누가 쓰나는 역할로 나눈다. 그래서 `operator_reason`처럼 **min_job만 쓰는 칸도 우리가 만든다**.
+  - ⚠️ 그래서 **크롤러가 사람의 교정을 덮지 않는 것이 코드의 책임**이다(`is_operator_owned`) — 지금 DB 권한이 안 막아주기 때문이다.
 - `crawl_run`은 **실행 시작에 INSERT**해 `run_id`를 얻고(하위 레코드가 참조) **종료에 UPDATE**한다.
 
 ### 3층 분리 (게시판이 30곳이어도 코드는 안 늘어난다)

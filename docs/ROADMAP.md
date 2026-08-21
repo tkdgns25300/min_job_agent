@@ -295,12 +295,31 @@
 - [x] **끌어올림**(§4.2b) — `dedup_key` 묶음의 최신 원문 게시일로. **`jobs`의 현재 값과 다를 때만** 쓴다(안 그러면 매 실행 같은 값을 다시 쓴다) · claim된 공고는 손대지 않음
 - [ ] **권한**(§8) — `GRANT SELECT, INSERT ON jobs` + `GRANT UPDATE (posted_at) ON jobs`. `churches`·DELETE·다른 컬럼 없음
 - [x] 공개된 job이 지워진 경우 `published_job_id` 정리 → **다음 실행이 재공개**(같은 실행에서 되돌리지 않는다 — 각 단계가 저장된 사실만 본다)
-- [ ] (min_job) **`jobs_visible` 뷰** — 노출 규칙(마감·3개월)이 한 곳에만 있게. 없으면 우리가 조건을 베껴야 하고 어긋나면 중복이 샌다
+- ~~(min_job) `jobs_visible` 뷰~~ — **만들지 않는다**(운영자 결정 2026-08-22 · DB는 저장 전용이라 뷰도 예외를 두지 않는다). 노출 규칙 사본은 우리 코드에 남고, **바뀌면 통보**받는다(REVIEW_PAGE §12)
+
+### 1-6c. 검수 화면 지원 (min_job 착수 전) — 명세는 **`docs/REVIEW_PAGE.md`가 정본**
+
+> **완료 기준**: min_job이 그 문서만 보고 검수 페이지를 끝까지 만들 수 있다.
+> ⚠️ **1번은 3개월 전량보다 먼저다** — 그림 바이트는 구조화할 때만 받으므로, 전량을 먼저 돌리면
+> 3,188건의 포스터가 Storage에 없고 채우려면 유료 재구조화나 별도 이미지 패스가 필요하다.
+
+- [ ] **포스터를 Storage에 올린다** — ✅ **컬럼은 냈다**(`poster_paths text[]` · 2026-08-22 · 채우는 일이 남았다). 계약은 REVIEW_PAGE §7.1
+  - 버킷 `postings`(비공개) · 경로 `{source_key}/{source_data_id}/{n}.{ext}` · `n`은 원문 순서(0부터)
+  - PDF도 올린다(브라우저가 본다). **HWP·DOC는 올리지 않는다** — 원본 링크로만 준다
+  - ⚠️ `poster_paths`를 `source_data`에 두지 않는 이유: 그 테이블은 write-once이고 갱신 허용 칸이 3개뿐이다(4번째를 더하면 그 보호가 느슨해진다)
+  - 덤: **파일 유무가 그대로 "포스터 / 그림 못 받음" 신호**가 되어 등급 근거용 별도 칸이 필요 없어진다(REVIEW_PAGE §4.4)
+- [x] **`review_note` 컬럼**(2026-08-22 · `20260822010000_review_page_columns.sql` · ⚠️ 적용은 운영자)
+  - ⚠️ **`reject_reason`에 값을 늘리지 않는다** — `_SETTLED_REASONS`·`_CRAWLER_REJECTIONS`가 그 값으로 분기해서, 새 값을 빠뜨린 곳이 그 행을 매 실행 되살린다
+  - ⚠️ **거절 사유 enum(`operator_reason`)은 만들지 않았다**(운영자 결정 2026-08-22). 어떤 이유가 반복되는지 **실측 0건**이라, 목록을 먼저 만들면 검수자가 없는 항목에서 가장 가까운 값을 억지로 고른다 — 그 데이터로 규칙을 고치면 틀린 근거로 고친다. 자유 텍스트가 쌓인 뒤에 만든다
+  - `review_note`는 **거절 전용이 아니다**(승인 메모도 된다) → `review_status`와 짝을 맺는 CHECK 없음. `CARRIED_ON_RESTRUCTURE`에 들어가 재구조화가 지우지 않는다
+- [ ] 중복 판정이 **라벨 두 칸만** 보내게 고친다 — 지금은 행 전체를 upsert해서, 읽고 쓰는 사이 검수자 저장이 덮인다(REVIEW_PAGE §6.5)
 
 ### 1-7. 배포 (GitHub Actions) — ⚠️ **1-6 이후에만**
 > ephemeral 러너 + JsonStore 조합은 매 실행 원장을 잃어 **전량 재크롤·재구조화·산출물 유실**을 만든다. `crawl.yml`은 **Supabase 전환(1-6) 완료 후** 작성한다(CLAUDE.md 순서 제약).
 - [ ] `.github/workflows/crawl.yml` — 매일 **07:00 KST** cron(DAILY) + `workflow_dispatch`(수동 재실행)
-- [ ] GH Secrets — Vertex·Supabase service key
+  - ⚠️ **`publish`가 `structure` 뒤에 자동으로 이어지지 않는다**(자동으로 붙는 것은 `dedup`뿐) — workflow에서 순서를 명시해야 공개까지 간다
+- [ ] ⚠️ **이단 목록을 러너에 넣는 단계** — `config/heresy-ref.json`은 **커밋하지 않는데**(실명 자료) `load_ref`는 파일이 없으면 **실행을 멈춘다**(조용히 넘어가지 않게 일부러 그렇게 했다). GH Secret에서 파일을 쓰고 **`MINJOB_HERESY_REF`**로 가리킨다
+- [ ] GH Secrets — Vertex·Supabase service key (+ 위 이단 목록)
 - [ ] 첫 자동 실행 검증 + crawl_run/source_health 확인
 
 > **Phase 1 완료 기준**: GitHub Actions가 매일 31곳을 긁어 구조화·중복 판정까지 하고, **확인할 것이 없는 공고는 `jobs`에 공개**되며 나머지는 `PENDING`으로 남는다. 실행은 `crawl_run`·`source_health`로 관측된다.
