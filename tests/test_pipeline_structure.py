@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, fields, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Final
+from uuid import UUID
 
 import pytest
 
@@ -59,7 +60,7 @@ from minjob_ingest.pipeline.structure import (
 from minjob_ingest.pipeline.structure import (
     build_draft as _build_draft,
 )
-from minjob_ingest.store.base import StoreError
+from minjob_ingest.store.base import Poster, StoreError
 from minjob_ingest.store.json_store import JsonStore
 from minjob_ingest.store.serde import row_to_review_data
 
@@ -1771,3 +1772,191 @@ def test_a_rejected_draft_is_not_counted_as_approved(store: JsonStore) -> None:
     )
 
     assert tally.report().statuses == {ReviewStatus.REJECTED.value: 1}
+
+
+# ── 포스터 보관 (2026-08-22 · docs/REVIEW_PAGE.md §7.1) ──────────
+
+
+@dataclass
+class _FakePosters:
+    """정해둔 경로를 돌려주는 포스터 보관소. 네트워크에 나가지 않는다."""
+
+    paths: tuple[str, ...] = ()
+    error: StoreError | None = None
+    checked: int = 0
+    #: ⚠️ `source_data_id`까지 받아 둔다 — 경로가 그 값으로 만들어지므로 **틀리면 검수 화면이
+    #: 다른 공고의 포스터를 띄운다.**
+    calls: list[tuple[str, UUID, int]] = field(default_factory=list)
+
+    def check_bucket(self) -> None:
+        self.checked += 1
+
+    def upload(
+        self, *, source_key: str, source_data_id: UUID, posters: Sequence[Poster]
+    ) -> tuple[str, ...]:
+        self.calls.append((source_key, source_data_id, len(posters)))
+        if self.error is not None:
+            raise self.error
+        return self.paths
+
+
+def _poster_record() -> SourceData:
+    return _source_data(image_urls=("https://e.kr/poster.png",))
+
+
+def _one_image() -> _FakeImages:
+    return _FakeImages(MediaSet(items=(Media(media_type="image/png", data=b"x" * 5_000),)))
+
+
+def test_a_kept_poster_path_lands_on_the_draft(store: JsonStore) -> None:
+    """검수 화면이 이 값으로 포스터를 띄운다 — 초안에 실려야 저장된다."""
+    record = _poster_record()
+    store.save_source_data(record)
+    posters = _FakePosters(paths=("YTUS/1/0.png",))
+
+    result = structure_one(
+        record, store, _FakeExtractor(), images=_one_image(), posters=posters, heresy=_NO_HERESY
+    )
+
+    assert result.verdict is Verdict.DRAFTED
+    assert posters.calls == [(record.source_key, record.id, 1)]
+    (draft,) = store.dedup_candidates()
+    assert draft.draft.poster_paths == ("YTUS/1/0.png",)
+
+
+def test_a_posting_that_is_not_recruitment_stores_no_poster(store: JsonStore) -> None:
+    """⚠️ **게이트1 탈락은 `review_data` 행이 생기지 않는다**(전량의 4% 추정).
+
+    게이트1 앞에서 올리면 그 포스터는 **아무도 가리키지 않는 파일**로 Storage에 남고, 지우는
+    경로도 없다. 그래서 부르는 자리가 게이트1 뒤여야 한다(2026-08-22 정정).
+    """
+    record = _poster_record()
+    store.save_source_data(record)
+    posters = _FakePosters(paths=("PCKWORLD/1/0.png",))
+
+    result = structure_one(
+        record,
+        store,
+        _FakeExtractor(_extraction(IsChurchRecruitment.NO)),
+        images=_one_image(),
+        posters=posters,
+        heresy=_NO_HERESY,
+    )
+
+    assert result.verdict is Verdict.EXCLUDED
+    assert posters.calls == [], "채용 공고가 아닌 것의 포스터를 남기지 않는다"
+
+
+def test_a_failed_model_call_stores_no_poster(store: JsonStore) -> None:
+    """모델 호출이 실패하면 그 공고는 다음 실행이 다시 잡는다 — 지금 올릴 이유가 없다."""
+    record = _poster_record()
+    store.save_source_data(record)
+    posters = _FakePosters()
+
+    structure_one(
+        record,
+        store,
+        _FakeExtractor(GeminiError("429")),
+        images=_one_image(),
+        posters=posters,
+        heresy=_NO_HERESY,
+    )
+
+    assert posters.calls == []
+
+
+def test_a_storage_failure_does_not_lose_the_posting(store: JsonStore) -> None:
+    """⚠️ 경로가 비면 검수 화면이 "원문을 열어라"로 읽는다 — 그게 맞는 결말이다."""
+    record = _poster_record()
+    store.save_source_data(record)
+
+    result = structure_one(
+        record,
+        store,
+        _FakeExtractor(),
+        images=_one_image(),
+        posters=_FakePosters(error=StoreError("Storage 장애")),
+        heresy=_NO_HERESY,
+    )
+
+    assert result.verdict is Verdict.DRAFTED
+    (draft,) = store.dedup_candidates()
+    assert draft.draft.poster_paths == ()
+
+
+def test_a_dry_run_keeps_nothing(store: JsonStore) -> None:
+    """Storage는 우리 저장소다 — 미리보기는 저장하지 않는다."""
+    record = _poster_record()
+    store.save_source_data(record)
+    posters = _FakePosters(paths=("YTUS/1/0.png",))
+
+    structure_one(
+        record,
+        store,
+        _FakeExtractor(),
+        images=_one_image(),
+        posters=posters,
+        heresy=_NO_HERESY,
+        dry_run=True,
+    )
+
+    assert posters.calls == []
+
+
+def test_a_text_posting_never_touches_storage(store: JsonStore) -> None:
+    """그림이 없으면 올릴 것도 없다 — 헛된 요청을 만들지 않는다."""
+    record = _source_data()
+    store.save_source_data(record)
+    posters = _FakePosters()
+
+    structure_one(record, store, _FakeExtractor(), posters=posters, heresy=_NO_HERESY)
+
+    assert posters.calls == []
+
+
+def test_the_bucket_is_checked_once_before_the_batch(store: JsonStore) -> None:
+    """⚠️ 버킷 이름·권한이 틀린 것을 **포스터 공고 480건마다** 실패로 알아내지 않는다."""
+    for number in ("1", "2"):
+        store.save_source_data(_source_data(external_id=number))
+    posters = _FakePosters()
+
+    structure_pending(
+        store,
+        _FakeExtractor(),
+        StructureOptions(limit=10),
+        heresy=_NO_HERESY,
+        posters=posters,
+    )
+
+    assert posters.checked == 1, "공고 수와 무관하게 한 번"
+
+
+def test_a_missing_bucket_stops_the_batch_before_any_paid_call(store: JsonStore) -> None:
+    """⚠️ 확인이 실패하면 **한 건도 부르지 않는다** — 이게 이 검사의 값이다."""
+    store.save_source_data(_source_data())
+    extractor = _FakeExtractor()
+
+    class _NoBucket(_FakePosters):
+        def check_bucket(self) -> None:
+            raise StoreError("Bucket not found")
+
+    with pytest.raises(StoreError, match="Bucket not found"):
+        structure_pending(
+            store, extractor, StructureOptions(limit=10), heresy=_NO_HERESY, posters=_NoBucket()
+        )
+
+    assert extractor.image_counts == [], "유료 호출이 한 번도 없어야 한다"
+
+
+def test_a_run_without_storage_still_works(store: JsonStore) -> None:
+    """로컬(JSON) 실행에는 Storage가 없다 — `poster_paths`가 빈 채로 남고 그게 정상이다."""
+    record = _poster_record()
+    store.save_source_data(record)
+
+    result = structure_one(
+        record, store, _FakeExtractor(), images=_one_image(), posters=None, heresy=_NO_HERESY
+    )
+
+    assert result.verdict is Verdict.DRAFTED
+    (draft,) = store.dedup_candidates()
+    assert draft.draft.poster_paths == ()

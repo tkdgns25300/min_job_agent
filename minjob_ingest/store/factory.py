@@ -16,10 +16,11 @@ from dataclasses import dataclass
 
 from minjob_ingest.domain import StoreBackend
 from minjob_ingest.settings import Settings
-from minjob_ingest.store.base import PublishTarget, Store
+from minjob_ingest.store.base import PosterStore, PublishTarget, Store
 from minjob_ingest.store.jobs_gateway import SupabaseJobs
 from minjob_ingest.store.json_store import JsonStore
 from minjob_ingest.store.postgrest import PostgrestClient
+from minjob_ingest.store.storage import SupabaseStorage
 from minjob_ingest.store.supabase_store import SupabaseStore
 
 
@@ -32,6 +33,9 @@ class StoreSession:
     #: `jobs` 접근. ⚠️ **JSON 백엔드에는 없다**(`None`) — 로컬 파일에는 공개 테이블이 없다.
     #: 공개 경로는 이 값이 `None`이면 시작하지 않는다.
     jobs: PublishTarget | None
+    #: 포스터 보관. ⚠️ **JSON 백엔드에는 없다**(`None`) — 그러면 `poster_paths`가 빈 채로
+    #: 남는다. 검수 화면은 Supabase에서만 도므로 로컬 실행에 손실이 없다.
+    posters: PosterStore | None
     #: 화면에 찍을 이름. 어디에 쓰는지 매 실행 보이게 한다.
     label: str
 
@@ -47,13 +51,19 @@ def opened_store(settings: Settings) -> Iterator[StoreSession]:
         case StoreBackend.JSON:
             # 로컬 파일은 닫을 것이 없다. `jobs`도 없다 — 공개는 Supabase에서만 한다.
             yield StoreSession(
-                store=JsonStore(settings.data_dir), jobs=None, label=str(settings.data_dir)
+                store=JsonStore(settings.data_dir),
+                jobs=None,
+                posters=None,
+                label=str(settings.data_dir),
             )
         case StoreBackend.SUPABASE:
             supabase = settings.require_supabase()
-            with PostgrestClient(supabase) as client:
+            # ⚠️ 전송이 둘이다(원장은 `/rest/v1` · 포스터는 `/storage/v1`) — 함께 열고 함께
+            #    닫는다. 하나만 닫으면 소켓이 남는다.
+            with PostgrestClient(supabase) as client, SupabaseStorage(supabase) as storage:
                 yield StoreSession(
                     store=SupabaseStore(client),
                     jobs=SupabaseJobs(client),
+                    posters=storage,
                     label=supabase.url,
                 )

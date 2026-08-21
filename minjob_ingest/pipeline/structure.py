@@ -52,7 +52,7 @@ from minjob_ingest.pipeline.heresy import HeresyMatch, HeresyRef, screen
 from minjob_ingest.pipeline.media import Media, MediaSet, MediaSource, failure_note, wanted_urls
 from minjob_ingest.pipeline.normalize import clean_title, closed_by_board
 from minjob_ingest.pipeline.verify import VerifyReport, verify
-from minjob_ingest.store.base import Store, StoreError
+from minjob_ingest.store.base import Poster, PosterStore, Store, StoreError
 from minjob_ingest.store.serde import SerdeError
 
 _LOG = logging.getLogger(__name__)
@@ -364,6 +364,7 @@ def structure_pending(
     heresy: HeresyRef,
     on_result: ResultSink | None = None,
     images: MediaSource | None = None,
+    posters: PosterStore | None = None,
     workers: int = DEFAULT_WORKERS,
 ) -> StructureReport:
     """미판정 원자료를 게시판별로 나눠 처리한다 — 게시판 간 병렬 · 게시판 안은 오래된 것부터.
@@ -377,6 +378,11 @@ def structure_pending(
     """
     if workers < 1:
         raise ValueError(f"workers는 1 이상이어야 함 ({workers})")
+    if posters is not None:
+        # ⚠️ **한 건도 처리하기 전에** 확인한다. 버킷 이름이 틀렸거나 권한이 없는 것은 한 번
+        #    물어보면 알 수 있는 것이라, 포스터 공고 480건마다 실패로 알아내지 않는다
+        #    (`publish`가 `check_jobs_columns`를 앞에 두는 것과 같은 자리·같은 이유).
+        posters.check_bucket()
     pending = store.list_unstructured(_ALL_LIMIT, source_key=options.source_key)
     if len(pending) == _ALL_LIMIT:
         # 조용한 부분 성공을 만들지 않는다 — 리포트만 보면 전량을 끝낸 것처럼 보인다.
@@ -391,7 +397,13 @@ def structure_pending(
             if tally.halted is not None or not budget.take():
                 return
             result = structure_one(
-                record, store, extractor, heresy=heresy, dry_run=options.dry_run, images=images
+                record,
+                store,
+                extractor,
+                heresy=heresy,
+                dry_run=options.dry_run,
+                images=images,
+                posters=posters,
             )
             if result.verdict in _FREE_VERDICTS:
                 budget.give_back()
@@ -416,10 +428,19 @@ def structure_one(
     heresy: HeresyRef,
     dry_run: bool = False,
     images: MediaSource | None = None,
+    posters: PosterStore | None = None,
 ) -> StructureResult:
     """공고 1건을 판정하고 저장한다. 예외를 밖으로 던지지 않는다 — 실패도 결과다."""
     try:
-        return _judge(record, store, extractor, heresy=heresy, dry_run=dry_run, images=images)
+        return _judge(
+            record,
+            store,
+            extractor,
+            heresy=heresy,
+            dry_run=dry_run,
+            images=images,
+            posters=posters,
+        )
     except (StoreError, SerdeError) as err:
         # ⚠️ 저장이 깨진 행 **하나** 때문에 배치가 멈추면 뒤의 수천 건에 영원히 도달하지
         # 못한다(SPEC §4 글 단위 격리). 시도 횟수도 못 올리므로(그 기록 역시 저장이다)
@@ -436,6 +457,7 @@ def build_draft(
     heresy: HeresyMatch | None = None,
     media_sent: bool,
     media_missed: bool,
+    poster_paths: tuple[str, ...] = (),
 ) -> ReviewData:
     """검수 초안 조립.
 
@@ -526,6 +548,7 @@ def build_draft(
         heresy_evidence=heresy.evidence if heresy else None,
         review_status=ReviewStatus.REJECTED if reject_reason else ReviewStatus.PENDING,
         reject_reason=reject_reason,
+        poster_paths=poster_paths,
     )
     # ⚠️ 등급을 매긴 뒤 검수 상태를 다시 정한다 — 등급이 조립된 레코드에서 나오므로
     #    한 번에 만들 수 없다. `replace`가 불변식을 다시 검사하므로 게이트1 `UNCERTAIN`에
@@ -558,6 +581,42 @@ def waits_for_media(record: SourceData, images: MediaSource | None) -> bool:
     return images is None and bool(wanted_urls(record))
 
 
+def _keep_posters(
+    record: SourceData,
+    gathered: MediaSet,
+    posters: PosterStore | None,
+    *,
+    dry_run: bool,
+) -> tuple[str, ...]:
+    """받은 그림·PDF를 보관하고 경로를 돌려준다(docs/REVIEW_PAGE.md §7.1).
+
+    ⚠️ **실패는 치명적이지 않다.** 경로가 비면 검수 화면이 "포스터를 볼 수 없다 — 원문을
+    열어라"로 읽는데, 원인이 게시판 실패든 Storage 실패든 **검수자가 할 일은 같다.** 그래서
+    로그만 남기고 판정을 계속한다.
+
+    ⚠️ **연속 실패로 멈추지 않는다**(`publish`와 다르다). 버킷 이름·권한이 틀린 경우는
+    `check_bucket`이 실행 시작에 잡고, 그 밖의 실패는 전송 층이 이미 3번 재시도한다. 남는
+    시나리오는 "실행 내내 Storage 장애"뿐인데 그때도 **돈이 더 들지 않고 초안도 저장된다** —
+    측정된 적 없는 사고를 위해 장치를 두지 않는다.
+
+    ⚠️ `--dry-run`은 올리지 않는다 — Storage는 우리 저장소이고 미리보기는 저장하지 않는다.
+
+    ⚠️ **부르는 자리가 게이트1 뒤인 것이 계약이다**(`_judge`) — 앞에서 부르면 채용 공고가
+    아닌 것의 포스터가 남는다.
+    """
+    if posters is None or dry_run or not gathered.items:
+        return ()
+    try:
+        return posters.upload(
+            source_key=record.source_key,
+            source_data_id=record.id,
+            posters=[Poster(media_type=item.media_type, data=item.data) for item in gathered.items],
+        )
+    except StoreError as err:
+        _LOG.warning("포스터를 보관하지 못했다 (source_data=%s): %s", record.id, err)
+        return ()
+
+
 def _judge(
     record: SourceData,
     store: Store,
@@ -566,6 +625,7 @@ def _judge(
     heresy: HeresyRef,
     dry_run: bool,
     images: MediaSource | None,
+    posters: PosterStore | None,
 ) -> StructureResult:
     if record.is_empty:
         # 빈 입력에 돈을 쓰지 않는다. 판정은 남겨야 매 실행 다시 집히지 않는다(SPEC §4).
@@ -597,6 +657,12 @@ def _judge(
             media_note=note,
             verified=verified,
         )
+    # ⚠️ **게이트1을 넘긴 뒤에 올린다**(2026-08-22 정정). 앞에 두면 채용 공고가 아니라고
+    #    판정된 공고(추정 4%)의 포스터가 Storage에 남는데, 그 공고는 `review_data` 행이 아예
+    #    생기지 않아 **아무도 가리키지 않는 파일**이 된다. 지우는 경로도 없다.
+    # ⚠️ 유료 호출 뒤라는 것은 문제가 아니다 — 업로드 실패는 치명적이지 않으므로(`_keep_posters`)
+    #    "돈을 쓴 뒤에 터지면 초안을 버릴지" 정할 일이 없다.
+    poster_paths = _keep_posters(record, gathered, posters, dry_run=dry_run)
     try:
         # ⚠️ `--dry-run`에서도 **만들어 본다**. 조립을 건너뛰면 리허설은 통과하고 본 실행만
         # 터진다 — 미리보기의 목적이 "이대로 저장해도 되는가"를 보는 것이라 무의미해진다.
@@ -612,6 +678,7 @@ def _judge(
             #    어느 칸도 원문 대조가 안 됐고, 못 받은 공고는 내용 자체가 없을 수 있다.
             media_sent=bool(gathered.items),
             media_missed=note is not None,
+            poster_paths=poster_paths,
         )
     except ValueError as err:
         # 모델 값이 레코드 불변식과 어긋났다(SPEC §5.1·§6). 저장할 수 없는 초안이므로 실패다.

@@ -296,6 +296,51 @@ class JobAnchor:
     contact_email: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class Poster:
+    """보관할 파일 하나 — 형식과 바이트.
+
+    ⚠️ `pipeline/media.Media`와 같은 모양인데 **여기 따로 두는 이유**: `store/`가 `pipeline/`을
+    가져오면 층이 뒤집힌다(파이프라인이 저장소를 부르는 방향이어야 한다). 경계에서 한 줄
+    변환하는 값이 층 방향을 지키는 값보다 싸다 — `DedupCandidate`를 여기 둔 것과 같은 이유다.
+    """
+
+    media_type: str
+    data: bytes
+
+
+class PosterStore(Protocol):
+    """포스터 보관 — 검수 화면이 그림을 띄울 수 있게 한다(docs/REVIEW_PAGE.md §7.1).
+
+    `Store`와 나눠 두는 이유는 `PublishTarget`과 같다: **`JsonStore`에는 Storage가 없다.**
+    로컬 실행에서는 이 값이 `None`이고, 그러면 `poster_paths`가 빈 채로 남는다 — 검수 화면은
+    Supabase에서만 도므로 손실이 없다.
+
+    ⚠️ **게시판이 아니라 우리 저장소로 가는 전송이다** — UA 위장·`Crawl-delay`·소스별 간격이
+    붙으면 안 된다(`store/transport.py`).
+    """
+
+    def check_bucket(self) -> None:
+        """버킷이 있는지 **첫 업로드 전에** 확인한다.
+
+        ⚠️ 없으면 전량 실행이 480번 실패한다(포스터 공고 추정치). 이름이 틀렸거나 권한이 없는
+        것은 **한 번 물어보면 알 수 있는 것**이라, 글마다 실패로 알아내지 않는다
+        (`PublishTarget.check_jobs_columns`와 같은 자리·같은 이유).
+        """
+
+    def upload(
+        self, *, source_key: str, source_data_id: UUID, posters: Sequence[Poster]
+    ) -> tuple[str, ...]:
+        """올리고 **경로들**을 돌려준다(`review_data.poster_paths`에 그대로 들어간다).
+
+        경로 규약은 `{source_key}/{source_data_id}/{n}.{ext}`이고 `n`은 **받은 순서**다(0부터).
+        ⚠️ 원문의 절대 인덱스가 아니다 — 못 받은 그림은 애초에 목록에 없다(`MediaSet.failures`).
+        상대 순서는 원문 그대로라 여러 장인 공고도 순서가 맞는다.
+
+        ⚠️ **경로가 결정적이라 다시 올리면 덮어쓴다** — 재구조화가 고아 파일을 만들지 않는다.
+        """
+
+
 class PublishTarget(Protocol):
     """`jobs` 접근 — **공개 경로만** 쓰는 별도 계약(SPEC §4.2·§4.2b·§4.3).
 

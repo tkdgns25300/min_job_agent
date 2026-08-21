@@ -659,6 +659,9 @@ def _run_structure(
         console.field("저장소", session.label)
         console.field("모델", client.model, note="--lite" if lite else ENV_VERTEX_MODEL)
         console.field("이단 목록", str(settings.heresy_path.name), note=f"{len(heresy.entries)}건")
+        # ⚠️ 로컬(JSON) 실행에는 Storage가 없어 포스터가 보관되지 않는다 — 화면에 적지
+        #    않으면 "왜 검수 화면에 포스터가 없나"를 나중에 되짚어야 한다.
+        console.field("포스터 보관", "함" if session.posters is not None else "안 함", note=None)
         line = console.progress()
         preview = None if out is None else _PreviewFile(out, model=client.model)
         sinks: list[ResultSink] = [_structure_renderer(console, line, dry_run=dry_run)]
@@ -672,6 +675,7 @@ def _run_structure(
                 heresy=heresy,
                 on_result=_fan_out(sinks),
                 images=images,
+                posters=session.posters,
                 workers=workers,
             )
         line.clear()

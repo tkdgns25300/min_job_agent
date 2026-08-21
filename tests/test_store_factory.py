@@ -20,6 +20,7 @@ from minjob_ingest.settings import (
 )
 from minjob_ingest.store.factory import opened_store
 from minjob_ingest.store.json_store import JsonStore
+from minjob_ingest.store.storage import SupabaseStorage
 from minjob_ingest.store.supabase_store import SupabaseStore
 
 
@@ -111,3 +112,29 @@ def test_the_backend_name_is_case_insensitive(
     """`.env`에 대문자로 적는 사람이 있다 — 오타와 대소문자는 다른 문제다."""
     monkeypatch.setenv(ENV_STORE, "SUPABASE")
     assert _settings(data_dir).store_backend is StoreBackend.SUPABASE
+
+
+def test_the_local_store_has_no_poster_storage(data_dir: Path) -> None:
+    """⚠️ 로컬 파일에는 Storage가 없다 — `poster_paths`가 빈 채로 남고 그게 정상이다."""
+    with opened_store(_settings(data_dir)) as session:
+        assert session.posters is None
+
+
+def test_supabase_brings_poster_storage(data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """검수 화면이 포스터를 띄우려면 이 값이 있어야 한다(docs/REVIEW_PAGE.md §7.1)."""
+    monkeypatch.setenv(ENV_STORE, StoreBackend.SUPABASE.value)
+    monkeypatch.setenv(ENV_SUPABASE_URL, "https://x.supabase.co")
+    monkeypatch.setenv(ENV_SUPABASE_SERVICE_KEY, "secret")
+
+    with opened_store(_settings(data_dir)) as session:
+        assert isinstance(session.posters, SupabaseStorage)
+
+
+def test_the_storage_root_is_built_once(data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """⚠️ 경로를 메서드마다 이어 붙이면 갈라진다 — `rest_url`과 같은 자리에서 만든다."""
+    monkeypatch.setenv(ENV_SUPABASE_URL, "https://x.supabase.co/")
+    monkeypatch.setenv(ENV_SUPABASE_SERVICE_KEY, "secret")
+    supabase = _settings(data_dir).require_supabase()
+
+    assert supabase.storage_url == "https://x.supabase.co/storage/v1"
+    assert supabase.rest_url == "https://x.supabase.co/rest/v1"

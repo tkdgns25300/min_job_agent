@@ -104,6 +104,11 @@ class SupabaseSettings:
         """PostgREST 루트. 경로를 한 곳에서만 만든다 — 메서드마다 이어 붙이면 갈라진다."""
         return f"{self.url}/rest/v1"
 
+    @property
+    def storage_url(self) -> str:
+        """Storage 루트(포스터 보관 · `store/storage.py`). `rest_url`과 같은 이유로 여기서만."""
+        return f"{self.url}/storage/v1"
+
     def __repr__(self) -> str:
         return f"SupabaseSettings(url={self.url!r}, service_role_key={_MASKED})"
 
