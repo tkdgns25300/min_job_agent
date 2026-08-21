@@ -135,6 +135,8 @@ def _full_review_data() -> ReviewData:
         published_job_id=new_id(),
         reviewed_by="operator@minjob",
         reviewed_at=FIXED_NOW,
+        review_note="포스터에서 사례비를 읽기 어려워 추정했다",
+        poster_paths=("YTUS/25553/0.jpg", "YTUS/25553/1.pdf"),
         created_at=FIXED_NOW,
     )
 

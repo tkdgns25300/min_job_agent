@@ -85,10 +85,20 @@ def _sql() -> str:
 
 
 def _table_bodies() -> dict[str, str]:
-    return {
+    """`create table` 본문. ⚠️ **뒤따르는 `alter table … add column`도 접어 넣는다** —
+    적용된 마이그레이션은 고치지 않고 새 파일로 칸을 늘리기 때문에(2026-08-22), `create`만
+    보면 나중에 늘린 칸을 **없는 것으로 착각한다**."""
+    bodies = {
         match.group(1): match.group(2)
         for match in re.finditer(r"^create table (\w+) \((.*?)^\);", _sql(), re.S | re.M)
     }
+    for match in re.finditer(
+        r"^alter table (\w+)\s+add column (?:if not exists )?(.*?);", _sql(), re.S | re.M
+    ):
+        table, declaration = match.group(1), match.group(2).strip()
+        assert table in bodies, f"{table}: create table 없이 alter만 있다"
+        bodies[table] = f"{bodies[table]}\n  {declaration},"
+    return bodies
 
 
 def _columns_of(body: str) -> set[str]:

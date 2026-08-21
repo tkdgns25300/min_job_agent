@@ -65,8 +65,13 @@ _CONFIRMED_DENOMINATION_SOURCES = frozenset(
     {DenominationSource.STATED, DenominationSource.REGISTRY, DenominationSource.OPERATOR}
 )
 
-#: **추출이 채우지 않는 칸** — 행 식별자 + 판정 + 운영자 기록. 미리보기가 "아직 비어 있다"고
-#: 셀 때 제외하는 집합이다(`reject_reason`은 비어 있는 게 정상이다).
+#: **추출이 채우지 않는 칸** — 행 식별자 + 판정 + 운영자 기록 + 파이프라인이 채우는 칸.
+#: 미리보기가 "아직 비어 있다"고 셀 때, 그리고 dedup이 **충실함을 셀 때** 제외하는 집합이다
+#: (`reject_reason`은 비어 있는 게 정상이다).
+#:
+#: ⚠️ `poster_paths`가 여기 있는 이유: 그림 없는 텍스트 공고는 **비어 있는 게 정상**이고,
+#: 반대로 차 있다고 그 공고가 더 충실한 것도 아니다 — 오히려 포스터 공고는 사람이 봐야 하는
+#: 쪽이라, 충실함에 세면 **대표로 뽑힐 확률이 거꾸로 올라간다**(SPEC §4.1 대표 순위).
 REVIEW_STATE_FIELDS: tuple[str, ...] = (
     "id",
     "created_at",
@@ -75,6 +80,8 @@ REVIEW_STATE_FIELDS: tuple[str, ...] = (
     "published_job_id",
     "reviewed_by",
     "reviewed_at",
+    "review_note",
+    "poster_paths",
 )
 
 #: **크롤러가 스스로 내린 거절.** 규칙을 고치면 되돌릴 수 있어야 한다 — 이단 목록·마감 판정·
@@ -88,11 +95,19 @@ _CRAWLER_REJECTIONS = frozenset({RejectReason.DUPLICATE, RejectReason.HERESY, Re
 #: 그대로 남았다). 자동 승인도 같은 이유로 영영 적용되지 않았다(`high`인데 `PENDING`).
 _VERDICT_FIELDS = frozenset({"review_status", "reject_reason"})
 
+#: ⚠️ **재구조화가 다시 계산하는 칸** — 이어받으면 안 된다. 포스터는 구조화할 때 다시 받아
+#: Storage에 올리므로, 옛 경로를 물려주면 **그림이 게시판에서 사라진 뒤에도 남는다.**
+_RECOMPUTED_FIELDS = frozenset({"poster_paths"})
+
 #: 재구조화 초안이 기존 행에서 **이어받는** 칸 = 행 식별자 + 운영자가 쓴 칸.
 #: Supabase `ON CONFLICT (source_data_id) DO UPDATE`의 갱신 대상은 이 집합의 **여집합**이며,
 #: 운영자 승인은 열 제외가 아니라 **`is_safe_to_replace` 조건(WHERE)** 이 지킨다.
+#:
+#: ⚠️ `review_note`는 **이어받는다** — 사람이 적은 말이라 재구조화가 지워선 안 된다.
 CARRIED_ON_RESTRUCTURE: tuple[str, ...] = tuple(
-    name for name in REVIEW_STATE_FIELDS if name not in _VERDICT_FIELDS
+    name
+    for name in REVIEW_STATE_FIELDS
+    if name not in _VERDICT_FIELDS and name not in _RECOMPUTED_FIELDS
 )
 
 
@@ -485,6 +500,15 @@ class ReviewData:
     published_job_id: UUID | None = None
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
+    #: 검수 메모(자유 텍스트). **min_job admin이 쓰고 크롤러는 읽어서 되쓸 뿐이다** —
+    #: 거절 사유를 목록으로 만들 근거가 아직 없어서(실측 0건) 자유 텍스트로 둔다. 여기 쌓인
+    #: 말이 나중에 사유 목록의 근거가 된다.
+    review_note: str | None = None
+    #: 포스터·PDF가 Storage에 저장된 경로. **크롤러가 쓰고 min_job이 읽는다**(구조화 단계).
+    #: ⚠️ **순서가 원문 순서다**(0부터) — 여러 장인 공고는 그 순서로 봐야 말이 된다.
+    #: ⚠️ 비어 있으면서 `source_data.image_urls`는 차 있으면 **그림을 못 받았다**는 뜻이다
+    #: (바이트를 못 받으면 올릴 것도 없다). 그래서 등급 근거를 담는 별도 칸을 두지 않는다.
+    poster_paths: tuple[str, ...] = ()
     created_at: datetime = field(default_factory=kst_now)
 
     def __post_init__(self) -> None:
@@ -509,6 +533,7 @@ class ReviewData:
             "required_docs",
             "optional_docs",
             "process_steps",
+            "poster_paths",
         ):
             _set(self, name, tuple(getattr(self, name)))
 

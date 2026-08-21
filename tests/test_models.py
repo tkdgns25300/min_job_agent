@@ -30,6 +30,7 @@ from minjob_ingest.domain import (
 from minjob_ingest.models import (
     CARRIED_ON_RESTRUCTURE,
     MAX_STRUCTURE_ATTEMPTS,
+    REVIEW_STATE_FIELDS,
     Attachment,
     CrawlRun,
     JsonValue,
@@ -1301,3 +1302,40 @@ def test_a_human_approval_counts_as_operator_owned() -> None:
     assert _review(
         confidence=Confidence.MEDIUM, review_status=ReviewStatus.APPROVED
     ).is_operator_owned
+
+
+# ── 검수 화면이 쓰는 칸 둘 (2026-08-22 · docs/REVIEW_PAGE.md) ────────
+
+
+def test_a_reviewer_note_survives_restructuring() -> None:
+    """사람이 적은 말이다 — 재구조화가 지워선 안 된다."""
+    assert "review_note" in CARRIED_ON_RESTRUCTURE
+
+
+def test_poster_paths_are_recomputed_not_carried() -> None:
+    """⚠️ 이어받으면 **그림이 게시판에서 사라진 뒤에도 옛 경로가 남는다.**
+
+    포스터는 구조화할 때 다시 받아 올리므로 그때 다시 채워지는 것이 맞다.
+    """
+    assert "poster_paths" not in CARRIED_ON_RESTRUCTURE
+
+
+def test_neither_new_column_counts_as_an_empty_extraction() -> None:
+    """미리보기가 "아직 안 뽑았다"고 셀 때 제외돼야 한다 — 추출이 채우는 칸이 아니다.
+
+    ⚠️ `poster_paths`가 여기 빠지면 **그림 없는 텍스트 공고가 매번 "빈 칸 있음"으로 보인다**.
+    """
+    for name in ("review_note", "poster_paths"):
+        assert name in REVIEW_STATE_FIELDS
+
+
+def test_poster_paths_accept_a_list_and_become_a_tuple() -> None:
+    """JSON에서 온 값은 list다 — 레코드는 불변이어야 한다."""
+    draft = _review(poster_paths=["YTUS/1/0.jpg"])
+    assert draft.poster_paths == ("YTUS/1/0.jpg",)
+
+
+def test_a_note_needs_no_verdict_to_stand() -> None:
+    """⚠️ 거절 전용이 아니다 — 승인할 때 남기는 메모도 있다(그래서 CHECK를 걸지 않았다)."""
+    draft = _review(review_status=ReviewStatus.APPROVED, review_note="사례비는 포스터 기준 추정")
+    assert draft.review_note == "사례비는 포스터 기준 추정"
