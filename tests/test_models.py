@@ -38,6 +38,7 @@ from minjob_ingest.models import (
     SourceHealth,
     new_id,
 )
+from minjob_ingest.pipeline.confidence import review_status_for
 
 FIXED_NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
 KST = timezone(timedelta(hours=9))
@@ -1264,3 +1265,39 @@ def test_an_approved_draft_is_never_replaced_even_without_a_reviewer() -> None:
 def test_a_pending_untouched_draft_is_replaceable() -> None:
     """재구조화가 덮어써도 되는 유일한 상태 — 아무도 손대지 않은 PENDING."""
     assert _review_data().is_safe_to_replace
+
+
+# ── 운영자 승인 감지 (2026-08-21 · SPEC §5.7) ──────────────────────
+
+
+def test_auto_approval_happens_only_at_high() -> None:
+    """`is_operator_approved`가 기대는 **전제**를 못 박는다(SPEC §5.7).
+
+    ⚠️ `high` 밖에서도 자동 승인을 내게 바뀌면 그 추론이 **조용히** 틀린다 — 사람이 승인한 것을
+    자동 승인으로 오인해 dedup이 승인을 검수 큐로 되돌린다. 그러니 짝을 여기서 함께 지킨다.
+    """
+    for grade in Confidence:
+        auto_approved = review_status_for(grade, None) is ReviewStatus.APPROVED
+        assert auto_approved is (grade is Confidence.HIGH)
+
+
+def test_an_approval_outside_high_can_only_be_a_person() -> None:
+    """min_job admin은 승인할 때 `review_status` 한 칸만 쓴다(SPEC §8) — 그걸로 알아본다."""
+    for grade in Confidence:
+        draft = _review(confidence=grade, review_status=ReviewStatus.APPROVED)
+        assert draft.is_operator_approved is (grade is not Confidence.HIGH)
+
+
+def test_a_pending_row_is_never_read_as_approved_by_a_person() -> None:
+    """⚠️ 등급만 보고 판단하면 검수 대기 행이 전부 "사람이 손댄 것"이 되어 dedup이 멈춘다."""
+    for status in (ReviewStatus.PENDING, ReviewStatus.REJECTED):
+        reason = RejectReason.CLOSED if status is ReviewStatus.REJECTED else None
+        draft = _review(confidence=Confidence.LOW, review_status=status, reject_reason=reason)
+        assert not draft.is_operator_approved
+
+
+def test_a_human_approval_counts_as_operator_owned() -> None:
+    """이 연결이 실제 효과다 — `dedup`이 판정을 덮지 않고 대표 순위에서도 앞선다."""
+    assert _review(
+        confidence=Confidence.MEDIUM, review_status=ReviewStatus.APPROVED
+    ).is_operator_owned

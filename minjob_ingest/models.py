@@ -683,17 +683,42 @@ class ReviewData:
         멈춘 행을 재구조화가 AI 초안으로 되돌리면, **손으로 한 교정이 조용히 사라진다**
         (`reviewed_by`만 남아 "봤는데 고친 흔적이 없는" 모순 행이 된다).
         `denomination_source=operator`가 SPEC §5.3의 운영자 확정 표시다.
+
+        ⚠️⚠️ **승인 자체도 표시로 읽는다**(2026-08-21 · 실측으로 잡았다). 정본 표시는
+        `reviewed_by`고 admin이 승인할 때 채운다 — **자동 승인은 비워 둔다**(SPEC §8). 그런데
+        그 규약이 서기 전에 승인된 행에는 표시가 없고, 한 칸에만 의존하면 admin의 회귀가
+        조용히 승인을 지운다. 그래서 추론을 **폴백으로** 함께 둔다: **자동 승인은 `high`에서만
+        일어나므로**(`review_status_for`) `APPROVED`인데 `high`가 아니면 사람이 승인한 것뿐이다.
+
+        표시를 못 읽으면 두 가지가 깨진다: ① dedup이 등급대로 `PENDING`을 다시 써서 **승인이
+        검수 큐로 되돌아가고**(다시 승인해도 또 되돌아간다), ② 같은 자리에 새 AI 초안이 오면
+        `_master_priority`에서 **사람이 승인한 행이 밀려** 그 사람의 교정이 버려진다 — SPEC §4.1은
+        "사람이 확인한 것 > 자동 승인된 것"이라고 정해 두었는데 코드가 그걸 알아볼 수 없었다.
         """
         return (
-            self.reviewed_by is not None or self.denomination_source is DenominationSource.OPERATOR
+            self.reviewed_by is not None
+            or self.denomination_source is DenominationSource.OPERATOR
+            or self.is_operator_approved
+        )
+
+    @property
+    def is_operator_approved(self) -> bool:
+        """**사람이 승인한 행인가** — 자동 승인은 `high`에서만 일어난다(`review_status_for`).
+
+        ⚠️ 이 추론이 성립하는 근거는 등급→상태 규칙이 한 곳에만 있다는 것이다. 그 규칙이
+        `high` 밖에서도 `APPROVED`를 내게 바뀌면 이 추론이 조용히 틀린다 —
+        `tests/test_models.py`가 그 짝을 함께 못 박는다.
+        """
+        return (
+            self.review_status is ReviewStatus.APPROVED and self.confidence is not Confidence.HIGH
         )
 
     @property
     def is_operator_owned(self) -> bool:
         """**사람의 손이 닿은 행인가** — 크롤러가 판정을 덮어써선 안 된다.
 
-        `is_operator_touched`에 **게재 링크**를 더한 것이다: admin이 `reviewed_by`를 안 채운 채
-        승인만 해도 `published_job_id`가 붙는데, 그 행을 나중에 중복으로 거절하면 **이미 공개한
+        `is_operator_touched`에 **게재 링크**를 더한 것이다: 자동 승인된 행에는 사람의 표시가
+        하나도 없는데 `published_job_id`가 붙고, 그 행을 나중에 중복으로 거절하면 **이미 공개한
         공고가 목록에서 사라진다**(SPEC §4.1). 그래도 `dedup_key` 라벨은 붙인다 — 그게 없으면
         SPEC §4.2가 "이미 공개된 같은 자리"를 찾을 수 없다.
         """
@@ -703,9 +728,9 @@ class ReviewData:
     def is_safe_to_replace(self) -> bool:
         """재구조화가 이 초안을 **버려도 되는가**.
 
-        ⚠️ `is_operator_touched`만으로는 부족하다 — admin이 `reviewed_by`를 안 채운 채 승인만
-        해도 `published_job_id`가 붙는데, 그 링크가 사라지면 이미 공개한 공고를 한 번 더
-        승격하게 된다(SPEC §4.2가 그 값으로 끌어올림을 찾는다). **검수가 끝난 행도 지킨다.**
+        ⚠️ `is_operator_touched`만으로는 부족하다 — 자동 승인된 행에도 `published_job_id`가
+        붙는데, 그 링크가 사라지면 이미 공개한 공고를 한 번 더 승격하게 된다(SPEC §4.2가 그
+        값으로 끌어올림을 찾는다). **검수가 끝난 행도 지킨다.**
 
         ⚠️ **`is_operator_owned`를 쓰지 않는다** — `PENDING`인데 게재 링크가 있는 행은 §4.2의
         끌어올림 행이고, 그건 재구조화로 내용을 갱신하는 게 맞다(링크는 이어받는다).
@@ -717,8 +742,12 @@ class ReviewData:
 
         ⚠️ **크롤러가 내린 거절은 되돌릴 수 있다**(2026-08-19). 이단·마감·중복 규칙은 실측으로
         계속 바뀌는데, 그 행까지 지키면 **고친 규칙이 이미 판정된 행에 영영 적용되지 않는다**
-        (실측: 이단 규칙을 고쳤는데 잘못 거절된 2건을 되돌릴 길이 없었다). `APPROVED`는 계속
-        지킨다 — 지금은 운영자 승인과 자동 승인을 가릴 표시가 없다(`reviewed_by` 미구현).
+        (실측: 이단 규칙을 고쳤는데 잘못 거절된 2건을 되돌릴 길이 없었다).
+
+        ⚠️ **`APPROVED`는 사람이 승인한 것이든 자동이든 지킨다.** `reviewed_by`가 들어오면
+        자동 승인만 골라 되돌릴 수 있게 되지만(2026-08-21), 그 행은 **이미 `jobs`에 나가 있을
+        수 있다** — 되돌려서 새 판정이 거절이 되면 `review_data`는 거절인데 공개된 공고는 그대로
+        남는다(공개를 회수하는 경로가 없다). 그걸 열려면 회수 경로가 먼저다.
         """
         if self.is_operator_touched:
             return False

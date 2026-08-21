@@ -806,3 +806,92 @@ def test_judging_with_anchors_is_idempotent() -> None:
     anchors = [_anchor()]
 
     assert plan(candidates, anchors=anchors) == plan(candidates, anchors=anchors)
+
+
+# ── 사람이 승인한 행 (SPEC §8 · admin 은 review_status 한 칸만 쓴다) ──
+
+
+def test_an_operator_approval_is_never_pushed_back_to_review() -> None:
+    """⚠️ **실측으로 잡은 버그**(2026-08-21). admin은 승인할 때 `review_status`만 쓰고
+    `reviewed_by`는 비워 둔다(SPEC §8) — 그래서 `is_operator_owned`로 걸리지 않는다.
+
+    그 상태에서 등급이 정하는 값(`medium` → `PENDING`)을 그대로 쓰면 **승인이 검수 큐로
+    되돌아가고**, 사람이 다시 승인해도 다음 실행이 또 되돌린다. 그 자리는 영영 공개되지 않는다.
+    """
+    approved = _candidate(confidence=Confidence.MEDIUM, review_status=ReviewStatus.APPROVED)
+
+    (update,) = plan([approved])
+
+    assert update.dedup_state is DedupState.ALONE
+    # 라벨만 쓴다 — 판정을 아예 건드리지 않으므로 승인이 그대로 남는다.
+    assert update.verdict is None
+
+
+def test_an_approval_by_a_human_is_recognised_without_reviewed_by() -> None:
+    """자동 승인은 `high`에서만 일어난다 — `APPROVED`인데 `high`가 아니면 사람이 승인한 것이다.
+
+    ⚠️ 이 추론이 없으면 admin이 `reviewed_by`를 안 쓰는 한(SPEC §8) 사람의 손길을 볼 수 없다.
+    """
+    assert _draft(
+        confidence=Confidence.MEDIUM, review_status=ReviewStatus.APPROVED
+    ).is_operator_owned
+    assert _draft(confidence=Confidence.LOW, review_status=ReviewStatus.APPROVED).is_operator_owned
+    # 자동 승인은 사람의 손길이 아니다 — 재구조화가 덮어도 된다.
+    assert not _draft(
+        confidence=Confidence.HIGH, review_status=ReviewStatus.APPROVED
+    ).is_operator_owned
+
+
+def test_a_human_approved_row_wins_the_master_seat() -> None:
+    """SPEC §4.1 대표 순위 — **사람이 확인한 것 > 자동 승인된 것**.
+
+    ⚠️ 밀리면 사람이 고친 값이 옆 게시판의 AI 초안으로 대체된다(SPEC §8이 적어 둔 위험).
+    """
+    human = _candidate(confidence=Confidence.MEDIUM, review_status=ReviewStatus.APPROVED)
+    fresh = _candidate(confidence=Confidence.HIGH, on=_DAY.replace(day=5))
+
+    updates = _by_id(plan([human, fresh]))
+
+    assert updates[str(human.draft.id)].dedup_state is DedupState.MASTER
+    assert updates[str(fresh.draft.id)].dedup_state is DedupState.DUPLICATE
+
+
+def test_a_pending_draft_still_stays_pending() -> None:
+    """되돌리지 않는 것은 **승인뿐**이다 — 아직 검수 전인 행은 그대로 큐에 남아야 한다."""
+    (update,) = plan([_candidate(confidence=Confidence.MEDIUM)])
+
+    assert update.verdict is not None
+    assert update.verdict.review_status is ReviewStatus.PENDING
+
+
+def test_an_approved_draft_can_still_be_rejected_as_a_duplicate() -> None:
+    """⚠️ 막는 것은 **승인 → 검수 대기** 한 방향뿐이다.
+
+    승인된 행이 중복으로 드러나면 거절이 맞다 — `reject_reason`이 남아 되돌릴 수 있다.
+    """
+    older = _candidate(confidence=Confidence.HIGH, review_status=ReviewStatus.APPROVED)
+    newer = _candidate(
+        confidence=Confidence.MEDIUM,
+        review_status=ReviewStatus.APPROVED,
+        on=_DAY.replace(day=2),
+    )
+
+    updates = _by_id(plan([older, newer]))
+    rejected = [u for u in updates.values() if u.dedup_state is DedupState.DUPLICATE]
+
+    assert len(rejected) == 1
+    assert rejected[0].verdict is not None
+    assert rejected[0].verdict.review_status is ReviewStatus.REJECTED
+    assert rejected[0].verdict.reject_reason is RejectReason.DUPLICATE
+
+
+def test_an_approved_draft_in_an_uncertain_group_keeps_its_approval() -> None:
+    """`UNCERTAIN`은 사람이 정할 자리다 — 그런데 이미 사람이 정한 것을 되돌리면 안 된다."""
+    approved = _candidate(confidence=Confidence.MEDIUM, review_status=ReviewStatus.APPROVED)
+    other = _candidate(contact_email="other@hanmail.net")
+
+    updates = _by_id(plan([approved, other]))
+    mine = updates[str(approved.draft.id)]
+
+    assert mine.dedup_state is DedupState.UNCERTAIN
+    assert mine.verdict is None or mine.verdict.review_status is ReviewStatus.APPROVED
