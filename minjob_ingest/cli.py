@@ -251,7 +251,13 @@ def _collect_all(
         except BaseException as err:
             if run is not None:
                 failures[_ABORTED] = f"{type(err).__name__}: {err}"
-                _finish(store, run, sources, failures, saved_total)
+                try:
+                    _finish(store, run, sources, failures, saved_total)
+                except StoreError as closing:
+                    # ⚠️ 종료 기록 실패가 **원래 원인을 덮으면 안 된다.** 저장소가 아예
+                    #    안 되는 상황에서는 둘 다 실패하는데, 그때 화면에 남는 것이 종료
+                    #    기록 쪽이면 무엇이 먼저 깨졌는지 알 수 없다(2026-08-21 실측).
+                    logging.getLogger(__name__).error("실행 기록을 닫지 못했다: %s", closing)
             raise
         else:
             if run is not None:
