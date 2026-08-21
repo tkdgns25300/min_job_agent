@@ -493,18 +493,21 @@ def _apply(
     ⚠️ **앵커에는 아무것도 쓰지 않는다**(`None`) — `jobs` 행이라 `review_data`에 쓸 칸이 없다.
     ⚠️ **운영자가 손댔거나 이미 공개된 초안에는 라벨만** 쓴다 — 사람이 한 일을 크롤러가 덮지
     않는다. 그래도 라벨은 붙여야 SPEC §4.2가 "이미 공개된 같은 자리"를 찾을 수 있다.
+    그 예외(우리가 내린 중복 거절을 되돌릴 때)는 `allows_dedup_verdict`가 정한다.
     """
     draft = member.draft
     if draft is None:
         return None
-    if draft.is_operator_owned:
+    if not draft.allows_dedup_verdict(state):
         return DedupUpdate(review_data_id=draft.id, dedup_key=key, dedup_state=state)
     return DedupUpdate(
         review_data_id=draft.id,
         dedup_key=key,
         dedup_state=state,
         verdict=DedupVerdict(
-            review_status=review_status, reject_reason=reject_reason, posted_at=posted_at
+            review_status=review_status,
+            reject_reason=reject_reason,
+            posted_at=posted_at,
         ),
     )
 

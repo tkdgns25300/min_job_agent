@@ -724,6 +724,25 @@ class ReviewData:
         """
         return self.is_operator_touched or self.published_job_id is not None
 
+    def allows_dedup_verdict(self, state: DedupState) -> bool:
+        """dedup이 이 행에 **판정까지** 써도 되는가(아니면 라벨만).
+
+        기본은 "사람이 손댄 행에는 라벨만"이다. 예외가 하나 있다: **우리가 내린 중복 거절을
+        되돌리는 것**은 사람이 한 일을 덮는 게 아니라 **우리 결정을 취소하는 것**이다
+        (`_CRAWLER_REJECTIONS`와 같은 판단).
+
+        ⚠️ 예외가 없으면 **dedup이 멈춘다**(2026-08-21 실측). 중복으로 거절된 행에 사람의 표시가
+        붙으면(교단 교정·`reviewed_by`) 그 뒤로는 라벨만 쓰는데, 묶음이 흩어져 라벨이 `ALONE`이
+        되는 순간 `reject_reason=DUPLICATE`와 짝이 깨져 레코드가 거부한다(`_check_dedup`) —
+        한 행이 실행 전체를 멈춘다.
+
+        ⚠️ 사람의 결론은 그대로다: 사람이 내린 거절은 `OPERATOR`라 여기 걸리지 않고,
+        `denomination_source`·`reviewed_by` 같은 사람의 표시는 판정 필드가 아니라 남는다.
+        """
+        if not self.is_operator_owned:
+            return True
+        return self.reject_reason is RejectReason.DUPLICATE and state is not DedupState.DUPLICATE
+
     @property
     def is_safe_to_replace(self) -> bool:
         """재구조화가 이 초안을 **버려도 되는가**.

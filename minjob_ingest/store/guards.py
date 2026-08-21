@@ -80,7 +80,7 @@ def with_dedup(stored: ReviewData, update: DedupUpdate) -> ReviewData:
     """
     if update.verdict is None:
         return replace(stored, dedup_key=update.dedup_key, dedup_state=update.dedup_state)
-    if stored.is_operator_owned:
+    if not stored.allows_dedup_verdict(update.dedup_state):
         raise StoreError(f"운영자가 손댄 초안에는 판정을 쓸 수 없다 (id={stored.id})")
     # ⚠️ **한 번에 바꾼다.** 라벨을 먼저 붙이면 `dedup_state=DUPLICATE`인데 아직 거절이 아닌
     #    중간 상태가 생기고, 레코드 불변식이 그걸 막는다(`_check_dedup`) — 옳은 거부다.

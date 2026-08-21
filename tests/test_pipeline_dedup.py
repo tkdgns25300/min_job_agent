@@ -18,6 +18,7 @@ from minjob_ingest.clock import KST
 from minjob_ingest.domain import (
     Confidence,
     DedupState,
+    Denomination,
     DenominationSource,
     Department,
     IsChurchRecruitment,
@@ -35,6 +36,7 @@ from minjob_ingest.pipeline.dedup import (
     seat_of,
 )
 from minjob_ingest.store.base import DedupCandidate, DedupUpdate, JobAnchor
+from minjob_ingest.store.guards import with_dedup
 
 _NOW: Final = datetime(2026, 8, 17, 9, 0, tzinfo=KST)
 _DAY: Final = date(2026, 8, 4)
@@ -895,3 +897,61 @@ def test_an_approved_draft_in_an_uncertain_group_keeps_its_approval() -> None:
 
     assert mine.dedup_state is DedupState.UNCERTAIN
     assert mine.verdict is None or mine.verdict.review_status is ReviewStatus.APPROVED
+
+
+def test_our_own_duplicate_rejection_is_undone_even_after_a_person_touched_the_row() -> None:
+    """⚠️ 이걸 못 하면 **dedup이 한 행 때문에 멈춘다**(2026-08-21 실측).
+
+    중복으로 거절한 행에 사람의 표시가 붙고(교단 교정) 나중에 묶음이 흩어지면, 라벨만 쓰는
+    경로가 `reject_reason=DUPLICATE` + `dedup_state=ALONE`이라는 **깨진 짝**을 만든다.
+    중복 거절은 **우리가 내린 것**이라 우리가 되돌려도 된다 — 사람의 결론이 아니다.
+    """
+    ours = _candidate(
+        review_status=ReviewStatus.REJECTED,
+        reject_reason=RejectReason.DUPLICATE,
+        dedup_state=DedupState.DUPLICATE,
+        dedup_key="장성제일교회:JEONNAM:ASSOCIATE_PASTOR:-:R1",
+        denomination_source=DenominationSource.OPERATOR,
+        denomination=Denomination.TONGHAP,
+    )
+
+    (update,) = plan([ours])
+
+    assert update.dedup_state is DedupState.ALONE
+    assert update.verdict is not None
+    assert update.verdict.reject_reason is None
+    # 되살아난 상태는 등급이 정한다 — 처음 저장될 때와 같은 값이다.
+    assert update.verdict.review_status is ReviewStatus.APPROVED
+    # 저장소도 같은 판단을 해야 한다 — 아니면 여기서 통과하고 저장에서 멈춘다.
+    assert with_dedup(ours.draft, update).reject_reason is None
+
+
+def test_a_rejection_a_person_made_never_enters_the_judgement() -> None:
+    """`OPERATOR` 거절은 사람의 결론이라 **후보에서 아예 빠진다**(`_SETTLED_REASONS`).
+
+    ⚠️ 되돌리기 예외가 `DUPLICATE`에만 걸리는 이유를 함께 지킨다 — 사람의 거절까지 되돌리면
+    운영자가 내린 결론이 매 실행 되살아난다.
+    """
+    theirs = _candidate(
+        review_status=ReviewStatus.REJECTED,
+        reject_reason=RejectReason.OPERATOR,
+        reviewed_by="operator@a-better.co.kr",
+    )
+
+    assert plan([theirs]) == ()
+
+
+def test_a_person_marked_row_still_keeps_its_duplicate_label() -> None:
+    """⚠️ 예외는 **되돌릴 때만**이다 — 중복 라벨을 새로 붙이는 것은 여전히 라벨만 쓴다.
+
+    그렇지 않으면 사람이 승인·공개한 행을 크롤러가 중복으로 거절해 목록에서 지운다(SPEC §4.1).
+    """
+    touched = _draft(
+        review_status=ReviewStatus.REJECTED,
+        reject_reason=RejectReason.DUPLICATE,
+        dedup_state=DedupState.DUPLICATE,
+        dedup_key="장성제일교회:JEONNAM:ASSOCIATE_PASTOR:-:R1",
+        reviewed_by="operator@a-better.co.kr",
+    )
+    assert not touched.allows_dedup_verdict(DedupState.DUPLICATE)
+    assert touched.allows_dedup_verdict(DedupState.ALONE)
