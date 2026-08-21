@@ -306,6 +306,43 @@ def test_a_marker_that_is_not_a_lift_stays(given: str) -> None:
     assert clean_title(given) == given
 
 
+@pytest.mark.parametrize(
+    ("given", "want"),
+    [
+        (
+            "끌어올림- 청소년부(중고등부) 교육목사님 청빙합니다.",
+            "청소년부(중고등부) 교육목사님 청빙합니다.",
+        ),
+        ("끌어올림-제목없이붙음", "제목없이붙음"),
+        ("답글: 부목사 청빙", "부목사 청빙"),
+    ],
+    ids=["구분기호+공백", "구분기호만", "콜론"],
+)
+def test_a_lift_marker_without_brackets_is_also_removed(given: str, want: str) -> None:
+    """괄호 없이 붙는 꼴도 뗀다 — `끌어올림- 제목`(실측 725건 중 1건 · 한 교회가 계속 그 꼴).
+
+    ⚠️ 드물지만 그대로 두면 **공개 목록 제목 앞에 남는다**(2026-08-21 실제 공개에서 보였다).
+    """
+    assert clean_title(given) == want
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        "대구성북교회- 부목사 청빙",
+        "수정 및 끌어올림- 제목",
+        "2026-08 교역자 청빙",
+    ],
+    ids=["교회명", "앞 낱말이 목록 밖", "날짜"],
+)
+def test_a_bare_word_that_is_not_a_lift_stays(given: str) -> None:
+    """⚠️ **구분기호가 있어도 화이트리스트를 지난다** — 아니면 교회명·날짜가 사라진다.
+
+    괄호 형태와 **같은 목록**을 쓰는 것이 그 보장이다.
+    """
+    assert clean_title(given) == given
+
+
 def test_the_title_keeps_its_final_punctuation() -> None:
     """⚠️ 이 함수가 생긴 이유다 — 모델에게 맡겼더니 20건 중 6건이 끝의 마침표를 지웠다.
 

@@ -132,6 +132,17 @@ _STATUS_KEYS: Final = ("status", "category", "classification")
 _TITLE_PREFIX: Final = re.compile(r"^\s*[(\[<]\s*([^)\]>]{1,16})\s*[)\]>]\s*")
 _TITLE_SUFFIX: Final = re.compile(r"\s*[(\[<]\s*([^)\]>]{1,16})\s*[)\]>]\s*$")
 
+#: 괄호 **없이** 구분기호만 붙는 머리표 — `끌어올림- 청소년부 교육목사님 청빙합니다.`
+#: 실측 725건 중 1건(0.1%)이고 한 교회가 계속 그 꼴로 올린다. 드물지만 그대로 두면 공개 목록
+#: 제목 앞에 남는다(2026-08-21 실제 공개에서 눈에 띄었다).
+#: ⚠️ **괄호 형태와 같은 화이트리스트를 쓴다** — 목록에 없는 말은 건드리지 않으므로
+#: `대구성북교회- 부목사 청빙` 같은 제목은 그대로 남는다.
+#: ⚠️ 구분기호에 붙임표·en/em 대시·콜론을 함께 넣는다 — 게시판마다 다르게 쓴다.
+_TITLE_DELIMITERS: Final = "-\u2013\u2014:"
+_TITLE_BARE_PREFIX: Final = re.compile(
+    r"^\s*([^\s()\[\]<>]{1,16})\s*[" + _TITLE_DELIMITERS + r"]\s*"
+)
+
 #: 제목에서 **뗄** 표시. ⚠️ **화이트리스트다** — 괄호를 만나면 무조건 벗기는 것이 아니라
 #: 안의 낱말이 이 목록에 있을 때만 뗀다.
 #:
@@ -283,7 +294,8 @@ def clean_title(title: str) -> str:
     지시하지 않은 손질이고, 원문을 그대로 옮기기로 한 칸에서 그러면 안 된다.
 
     ⚠️ **뗄 수 없으면 그대로 둔다.** 처음 보는 머리표가 와도 원문이 남는다 — 잘못 떼는 것보다
-    안 떼는 쪽이 낫다(`(대전)`을 벗기면 지역이 사라진다).
+    안 떼는 쪽이 낫다(`(대전)`을 벗기면 지역이 사라진다). 괄호 없이 붙는 꼴(`끌어올림- 제목`)도
+    같은 화이트리스트를 지나므로, 목록에 없는 말은 구분기호가 있어도 남는다.
 
     ⚠️ **끝의 말줄임(`...`)도 남긴다.** 프롬프트에는 "빼라"고 적혀 있었는데 실측이 그게
     틀렸다고 말한다 — 말줄임으로 끝나는 56건의 앞 글자가 `니`·`고`·`감`처럼 단어 중간이라
@@ -300,7 +312,7 @@ def clean_title(title: str) -> str:
 
 def _without_marker(title: str) -> str | None:
     """앞이나 뒤의 표시를 하나 뗀 제목. 뗄 것이 없으면 `None`."""
-    for pattern in (_TITLE_PREFIX, _TITLE_SUFFIX):
+    for pattern in (_TITLE_PREFIX, _TITLE_SUFFIX, _TITLE_BARE_PREFIX):
         found = pattern.search(title)
         if found is not None and _marker(found.group(1)) in _LIFT_MARKERS:
             return (title[: found.start()] + title[found.end() :]).strip()
