@@ -109,11 +109,14 @@ class FakePostgrest:
         window = ordered[offset : offset + int(limit)] if limit is not None else ordered[offset:]
         selected = [_project(row, params.get("select")) for row in window]
         reported = str(total) if "count=exact" in prefer else "*"
-        end = max(offset + len(window) - 1, offset)
+        # ⚠️ **돌려줄 행이 없으면 범위 쪽이 `*`다** — 진짜 PostgREST가 `*/0`으로 답한다.
+        #    가짜가 늘 `0-N/총계`를 보내면 그 형식이 테스트에 한 번도 안 나오고, **빈 표를
+        #    읽는 것만으로 실패하는 버그**가 실 서버에서만 드러난다(2026-08-21 실측).
+        ranged = f"{offset}-{offset + len(window) - 1}" if window else "*"
         return httpx.Response(
             200,
             json=selected if body else None,
-            headers={"content-range": f"{offset}-{end}/{reported}"},
+            headers={"content-range": f"{ranged}/{reported}"},
         )
 
     def _insert(
@@ -229,7 +232,10 @@ def _passes(stored: object, expression: str) -> bool:
     operator, _, argument = expression.partition(".")
     match operator:
         case "eq":
-            return stored == _unquote(argument)
+            # ⚠️ **인용을 풀지 않는다.** 진짜 PostgREST는 `eq.`의 따옴표를 값의 일부로 읽는다
+            #    — 가짜가 풀어주면 `eq."<uuid>"`가 테스트를 통과하고 실 서버에서만 400이
+            #    난다(2026-08-21 실측으로 그 버그를 찾았다).
+            return stored == argument
         case "in":
             return stored in _in_list(argument)
         case "lt":

@@ -68,15 +68,15 @@ class Fake:
         return [request.url.params.get("offset") for request in self.requests]
 
 
-def _page(rows: list[dict[str, str]], *, total: int | str) -> httpx.Response:
-    """`Prefer: count=exact`에 대한 응답 — `Content-Range`에 총 행 수가 온다."""
-    start = 0
-    end = max(len(rows) - 1, 0)
-    return httpx.Response(
-        200,
-        json=rows,
-        headers={"content-range": f"{start}-{end}/{total}"},
-    )
+def _page(rows: list[dict[str, str]], *, total: int | str, offset: int = 0) -> httpx.Response:
+    """`Prefer: count=exact`에 대한 응답 — `Content-Range`에 총 행 수가 온다.
+
+    ⚠️ **돌려줄 행이 없으면 범위 쪽이 `*`다**(`*/0`) — 진짜 PostgREST가 그렇게 답한다
+    (2026-08-21 실측). 늘 `0-N/총계`를 보내면 빈 표를 읽는 것만으로 실패하는 버그가
+    테스트를 통과한다.
+    """
+    ranged = f"{offset}-{offset + len(rows) - 1}" if rows else "*"
+    return httpx.Response(200, json=rows, headers={"content-range": f"{ranged}/{total}"})
 
 
 def _rows(count: int, *, start: int = 0) -> list[dict[str, str]]:
@@ -188,7 +188,7 @@ def test_filters_ride_along() -> None:
         "source_data", columns="id", order="id", filters={"source_key": eq("YTUS")}
     )
 
-    assert fake.params[0]["source_key"] == 'eq."YTUS"'
+    assert fake.params[0]["source_key"] == "eq.YTUS"
 
 
 # ── 쓰기 ───────────────────────────────────────────────────────
@@ -229,7 +229,7 @@ def test_patch_sends_the_filter_as_the_condition() -> None:
     )
 
     assert len(changed) == 1  # 0행이면 "누군가 손댔다"는 뜻이다
-    assert fake.params[0]["review_status"] == 'eq."PENDING"'
+    assert fake.params[0]["review_status"] == "eq.PENDING"
     assert json.loads(fake.requests[0].content) == {"dedup_key": "k"}
 
 
@@ -315,6 +315,16 @@ def test_the_settings_repr_masks_the_key() -> None:
 
 
 # ── 필터 문법 ──────────────────────────────────────────────────
+
+
+def test_eq_does_not_quote_the_value() -> None:
+    """⚠️ **실 서버 실측으로 고친 것**(2026-08-21). 따옴표를 붙이면 그것이 값의 일부가 되어
+    uuid·숫자 컬럼이 `22P02`로 거절한다(`eq."7d7a…"` → 400 · `eq.7d7a…` → 200).
+
+    `in.(...)`만 인용이 필요하다 — 거기서는 쉼표가 항목을 나누기 때문이다.
+    """
+    assert eq("7d7a50a5-5565-4f37-8707-d712f1bacf41") == "eq.7d7a50a5-5565-4f37-8707-d712f1bacf41"
+    assert eq("YTUS") == "eq.YTUS"
 
 
 def test_in_values_quotes_so_commas_do_not_split_the_filter() -> None:

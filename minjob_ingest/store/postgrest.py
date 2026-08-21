@@ -51,8 +51,10 @@ _RETRY_JITTER_FLOOR: Final = 0.5
 #: 일시적 오류만 재시도한다. 4xx는 대개 우리 요청이 틀린 것이라 다시 보내도 같은 답이 온다.
 _RETRYABLE_STATUS: Final = frozenset({408, 425, 429, 500, 502, 503, 504})
 
-#: `Content-Range: 0-999/3188`에서 총 행 수. 세지 않았으면 `*`가 온다.
-_CONTENT_RANGE: Final = re.compile(r"^\d+-\d+/(?P<total>\d+|\*)$")
+#: `Content-Range`에서 총 행 수. ⚠️ **범위 쪽이 `*`인 형식도 온다** — 돌려줄 행이 없으면
+#: PostgREST가 `*/0`(빈 표)·`*/2`(offset이 끝을 넘음)로 답한다(2026-08-21 실측). 그 형식을
+#: 못 읽으면 **빈 표를 읽는 것만으로 전량 조회가 실패한다**. 세지 않았을 때는 총계가 `*`다.
+_CONTENT_RANGE: Final = re.compile(r"^(?:\d+-\d+|\*)/(?P<total>\d+|\*)$")
 
 #: 오가는 행 한 건. 값은 JSON 타입뿐이다(위 계약).
 #: ⚠️ `serde.Row`(= `Mapping[str, object]`)와 **이름을 겹치지 않게** 둔다 — 같은 이름이 두 뜻을
@@ -368,8 +370,14 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
 
 
 def eq(value: str) -> str:
-    """`col=eq.value` 필터. PostgREST 예약문자를 값에 그대로 두면 필터가 깨진다."""
-    return f"eq.{_quoted(value)}"
+    """`col=eq.value` 필터.
+
+    ⚠️ **인용하지 않는다.** `eq.`는 뒤 전체를 값으로 읽으므로 인용이 필요 없고, 인용하면
+    **따옴표가 값의 일부가 되어** uuid·숫자 컬럼에서 `22P02`로 거절된다(2026-08-21 실측:
+    `eq."7d7a…"` → 400 · `eq.7d7a…` → 200). 예약문자는 httpx가 URL 인코딩한다.
+    쉼표로 항목을 나누는 `in.(...)`만 인용이 필요하다(`in_values`).
+    """
+    return f"eq.{value}"
 
 
 def lt(value: int) -> str:
