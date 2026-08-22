@@ -247,6 +247,8 @@
 
 ### 1-5. 오케스트레이션·운영  ← 대부분 1-1에서 함께 냈다(2026-08-10 확인)
 - [x] **에러 격리** — 한 소스가 실패해도 나머지가 계속된다(`crawl_run.error_detail`에 기록). ⚠️ 중단(Ctrl-C·예외)에도 실행 기록을 닫는다 — 안 닫으면 그 run이 영구 "진행중"으로 남아 `status`가 거짓말을 한다
+  - ⚠️ **`finally`가 덮는 것은 예외와 Ctrl-C까지다**(2026-08-22 실측 — 강제 종료된 실행이 `finished_at=NULL`로 남았다). **SIGTERM·SIGKILL은 덮지 못한다**: 전자는 핸들러를 달면 되고 **후자는 원리상 불가능하다**(OOM·전원 차단도 같다)
+  - → **`status`가 "오래된 미완 실행"을 죽은 것으로 읽어야 한다**(진행중으로 보이면 거짓말이다). 신호 핸들러만으로는 못 막으므로 `status` 쪽에 판정이 있어야 한다. ⚠️ GitHub Actions의 job timeout이 SIGTERM → SIGKILL이라 실제로 겪는다
 - [x] `crawl_run`(시작 INSERT → 종료 UPDATE) · `source_health`(UPSERT)
 - [x] rate-limit·timeout·지수 백오프·`Retry-After`·robots `Crawl-delay`·UA 정책 (`fetch/`)
 - [x] 백필 CLI — `collect --months N` / `--days N`(`mode=BACKFILL`·로컬)
