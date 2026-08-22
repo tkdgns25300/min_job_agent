@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from minjob_ingest.domain import StipendPeriod
+from minjob_ingest.domain import Region, StipendPeriod
 from minjob_ingest.models import JsonValue
 from minjob_ingest.pipeline.normalize import (
     address_or_none,
+    city_without_region,
     clean_title,
     closed_by_board,
     pay_note_of,
@@ -277,8 +278,28 @@ def test_an_open_posting_stays_open() -> None:
         ("<끌어올림> 하늘담은교회 부목사님 청빙", "하늘담은교회 부목사님 청빙"),
         ("[답글]청빙이 완료되었습니다.", "청빙이 완료되었습니다."),
         ("(끌어올림)[답글] 두 겹도 뗀다", "두 겹도 뗀다"),
+        # ── 2026-08-22 실측 288건에서 더한 것 (그 전에는 그대로 공개됐다) ──
+        (
+            "[끌올] 성남 동산교회에서 동역자를 모십니다.",
+            "성남 동산교회에서 동역자를 모십니다.",
+        ),
+        (
+            "★끌올★[안양장로교회] 전임 부목사님을 모십니다",
+            # ⚠️ 별표만 뗀다 — 교회명은 공고 정보라 남는다.
+            "[안양장로교회] 전임 부목사님을 모십니다",
+        ),
+        ("[다시 올림] 부산대청교회 전임사역자 청빙", "부산대청교회 전임사역자 청빙"),
     ],
-    ids=["(끌어올림)", "[끌어올림]", "<끌어올림>", "[답글]", "두 겹"],
+    ids=[
+        "(끌어올림)",
+        "[끌어올림]",
+        "<끌어올림>",
+        "[답글]",
+        "두 겹",
+        "[끌올]",
+        "★끌올★",
+        "[다시 올림]",
+    ],
 )
 def test_a_lift_marker_is_removed(given: str, want: str) -> None:
     """`(끌어올림)` 실측 340건 — 같은 글을 다시 올리려고 붙인 표시라 공고 내용이 아니다."""
@@ -293,9 +314,13 @@ def test_a_lift_marker_is_removed(given: str, want: str) -> None:
         "(청빙완료) 동화중학교 학원선교사 청빙공고",
         "(GOODTV) 방송 엔지니어 모집",
         "(초교파) 선교단체 간사 모집",
+        # ⚠️ 2026-08-22 실측에서 **남긴** 것 — 재공고는 게시판 표시가 아니라 그 공고의 사실이다.
+        "[재공고] 신원교회 부목사 청빙",
+        # ⚠️ 별표를 여닫이에 넣었지만 **안의 낱말이 목록에 없으면 남는다**(화이트리스트).
+        "★중요★ 서류 마감이 임박했습니다",
         "[경기도 용인시] 새로운교회 부목사 청빙",
     ],
-    ids=["지역(대전)", "지역[서울]", "상태", "출처", "초교파", "긴 지역"],
+    ids=["지역(대전)", "지역[서울]", "상태", "출처", "초교파", "재공고", "★중요★", "긴 지역"],
 )
 def test_a_marker_that_is_not_a_lift_stays(given: str) -> None:
     """⚠️ **화이트리스트다.** 괄호를 만나면 무조건 벗기는 것이 아니다 — 실측 머리표 201가지 중
@@ -589,3 +614,79 @@ def test_a_foreign_address_is_dropped_on_purpose() -> None:
     지도 연동이 국내용이라 그대로 둔다. 넣으려면 라틴 주소 분기를 따로 만들어야 한다.
     """
     assert address_or_none("67 Cutler Road Jandakot WA 6164, Australia") is None
+
+
+# ── 광역 이름 겹침 (2026-08-22 실측 434건 중 118건) ──────────────
+
+
+@pytest.mark.parametrize(
+    ("region", "given", "want"),
+    [
+        (Region.SEOUL, "서울시 송파구", "송파구"),
+        (Region.SEOUL, "서울특별시 마포구", "마포구"),
+        (Region.SEOUL, "서울 노원구", "노원구"),
+        (Region.DAEGU, "대구광역시 달서구", "달서구"),
+        (Region.DAEGU, "대구시 수성구", "수성구"),
+        (Region.DAEGU, "대구 달서구", "달서구"),
+        (Region.BUSAN, "부산광역시 금정구", "금정구"),
+        (Region.GWANGJU, "광주 동구", "동구"),
+    ],
+    ids=["서울시", "서울특별시", "서울", "대구광역시", "대구시", "대구", "부산광역시", "광주"],
+)
+def test_a_repeated_region_name_is_removed(region: Region, given: str, want: str) -> None:
+    """⚠️ 그대로 두면 min_job이 `region`과 나란히 놓아 **"서울 · 서울시 송파구"** 가 된다.
+
+    모델이 틀린 것이 아니다 — 프롬프트가 "원문 글자 그대로"라고 시켰다(§5.5b). 겹침을 없애는
+    것이 코드 몫이다.
+    """
+    assert city_without_region(given, region) == want
+
+
+@pytest.mark.parametrize(
+    ("region", "given"),
+    [
+        # ⚠️⚠️ **실측에 있는 함정** — 경기도 광주시. 이름만 보고 뗐다면 도시가 사라졌다.
+        (Region.GYEONGGI, "광주시"),
+        (Region.GYEONGGI, "성남시 중원구"),
+        (Region.GYEONGBUK, "포항시 남구"),
+        (Region.CHUNGBUK, "청주시 상당구"),
+        # 도 지역은 애초에 겹치지 않는다(실측 0건) — 표에 담지 않았다.
+        (Region.GYEONGGI, "경기도 성남시"),
+        (Region.JEJU, "제주시"),
+        # ⚠️⚠️ **실측 1건** — 부산의 자치구다. `부산`을 떼면 `진구`라는 없는 지명이 된다.
+        (Region.BUSAN, "부산진구"),
+    ],
+    ids=[
+        "경기도 광주시",
+        "성남시",
+        "포항시",
+        "청주시",
+        "경기도 접두",
+        "제주시",
+        "부산진구",
+    ],
+)
+def test_a_city_name_that_merely_looks_like_a_region_stays(region: Region, given: str) -> None:
+    """⚠️ **그 행의 `region`을 기준으로만 뗀다** — 이름만 보면 경기도 광주시가 사라진다."""
+    assert city_without_region(given, region) == given
+
+
+def test_a_district_whose_name_starts_with_its_metro_survives() -> None:
+    """⚠️ **광역 이름 뒤가 공백일 때만 뗀다.** 붙어 있으면 그 이름의 일부다.
+
+    실측 434건에 `BUSAN`+`부산진구`가 1건 있었고, 경계 검사가 없던 판은 `진구`를 만들었다 —
+    **없는 지명이 공개 목록에 나갈 뻔했다**(SQL 규칙과 기계 대조를 하다가 잡혔다).
+    """
+    assert city_without_region("부산진구", Region.BUSAN) == "부산진구"
+    assert city_without_region("부산 진구", Region.BUSAN) == "진구"
+
+
+def test_a_city_that_is_only_the_region_name_becomes_nothing() -> None:
+    """`서울시`만 온 행은 도시 정보가 없다 — 빈 문자열을 남기지 않는다."""
+    assert city_without_region("서울시", Region.SEOUL) is None
+
+
+def test_nothing_to_strip_is_left_alone() -> None:
+    assert city_without_region(None, Region.SEOUL) is None
+    assert city_without_region("송파구", None) == "송파구"
+    assert city_without_region("송파구", Region.SEOUL) == "송파구"

@@ -24,7 +24,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
 
-from minjob_ingest.domain import StipendPeriod
+from minjob_ingest.domain import Region, StipendPeriod
 from minjob_ingest.models import JsonValue
 
 #: 주소로 볼 수 있는 모양. **원문에 있다고 주소인 것은 아니다** — 게시판 주소 칸 730건 중
@@ -127,10 +127,21 @@ _CLOSED_TITLE_MARKERS: Final = (
 #: 같은 안내 문구가 본문에 흔해서(실측 370건) 본문까지 보면 대부분을 잘못 거절한다.
 _STATUS_KEYS: Final = ("status", "category", "classification")
 
-#: 제목 앞뒤에 붙는 괄호 묶음. `[]` 434건 · `()` 298건 · `<>` 11건이 실측 전부다.
+#: 제목 앞뒤에 붙는 묶음. `[]` 434건 · `()` 298건 · `<>` 11건이 실측이고, 2026-08-22에
+#: **별표(`★끌올★`)** 가 더해졌다(1주치 449건 중 1건) — 같은 글자가 양쪽에 오는 꼴이라
+#: 여닫이 목록에 함께 넣는다.
 #: ⚠️ **꼬리표도 본다** — `…청빙합니다.(끌어올림)`이 실측 24건이고, 앞만 보면 그대로 실려 간다.
-_TITLE_PREFIX: Final = re.compile(r"^\s*[(\[<]\s*([^)\]>]{1,16})\s*[)\]>]\s*")
-_TITLE_SUFFIX: Final = re.compile(r"\s*[(\[<]\s*([^)\]>]{1,16})\s*[)\]>]\s*$")
+#: ⚠️ **실측에서 본 글자만 넣는다.** `☆`를 함께 넣었다가 뺐다(2026-08-22) — 화이트리스트라
+#: 안전하다는 것이 근거였지만, 그 논리면 아무 글자나 넣어도 되고 다음 사람이 어느 것이
+#: 실측이고 어느 것이 추측인지 구별할 수 없게 된다. 실제로 오면 그때 넣는다.
+_TITLE_OPEN: Final = r"(\[<★"
+_TITLE_CLOSE: Final = r")\]>★"
+_TITLE_PREFIX: Final = re.compile(
+    rf"^\s*[{_TITLE_OPEN}]\s*([^{_TITLE_CLOSE}]{{1,16}})\s*[{_TITLE_CLOSE}]\s*"
+)
+_TITLE_SUFFIX: Final = re.compile(
+    rf"\s*[{_TITLE_OPEN}]\s*([^{_TITLE_CLOSE}]{{1,16}})\s*[{_TITLE_CLOSE}]\s*$"
+)
 
 #: 괄호 **없이** 구분기호만 붙는 머리표 — `끌어올림- 청소년부 교육목사님 청빙합니다.`
 #: 실측 725건 중 1건(0.1%)이고 한 교회가 계속 그 꼴로 올린다. 드물지만 그대로 두면 공개 목록
@@ -151,7 +162,13 @@ _TITLE_BARE_PREFIX: Final = re.compile(
 #: 벗기면 지역이 사라지고, 그건 모델이 제목을 다듬을 때 실제로 하던 실수다.
 #:
 #: ⚠️ 견줄 때 공백과 쉼표를 지운다 — `수정, 끌어올림`·`수정 끌어올림`이 둘 다 쓰인다.
-_LIFT_MARKERS: Final = frozenset({"끌어올림", "답글", "수정끌어올림", "끌어올림및수정"})
+#: ⚠️ 2026-08-22 실측(288건)으로 셋을 더했다 — `끌올`(축약) · `다시올림` · 그리고 별표에 싸인
+#: `끌올`. 같은 실측에서 **남긴** 것이 28건이다: 지역 15(`[군산]`·`(부산)`) · 교회명 8 ·
+#: `[재공고]` 4. 재공고는 게시판 끌어올림 표시가 아니라 **그 공고의 사실**이라 남긴다
+#: (`(청빙완료)`를 남기는 것과 같은 성격).
+_LIFT_MARKERS: Final = frozenset(
+    {"끌어올림", "끌올", "다시올림", "답글", "수정끌어올림", "끌어올림및수정"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +279,62 @@ def _money_in(text: str | None) -> list[_Money]:
     if not text:
         return []
     return [item for item in _amounts(text) if MIN_PAY_MANWON <= item.manwon <= MAX_PAY_MANWON]
+
+
+#: 광역 이름이 `city` 앞에 겹쳐 오는 8곳. ⚠️ **특별·광역시만 담는다** — 실측 434건에서 겹침은
+#: 여기서만 일어났고(`서울시 송파구`·`대구광역시 달서구`), **도 지역은 겹치지 않았다**
+#: (`GYEONGGI`+`성남시`는 도시 이름이지 도 이름이 아니다).
+#:
+#: ⚠️ **`region`을 기준으로만 뗀다.** 실측에 `GYEONGGI`+`광주시`(경기도 광주시)가 있다 —
+#: 이름만 보고 떼면 그 도시가 사라진다. 그 행의 광역과 같을 때만 겹침이다.
+_METRO_NAMES: Final[Mapping[Region, str]] = {
+    Region.SEOUL: "서울",
+    Region.BUSAN: "부산",
+    Region.DAEGU: "대구",
+    Region.INCHEON: "인천",
+    Region.GWANGJU: "광주",
+    Region.DAEJEON: "대전",
+    Region.ULSAN: "울산",
+    Region.SEJONG: "세종",
+}
+
+#: 광역 이름에 붙는 꼬리. 실측 세 꼴이 전부다(`서울`·`서울시`·`서울특별시`).
+_METRO_SUFFIXES: Final = ("특별시", "광역시", "시", "")
+
+
+def city_without_region(city: str | None, region: Region | None) -> str | None:
+    """`city` 앞에 겹쳐 온 광역 이름을 뗀다. 뗄 것이 없으면 그대로.
+
+    ⚠️ **모델이 틀린 것이 아니다** — 프롬프트가 `시·군·구 표기를 원문 글자 그대로`라고 시켰고,
+    원문이 `서울시 송파구`면 그렇게 쓰는 것이 맞다. **겹침을 없애는 것은 코드 몫**이다
+    (CLAUDE.md: 맥락 없이 글자만 보면 되는 변환).
+
+    ⚠️ 실측 434건 중 **118건(27%)** 이 겹쳐 있었고 표기가 넷으로 갈렸다(`서울시`·`서울특별시`·
+    `대구`·`대구시`). 그대로 두면 min_job이 `region`과 나란히 보여줄 때 **"서울 · 서울시 송파구"**
+    가 되고, 도시로 묶는 화면에서 같은 곳이 여러 항목으로 갈린다.
+
+    ⚠️ **떼고 나서 아무것도 안 남으면 `None`이다** — `서울시`만 온 행은 도시 정보가 없다.
+
+    ⚠️⚠️ **광역 이름 뒤가 공백이어야 뗀다**(2026-08-22 실측으로 잡았다). 붙어 있으면 그 이름의
+    일부다 — `부산진구`는 부산의 자치구이고 `부산`을 떼면 **`진구`라는 없는 지명**이 된다.
+    실측 434건에 그 행이 1건 있었다. 같은 꼴이 앞으로도 온다(`부산진구`가 그 부류의 전부는
+    아닐 수 있다) — 그래서 이름을 열거하지 않고 **경계로** 막는다.
+    """
+    if city is None or region is None:
+        return city
+    name = _METRO_NAMES.get(region)
+    if name is None:
+        return city
+    for suffix in _METRO_SUFFIXES:
+        head = f"{name}{suffix}"
+        if not city.startswith(head):
+            continue
+        rest = city[len(head) :]
+        if rest and not rest[0].isspace():
+            # `부산진구` — 광역 이름처럼 시작하지만 그 자체가 도시 이름이다.
+            continue
+        return rest.strip() or None
+    return city
 
 
 def address_or_none(text: str | None) -> str | None:
