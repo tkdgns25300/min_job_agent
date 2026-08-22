@@ -324,11 +324,16 @@ class SourceData:
 
     @property
     def is_empty(self) -> bool:
-        """구조화에 넣을 증거가 하나도 없는가(본문·이미지·첨부 전무).
+        """**본문·이미지·첨부가 전무한가.** 게시판 필드(`raw_meta`)는 보지 않는다.
 
         게시판에는 **내용 없이 올라온 글이 실제로 있다**(YTUS 25309 = `<p>&nbsp;</p>` · 실측).
-        그건 수집 실패가 아니라 사실이므로 저장하되, 구조화는 이런 행에 Gemini를 호출하지
-        않는다(빈 입력에 돈을 쓰는 것이고 결과는 게이트1 탈락이다).
+        그건 수집 실패가 아니라 사실이므로 저장하고, 수집 리포트가 개수를 찍는다
+        (본문 셀렉터가 빗나간 신호 · `collect.require_some_content`).
+
+        ⚠️⚠️ **유료 호출의 문턱으로 쓰지 말 것**(2026-08-22 실측으로 잡았다). 프롬프트는
+        `raw_meta`도 모델에 보내므로, 본문이 없어도 **보낼 것이 있는 공고가 있다** — `CSU`는
+        교단·교회명·사례비가 거기 있고, 이걸 문턱으로 쓰던 동안 진짜 청빙 공고가 조용히
+        버려졌다(1주치 CSU 125건 중 6건). 그 판단은 `extraction.has_prompt_evidence`다.
         """
         return not self.raw_text.strip() and not self.image_urls and not self.attachments
 

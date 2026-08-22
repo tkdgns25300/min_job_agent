@@ -40,6 +40,7 @@ from minjob_ingest.lib.gemini import GeminiError
 from minjob_ingest.models import (
     MAX_STRUCTURE_ATTEMPTS,
     Attachment,
+    JsonValue,
     ReviewData,
     SourceData,
     new_id,
@@ -124,6 +125,7 @@ def _source_data(
     image_urls: tuple[str, ...] = (),
     source_key: str = "DAESHIN",
     fetched_at: datetime = _NOW,
+    raw_meta: Mapping[str, JsonValue] | None = None,
 ) -> SourceData:
     return SourceData(
         source_key=source_key,
@@ -133,6 +135,7 @@ def _source_data(
         posted_on=fetched_at.date(),
         run_id=_RUN_ID,
         fetched_at=fetched_at,
+        raw_meta={} if raw_meta is None else raw_meta,
         raw_text=raw_text,
         image_urls=image_urls,
         attachments=attachments,
@@ -279,6 +282,43 @@ def test_gate1_no_records_the_verdict_without_a_draft(store: JsonStore, data_dir
     assert result.verdict is Verdict.EXCLUDED
     assert _drafts(data_dir) == []
     assert store.list_unstructured(10) == ()  # 다시 집히지 않는다
+
+
+def test_a_posting_whose_only_content_is_board_fields_still_reaches_the_model(
+    store: JsonStore,
+) -> None:
+    """⚠️ **실측으로 잡은 결함**(2026-08-22). 본문이 비어도 게시판 필드에 내용이 있는 곳이 있다.
+
+    `CSU`는 교단·교회명·지역·사례비가 **본문이 아니라 `raw_meta`에** 있고, 프롬프트가 그것을
+    모델에 보낸다. 그런데 문턱이 `is_empty`(본문·이미지·첨부만 본다)였어서 **진짜 청빙 공고가
+    "빈 입력"으로 조용히 버려졌다** — 1주치 CSU 125건 중 6건이 그랬다.
+    """
+    record = _source_data(
+        raw_text="",
+        raw_meta={"church_name": "군포선한교회", "email": "apply@example.kr", "gratuity": "협의"},
+    )
+    store.save_source_data(record)
+    extractor = _FakeExtractor()
+
+    result = structure_one(record, store, extractor, heresy=_NO_HERESY)
+
+    assert result.verdict is Verdict.DRAFTED
+    assert extractor.calls, "게시판 필드가 있으면 모델을 부른다"
+
+
+def test_board_fields_that_are_only_ui_noise_do_not_buy_a_call(store: JsonStore) -> None:
+    """⚠️ 반대쪽도 지킨다 — `raw_meta`가 비었나로 보면 조회수·글번호만 있는 행에 돈이 나간다.
+
+    프롬프트가 **실제로 싣는 것**만 센다(`meta_lines`가 UI 값을 걸러낸다).
+    """
+    record = _source_data(raw_text="", raw_meta={"views": 12, "display_no": 337})
+    store.save_source_data(record)
+    extractor = _FakeExtractor()
+
+    result = structure_one(record, store, extractor, heresy=_NO_HERESY)
+
+    assert result.verdict is Verdict.EMPTY
+    assert extractor.calls == []
 
 
 def test_an_empty_posting_never_reaches_the_model(store: JsonStore) -> None:

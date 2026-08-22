@@ -47,10 +47,10 @@ from minjob_ingest.lib.gemini import GeminiError
 from minjob_ingest.models import ReviewData, SourceData
 from minjob_ingest.pipeline.confidence import grade, review_status_for
 from minjob_ingest.pipeline.denomination import confirm
-from minjob_ingest.pipeline.extraction import Extraction, ExtractionError
+from minjob_ingest.pipeline.extraction import Extraction, ExtractionError, has_prompt_evidence
 from minjob_ingest.pipeline.heresy import HeresyMatch, HeresyRef, screen
 from minjob_ingest.pipeline.media import Media, MediaSet, MediaSource, failure_note, wanted_urls
-from minjob_ingest.pipeline.normalize import clean_title, closed_by_board
+from minjob_ingest.pipeline.normalize import city_without_region, clean_title, closed_by_board
 from minjob_ingest.pipeline.verify import VerifyReport, verify
 from minjob_ingest.store.base import Poster, PosterStore, Store, StoreError
 from minjob_ingest.store.serde import SerdeError
@@ -89,7 +89,7 @@ class Verdict(StrEnum):
     DRAFTED = "DRAFTED"
     #: 개교회 채용이 아니라 초안을 만들지 않았다(게이트1 NO). **실패가 아니다.**
     EXCLUDED = "EXCLUDED"
-    #: 넣을 내용이 없어 Gemini를 부르지 않았다(`SourceData.is_empty`).
+    #: 넣을 내용이 없어 Gemini를 부르지 않았다(`extraction.has_prompt_evidence`).
     EMPTY = "EMPTY"
     #: 그림이 있는데 **가져올 수단 없이** 실행돼 미뤘다. 판정을 남기지 않는다.
     #: ⚠️ CLI는 항상 그림 소스를 넘기므로 여기서는 나오지 않는다 — 그림 없이 부르는
@@ -537,7 +537,8 @@ def build_draft(
         deadline=extraction.deadline,
         church_name=extraction.church_name,
         region=extraction.region,
-        city=extraction.city,
+        # ⚠️ 광역 이름이 겹쳐 오는 것을 여기서 뗀다(실측 27%) — 모델은 원문 그대로 쓴 것이다.
+        city=city_without_region(extraction.city, extraction.region),
         address=extraction.address,
         raw_denomination=extraction.raw_denomination,
         contact_email=extraction.contact_email,
@@ -627,8 +628,10 @@ def _judge(
     images: MediaSource | None,
     posters: PosterStore | None,
 ) -> StructureResult:
-    if record.is_empty:
+    if not has_prompt_evidence(record):
         # 빈 입력에 돈을 쓰지 않는다. 판정은 남겨야 매 실행 다시 집히지 않는다(SPEC §4).
+        # ⚠️ **`is_empty`가 아니라 이 문턱을 쓴다** — 본문이 없어도 게시판 필드에 교단·교회명·
+        #    사례비가 있는 게시판이 있고(CSU), 그걸 버리면 진짜 공고를 잃는다.
         _record_verdict(record, store, dry_run=dry_run)
         return StructureResult(record=record, verdict=Verdict.EMPTY)
     if waits_for_media(record, images):

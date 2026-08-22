@@ -544,6 +544,21 @@ def parse_extraction(payload: str) -> Extraction:
     )
 
 
+def has_prompt_evidence(record: SourceData) -> bool:
+    """모델에 **보낼 것이 하나라도 있나** — 유료 호출의 문턱이다.
+
+    ⚠️ **`SourceData.is_empty`를 그대로 쓰면 안 된다**(2026-08-22 실측으로 잡았다). 그쪽은
+    본문·이미지·첨부만 본다. 그런데 이 프롬프트는 **게시판 필드(`raw_meta`)도 보낸다** —
+    `CSU`는 교단·교회명·지역·사례비가 본문이 아니라 거기 있다(위 `_META_NOISE_KEYS` 주석).
+    실측 1주치에서 CSU 125건 중 **6건이 본문 없이 meta 13칸만** 있었고, 전부 진짜 청빙
+    공고였는데 "빈 입력"으로 조용히 버려졌다(같은 비율이면 3개월에 70건이 넘는다).
+
+    ⚠️ **`raw_meta`가 비었나로 보지 않는다** — 프롬프트가 실제로 싣는 것만 센다(`meta_lines`).
+    게시판 UI 값(조회수·글번호)만 있는 행에 돈을 쓰는 것은 옛 판정과 같은 잘못이다.
+    """
+    return not record.is_empty or bool(meta_lines(record.raw_meta))
+
+
 def meta_lines(raw_meta: Mapping[str, JsonValue]) -> tuple[tuple[str, str], ...]:
     """프롬프트에 실을 게시판 필드를 (라벨, 값)으로. **`verify`도 같은 것을 본다** —
     모델이 오려낸 근거에 라벨이 붙어 오기 때문이다(`verify._source_parts`)."""
