@@ -30,7 +30,6 @@ from minjob_ingest.domain import CrawlMode, normalize_source_key
 from minjob_ingest.models import (
     MAX_STRUCTURE_ATTEMPTS,
     CrawlRun,
-    JsonValue,
     ReviewData,
     SourceData,
     SourceHealth,
@@ -43,6 +42,8 @@ from minjob_ingest.store.base import (
     StoreError,
 )
 from minjob_ingest.store.guards import (
+    DEDUP_LABEL_FIELDS,
+    DEDUP_VERDICT_FIELDS,
     MUTABLE_STATE_FIELDS,
     REQUEUED_STATE,
     check_only_state_changed,
@@ -82,8 +83,6 @@ _ALL: Final = "*"
 
 #: 한 번에 쓸 행 수. ⚠️ 전량을 한 요청에 담으면 본문이 수 MB가 되어 게이트웨이가 거절한다.
 #: 나눠 쓰면 중간에 끊길 수 있지만 중복 판정은 **다시 돌리는 것이 되돌리기**라 회복된다
-#: (`minjob-ingest dedup`은 지난 판정도 매번 처음부터 다시 본다).
-_WRITE_BATCH_ROWS: Final = 500
 
 #: 손상 행 보고 훅 — (테이블명, 예외). 기본은 경고 로그(`JsonStore`와 같은 계약).
 type CorruptRowHandler = Callable[[str, SerdeError], None]
@@ -312,17 +311,36 @@ class SupabaseStore:
         if missing:
             raise StoreError(f"초안이 없어 판정을 적용할 수 없다 (id={missing[0]})")
 
-        judged: list[Mapping[str, JsonValue]] = []
+        written = 0
         for review_data_id, update in wanted.items():
             before = stored[review_data_id]
             after = with_dedup(before, update)
-            if after != before:  # 값이 이미 같은 행은 세지 않는다(멱등)
-                judged.append(to_row(after))
-        for start in range(0, len(judged), _WRITE_BATCH_ROWS):
-            self._client.upsert(
-                _REVIEW_DATA, judged[start : start + _WRITE_BATCH_ROWS], on_conflict="id"
-            )
-        return len(judged)
+            if after == before:  # 값이 이미 같은 행은 쓰지도 세지도 않는다(멱등)
+                continue
+            self._write_dedup(review_data_id, after, labels_only=update.verdict is None)
+            written += 1
+        return written
+
+    def _write_dedup(self, review_data_id: str, after: ReviewData, *, labels_only: bool) -> None:
+        """판정을 반영한다 — **바뀌는 칸만 보낸다**.
+
+        ⚠️ 행 전체를 되쓰면 읽고 쓰는 사이에 min_job admin이 고친 값이 덮인다
+        (REVIEW_PAGE §6.5). 검수 화면이 값 교정을 허용하기로 한 뒤로는 실제 위험이다.
+        `update_structure_state`가 원문 증거를 지키는 방식과 같다.
+
+        ⚠️ **한 행에 한 요청이다.** 부분 갱신은 행마다 값이 달라 묶을 수 없다(PostgREST에
+        그런 문법이 없다). 첫 전량 실행에서만 3,000번쯤 나가고, 그 뒤로는 판정이 멱등해서
+        바뀌는 행이 거의 없다 — 되쓰기 위험을 없애는 값이 그보다 크다.
+        """
+        names = DEDUP_LABEL_FIELDS if labels_only else DEDUP_LABEL_FIELDS + DEDUP_VERDICT_FIELDS
+        row = to_row(after)
+        changed = self._client.patch(
+            _REVIEW_DATA,
+            filters={"id": eq(review_data_id)},
+            values={name: row[name] for name in names},
+        )
+        if not changed:
+            raise StoreError(f"review_data {review_data_id}: 판정을 쓰지 못했다 — 행이 사라졌다")
 
     def _drafts_by_id(self, review_data_ids: Sequence[str]) -> Mapping[str, ReviewData]:
         drafts: dict[str, ReviewData] = {}

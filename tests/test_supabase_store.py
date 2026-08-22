@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import fields, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Final
 from uuid import UUID, uuid4
 
@@ -37,7 +37,12 @@ from minjob_ingest.models import (
 )
 from minjob_ingest.settings import SupabaseSettings
 from minjob_ingest.store.base import DedupUpdate, DedupVerdict, StoreError
-from minjob_ingest.store.guards import MUTABLE_STATE_FIELDS
+from minjob_ingest.store.guards import (
+    DEDUP_LABEL_FIELDS,
+    DEDUP_VERDICT_FIELDS,
+    MUTABLE_STATE_FIELDS,
+    with_dedup,
+)
 from minjob_ingest.store.postgrest import PostgrestClient
 from minjob_ingest.store.serde import to_row
 from minjob_ingest.store.supabase_store import SupabaseStore
@@ -591,3 +596,116 @@ def test_a_broken_row_is_skipped_in_batch_reads(
 
     assert [record.external_id for record in listed] == ["good"]
     assert len(corruption_log) == 1
+
+
+# ── 판정은 바뀌는 칸만 쓴다 (2026-08-22 · REVIEW_PAGE §6.5) ──────
+
+
+def test_a_label_only_update_sends_only_the_two_label_columns(
+    store: SupabaseStore, server: FakePostgrest
+) -> None:
+    """⚠️ 행 전체를 되쓰면 읽고 쓰는 사이 **검수자가 고친 값이 덮인다.**
+
+    검수 화면이 값 교정을 허용하기로 한 뒤로는 실제 위험이다(min_job admin).
+    """
+    source = _source_data()
+    store.save_source_data(source)
+    draft = _review_data(source.id)
+    store.upsert_review_data(draft)
+    server.requests.clear()
+
+    store.apply_dedup(
+        [DedupUpdate(review_data_id=draft.id, dedup_key="k", dedup_state=DedupState.ALONE)]
+    )
+
+    assert _patched_columns(server) == {"dedup_key", "dedup_state"}
+
+
+def test_a_verdict_update_sends_the_label_and_the_verdict_only(
+    store: SupabaseStore, server: FakePostgrest
+) -> None:
+    source = _source_data()
+    store.save_source_data(source)
+    draft = _review_data(source.id)
+    store.upsert_review_data(draft)
+    server.requests.clear()
+
+    store.apply_dedup(
+        [
+            DedupUpdate(
+                review_data_id=draft.id,
+                dedup_key="k",
+                dedup_state=DedupState.DUPLICATE,
+                verdict=DedupVerdict(
+                    review_status=ReviewStatus.REJECTED,
+                    reject_reason=RejectReason.DUPLICATE,
+                    posted_at=FIXED_NOW.date(),
+                ),
+            )
+        ]
+    )
+
+    assert _patched_columns(server) == {
+        "dedup_key",
+        "dedup_state",
+        "review_status",
+        "reject_reason",
+        "posted_at",
+    }
+
+
+def test_an_edit_made_between_our_read_and_our_write_survives(
+    store: SupabaseStore, server: FakePostgrest
+) -> None:
+    """⚠️ 이게 이 변경의 목적이다 — 검수자가 고친 교회명이 판정에 덮이지 않는다."""
+    source = _source_data()
+    store.save_source_data(source)
+    draft = _review_data(source.id)
+    store.upsert_review_data(draft)
+    # 우리가 읽은 뒤 admin이 고친 상황을 흉내낸다.
+    server.rows["review_data"][0]["church_name"] = "운영자가 고친 이름"
+
+    store.apply_dedup(
+        [DedupUpdate(review_data_id=draft.id, dedup_key="k", dedup_state=DedupState.ALONE)]
+    )
+
+    stored = server.rows["review_data"][0]
+    assert stored["church_name"] == "운영자가 고친 이름"
+    assert stored["dedup_key"] == "k"
+
+
+def test_the_columns_we_send_are_exactly_the_ones_the_rule_changes() -> None:
+    """⚠️ **드리프트 테스트.** `with_dedup`이 칸을 하나 더 바꾸게 되면 그 값이 조용히 안 실린다.
+
+    이름 목록을 손으로 적어 두는 대신 **규칙이 실제로 바꾼 것**과 대조한다.
+    """
+    stored = _review_data(uuid4())
+    label_only = DedupUpdate(review_data_id=stored.id, dedup_key="k", dedup_state=DedupState.ALONE)
+    with_verdict = DedupUpdate(
+        review_data_id=stored.id,
+        dedup_key="k",
+        dedup_state=DedupState.DUPLICATE,
+        verdict=DedupVerdict(
+            review_status=ReviewStatus.REJECTED,
+            reject_reason=RejectReason.DUPLICATE,
+            posted_at=FIXED_NOW.date() - timedelta(days=1),
+        ),
+    )
+
+    assert _changed_fields(stored, with_dedup(stored, label_only)) == set(DEDUP_LABEL_FIELDS)
+    assert _changed_fields(stored, with_dedup(stored, with_verdict)) == set(
+        DEDUP_LABEL_FIELDS
+    ) | set(DEDUP_VERDICT_FIELDS)
+
+
+def _patched_columns(server: FakePostgrest) -> set[str]:
+    """`PATCH` 한 번이 보낸 컬럼 이름. ⚠️ 두 번 이상이면 그 자체가 버그다(행 하나에 요청 하나)."""
+    patches = [request for request in server.requests if request.method == "PATCH"]
+    assert len(patches) == 1, f"PATCH가 {len(patches)}번 나갔다"
+    body: object = json.loads(patches[0].content)
+    assert isinstance(body, dict)
+    return set(body)
+
+
+def _changed_fields(before: ReviewData, after: ReviewData) -> set[str]:
+    return {f.name for f in fields(ReviewData) if getattr(before, f.name) != getattr(after, f.name)}

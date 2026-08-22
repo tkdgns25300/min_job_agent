@@ -72,6 +72,16 @@ def check_state_moves_forward(stored: SourceData, incoming: SourceData) -> None:
         )
 
 
+#: `with_dedup`이 **라벨만** 쓸 때 바꾸는 칸.
+#: ⚠️ 원격 구현이 이 이름들만 보낸다(`SupabaseStore.apply_dedup`) — 행 전체를 되쓰면 읽고 쓰는
+#: 사이에 min_job admin이 고친 값이 덮인다(REVIEW_PAGE §6.5). **`with_dedup`이 바꾸는 칸과
+#: 정확히 같아야** 하고, 어긋나면 갱신이 조용히 안 실린다 → 드리프트 테스트가 짝을 지킨다.
+DEDUP_LABEL_FIELDS: Final = ("dedup_key", "dedup_state")
+
+#: 판정까지 쓸 때 **추가로** 바꾸는 칸.
+DEDUP_VERDICT_FIELDS: Final = ("review_status", "reject_reason", "posted_at")
+
+
 def with_dedup(stored: ReviewData, update: DedupUpdate) -> ReviewData:
     """판정을 반영한 초안. **라벨과 판정을 나눠 적용한다**(`DedupUpdate.verdict`).
 
