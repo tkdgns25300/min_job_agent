@@ -178,11 +178,15 @@ def test_non_image_attachment_comes_from_the_related_section() -> None:
     assert attachment.is_image is False
 
 
-def test_image_attachment_keeps_the_full_size_url() -> None:
-    """⚠️ 이미지 첨부(`#bo_v_img`)의 본문 `<img>`는 **600px 썸네일**이다(97 실측).
+def test_image_attachment_points_at_the_file_not_the_viewer() -> None:
+    """⚠️ 이미지 첨부(`#bo_v_img`)의 본문 `<img>`는 **600px 썸네일**이다(97 실측). 원본은
+    `a.view_image`의 href가 가리키는 곳뿐이라 첨부로 담아야 포스터형 공고를 읽을 수 있다.
 
-    원본은 `a.view_image`의 href(`view_image.php?…&fn=<파일명>.jpg`)뿐이라 첨부로 담아야
-    포스터형 공고를 읽을 수 있다. 파일명은 쿼리에서 복원되고 `is_image`가 참이어야 한다.
+    ⚠️⚠️ **뷰어 주소를 그대로 담으면 못 받는다**(2026-08-23 실측으로 고쳤다).
+    `view_image.php`는 파일이 아니라 "크게 보기" **HTML**을 돌려준다 — 그대로 두었더니
+    이 게시판도 HAPSHIN도 **한 번도 받아진 적이 없었다.** 썸네일은 잘 받아져서 포스터 수치가
+    멀쩡했고, 실패는 "그림 못 받음"으로 세어져 등급만 조용히 떨어졌다.
+    → `fn`과 `bo_table`로 실제 경로를 만든다(그누보드 `/data/file/{게시판}/{파일명}`).
     """
     path = _FIXTURES / "detail_image.html"
     if not path.exists():
@@ -191,8 +195,13 @@ def test_image_attachment_keeps_the_full_size_url() -> None:
     assert len(raw.attachments) == 1
     attachment = raw.attachments[0]
     assert attachment.name.endswith(".jpg")
-    assert "view_image.php" in attachment.url and "fn=" in attachment.url
     assert attachment.is_image is True
+    # 실측으로 받아지는 주소다(134KB JPEG). 뷰어 주소는 text/html이었다.
+    assert "view_image.php" not in attachment.url
+    assert attachment.url == (
+        "https://na.or.kr/data/file/ccall/"
+        "2042519119_4pJBxYAL_92e9d7ae1f8481d30a61de2f2aeed58f58f14a19.jpg"
+    )
     # 썸네일은 증거로 남지만 그것만으로는 내용을 읽을 수 없다.
     assert any("thumb-" in url for url in raw.image_urls)
 

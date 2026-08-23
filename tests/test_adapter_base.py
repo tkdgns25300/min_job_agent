@@ -269,6 +269,34 @@ def test_a_script_download_takes_its_name_from_the_query() -> None:
     assert found[0].is_image is True
 
 
+def test_an_image_viewer_link_becomes_the_file_it_shows() -> None:
+    """⚠️ **`view_image.php`는 파일이 아니라 "크게 보기" HTML이다**(2026-08-23 실측).
+
+    그대로 담으면 받을 수 없는 주소가 증거로 남고, 구조화가 "그림 못 받음"으로 세어 등급이
+    떨어진다. HAPSHIN·NAZARENE 둘 다 그 상태였고 **한 번도 받아진 적이 없었다** — 썸네일이
+    잘 받아져서 포스터 수치가 멀쩡해 오래 가려졌다.
+
+    `fn`이 파일명뿐이면 `bo_table`로 그누보드 업로드 경로를 만든다.
+    """
+    (found,) = _attachments('<a href="/bbs/view_image.php?bo_table=ccall&fn=poster.jpg"></a>')
+    assert found.url.endswith("/data/file/ccall/poster.jpg")
+
+
+def test_an_image_viewer_link_whose_query_is_already_a_path_uses_it() -> None:
+    """HAPSHIN은 `fn`에 경로를 넣는다(`fn=%2Fdata%2Ffile%2Fe03%2Fx.jpg`) — 그대로 쓴다."""
+    (found,) = _attachments(
+        '<a href="/bbs/view_image.php?fn=%2Fdata%2Ffile%2Fe03%2Fposter.jpg"></a>'
+    )
+    assert found.url.endswith("/data/file/e03/poster.jpg")
+    assert "view_image.php" not in found.url
+
+
+def test_a_viewer_link_we_cannot_unwrap_is_left_alone() -> None:
+    """⚠️ 지어낸 경로로 바꾸지 않는다 — 실패는 실패로 드러나야 한다."""
+    (found,) = _attachments('<a href="/bbs/view_image.php?bo_table=x">그림</a>')
+    assert "view_image.php" in found.url
+
+
 def test_a_malformed_href_does_not_crash_the_run() -> None:
     """⚠️ **이것 때문에 실제 수집이 죽었다**(2026-08-05).
 

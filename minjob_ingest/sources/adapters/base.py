@@ -314,7 +314,7 @@ def attachments_in(container: Tag | None, *, base_url: str) -> tuple[Attachment,
         href = str(link.get("href") or "").strip()
         if not href or _is_not_a_file(href):
             continue
-        absolute = absolute_url(base_url, href)
+        absolute = absolute_url(base_url, _unwrapped_viewer(href))
         if absolute is None:
             continue  # 합칠 수 없는 주소는 받을 수도 없다(`absolute_url` 참조)
         # 이름은 링크 텍스트 → `title`(파일명 형태일 때만) → URL 순서로 찾는다. 조용히 버리지
@@ -332,6 +332,18 @@ def attachments_in(container: Tag | None, *, base_url: str) -> tuple[Attachment,
 #: HANIL은 본문의 지원 문의 `mailto:`가 첨부 4건으로 잡혀 있었고(2026-08-05 실측), 그 상태로
 #: 구조화가 "첨부 파일"을 열려 하면 아무것도 못 받는다. 어떤 게시판에서도 파일이 아니다.
 _NOT_A_FILE_SCHEMES: Final = ("mailto:", "tel:", "sms:", "javascript:")
+
+#: 그누보드5의 그림 **뷰어**. `view_image.php?bo_table=T&fn=F`는 파일이 아니라 "크게 보기"
+#: HTML을 돌려준다 — 그대로 첨부로 담으면 **받을 수 없는 주소가 증거로 남는다.**
+#:
+#: ⚠️ 실측(2026-08-23): HAPSHIN·NAZARENE 둘 다 `text/html`이다. **한 번도 받아진 적이 없었는데**
+#: 오래 드러나지 않았다 — 본문 `<img>`(썸네일)는 잘 받아져서 포스터 수치가 멀쩡했고, 실패는
+#: "그림 못 받음"으로 세어져 등급만 조용히 떨어졌다(HAPSHIN/15288).
+#: ⚠️ **빼지 않고 풀어낸다** — 본문 `<img>`는 600px 썸네일이라 그것만으로는 포스터를 읽을 수
+#: 없다(NAZARENE 실측 97). 원본은 이 링크가 가리키는 곳뿐이다.
+_GNUBOARD_IMAGE_VIEWER: Final = "view_image.php"
+#: 그누보드5의 업로드 경로 규약(`G5_DATA_DIR`). `fn`이 파일명뿐일 때 여기에 붙인다.
+_GNUBOARD_DATA_DIR: Final = "/data/file"
 
 
 def absolute_url(base_url: str, href: str) -> str | None:
@@ -351,11 +363,34 @@ def absolute_url(base_url: str, href: str) -> str | None:
         return None
 
 
+def _unwrapped_viewer(href: str) -> str:
+    """그림 뷰어 링크 → **원본 파일 경로**. 뷰어가 아니면 그대로 돌려준다.
+
+    두 모양을 실측했다(`_GNUBOARD_IMAGE_VIEWER` 주석):
+    - `fn`이 경로다 — `fn=%2Fdata%2Ffile%2Fe03%2Fx.jpg` → 그 경로 그대로 (HAPSHIN)
+    - `fn`이 파일명뿐이다 — `bo_table=ccall&fn=x.jpg` → `/data/file/ccall/x.jpg` (NAZARENE)
+
+    ⚠️ **풀어내지 못하면 원래 href를 돌려준다.** 지어낸 경로로 바꾸는 것보다 낫다 — 실패는
+    실패로 드러나야 하고, 뷰어 주소가 남으면 검수자가 그걸로 원문을 열 수 있다.
+    """
+    if _GNUBOARD_IMAGE_VIEWER not in href.lower():
+        return href
+    query = parse_qs(urlsplit(href).query)
+    name = next(iter(query.get("fn", ())), "")
+    if not name:
+        return href
+    if name.startswith("/"):
+        return name
+    board = next(iter(query.get("bo_table", ())), "")
+    return f"{_GNUBOARD_DATA_DIR}/{board}/{name}" if board else href
+
+
 def _is_not_a_file(href: str) -> bool:
     """다운로드할 수 없는 링크인가.
 
     `javascript:`도 막는다 — 그대로 저장하면 열 수 없는 URL이 증거로 남는다. JS 다운로드를
     쓰는 게시판은 어댑터가 **실제 경로로 변환한 뒤** 넘긴다(KWANGSHIN·STS·PCK·HAPSHIN 실측).
+
     """
     return href.startswith("#") or href.lower().startswith(_NOT_A_FILE_SCHEMES)
 
