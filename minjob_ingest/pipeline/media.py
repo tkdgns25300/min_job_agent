@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Final, Protocol
-from urllib.parse import unquote_to_bytes
+from urllib.parse import unquote_to_bytes, urlsplit
 
 from PIL import Image
 
@@ -121,6 +121,46 @@ class MediaSource(Protocol):
     def media_for(self, record: SourceData) -> MediaSet: ...
 
 
+#: 메일 **읽음 확인**을 기록하는 호스트. ⚠️ **실측한 것만 담는다** — 넓게 잡으면 그 경로로
+#: 올라온 진짜 포스터를 잃는다.
+_RECEIPT_HOSTS: Final = frozenset({"confirm.mail.daum.net"})
+
+
+def _tracks_a_reader(url: str) -> bool:
+    """읽음 확인 픽셀인가.
+
+    ⚠️ **fragment도 본다** — Gmail은 메일 속 원격 그림을 프록시하면서 원래 주소를 `#` 뒤에
+    남긴다(`ci3.googleusercontent.com/meips/…#https://confirm.mail.daum.net/…` · 실측 1건).
+    프록시 호스트 전체를 막으면 그 경로로 올라온 **진짜 포스터**까지 잃으므로, 가리키는 곳을
+    본다.
+    """
+    parts = urlsplit(url)
+    if parts.hostname in _RECEIPT_HOSTS:
+        return True
+    return bool(parts.fragment) and urlsplit(parts.fragment).hostname in _RECEIPT_HOSTS
+
+
+def is_worth_fetching(url: str) -> bool:
+    """받으러 갈 주소인가. **두 부류를 뺀다 — 이유가 다르다**(2026-08-23 실측).
+
+    ① **가져올 수 없다** — 교회가 한글 문서를 붙여넣으면 그림 주소가 작성자 PC 경로로 남는다
+    (`file:///C:/Users/…/Hnc/BinData/EMB0000….jpg` — 실제 값은 역슬래시다). 전송 층도 막지만
+    (`_one`) 거기서 막으면 **"못 받았다"로 세어져 등급이 `low`로 떨어진다.**
+
+    ② ⚠️⚠️ **가져가면 안 된다** — 메일 본문을 붙여넣으면 **읽음 확인 픽셀**이 따라 들어온다.
+    그 주소로 GET 하면 **남의 메일이 읽힌 것으로 기록된다**. 게시판을 긁는 일에 그런
+    부수효과를 만들지 않는다.
+
+    ⚠️ **크기로는 거를 수 없다.** 픽셀은 43바이트라 `unusable_reason`이 잡아내지만 그때는
+    이미 요청을 보낸 뒤다. 실측 4건이 그렇게 `low`가 되어 검수 큐에 들어갔다.
+
+    ⚠️ `data:` URI는 남긴다 — 본문에 박힌 그림이고 요청이 나가지 않는다.
+    """
+    if url.startswith(_DATA_SCHEME):
+        return True
+    return url.startswith(_FETCHABLE_SCHEMES) and not _tracks_a_reader(url)
+
+
 def wanted_urls(record: SourceData) -> tuple[str, ...]:
     """이 공고에서 모델에 보낼 URL들. **본문 인라인 먼저, 첨부는 그다음.**
 
@@ -129,10 +169,14 @@ def wanted_urls(record: SourceData) -> tuple[str, ...]:
 
     ⚠️ **같은 URL은 한 번만**이다. 인라인과 첨부에 같은 포스터를 올린 게시판이 있다(SJS 9건) —
     두 번 보내면 토큰을 두 배로 쓰고 요청도 하나 더 나간다.
+
+    ⚠️ **받을 수 없거나 받아선 안 되는 주소는 여기서 뺀다**(`is_worth_fetching`). 뒤에서
+    거르면 이미 요청을 보낸 뒤이고, "못 받았다"로 세어져 **등급이 부당하게 떨어진다.**
     """
     seen: dict[str, None] = {}
     for url in (*record.image_urls, *attachment_urls(record)):
-        seen.setdefault(url, None)
+        if is_worth_fetching(url):
+            seen.setdefault(url, None)
     return tuple(seen)[:MAX_MEDIA_PER_POSTING]
 
 
@@ -360,6 +404,8 @@ def failure_note(media: MediaSet, urls: Sequence[str]) -> str | None:
     """리포트에 남길 한 줄. 놓친 것이 없으면 `None`."""
     if media.is_complete:
         return None
-    return f"첨부 {len(urls) - len(media.items)}/{len(urls)}개를 못 읽음: " + " · ".join(
+    # ⚠️ "첨부"라고 쓰지 않는다 — 실패는 대개 **본문 그림**이고, 그렇게 적으면 어디를 봐야
+    #    하는지 잘못 가리킨다(2026-08-23 실측: 4건 중 3건이 본문 그림이고 첨부는 비었다).
+    return f"파일 {len(urls) - len(media.items)}/{len(urls)}개를 못 읽음: " + " · ".join(
         media.failures[:2]
     )

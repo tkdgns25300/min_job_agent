@@ -126,6 +126,70 @@ def test_a_gallery_posting_is_capped() -> None:
     assert len(wanted_urls(record)) == MAX_MEDIA_PER_POSTING
 
 
+# ── 받으러 가지 않는 주소 (2026-08-23 실측) ────────────────────────
+
+
+def test_a_read_receipt_pixel_is_never_requested() -> None:
+    """⚠️⚠️ 그 주소로 GET 하면 **남의 메일이 읽힌 것으로 기록된다.**
+
+    교회가 메일 본문을 게시판에 붙여넣으면 읽음 확인 픽셀이 따라 들어온다(실측 2건).
+    게시판을 긁는 일에 그런 부수효과를 만들지 않는다.
+    """
+    record = _source_data(
+        image_urls=(
+            "https://confirm.mail.daum.net/confirmapi/v1/users/kyan71%40hanmail.net"
+            "/cmails/20260818173244.abc%40kyan71.hanmail.net/recipients/iamasm%40nate.com",
+        )
+    )
+
+    assert wanted_urls(record) == ()
+
+
+def test_a_proxied_read_receipt_is_also_left_out() -> None:
+    """⚠️ Gmail은 메일 속 원격 그림을 프록시하면서 **원래 주소를 `#` 뒤에 남긴다**(실측 1건).
+
+    프록시 호스트를 통째로 막으면 그 경로로 올라온 **진짜 포스터**까지 잃으므로, 가리키는
+    곳을 본다.
+    """
+    tracked = _source_data(
+        image_urls=(
+            "https://ci3.googleusercontent.com/meips/ADKq_abc=s0-d-e1-ft"
+            "#https://confirm.mail.daum.net/confirmapi/v1/users/a%40b.net/cmails/x/recipients/c",
+        )
+    )
+    real_poster = _source_data(
+        image_urls=("https://ci3.googleusercontent.com/meips/ADKq_abc#https://e.kr/poster.jpg",)
+    )
+
+    assert wanted_urls(tracked) == ()
+    assert len(wanted_urls(real_poster)) == 1, "프록시 경로라고 다 버리지 않는다"
+
+
+def test_a_local_file_path_is_left_out() -> None:
+    """교회가 한글 문서를 붙여넣으면 그림 주소가 **작성자 PC 경로**로 남는다(실측 1건)."""
+    record = _source_data(
+        image_urls=(r"file:///C:\Users\idex1\AppData\Local\Temp\Hnc\BinData\EMB00008.jpg",)
+    )
+
+    assert wanted_urls(record) == ()
+
+
+def test_leaving_them_out_does_not_look_like_a_failed_fetch() -> None:
+    """⚠️ **이게 이 변경의 목적이다.** 전송 층에서 막으면 "못 받았다"로 세어져 등급이 `low`로
+    떨어진다 — 실측 4건이 그렇게 검수 큐에 들어갔다. 목록에서 빼면 셀 것이 없다."""
+    record = _source_data(
+        image_urls=("file:///C:/x.jpg", "https://e.kr/poster.jpg"),
+    )
+    urls = wanted_urls(record)
+
+    assert urls == ("https://e.kr/poster.jpg",)
+    # 받은 것이 목록과 같으니 `failure_note`가 `None`이다 — 등급이 안 떨어진다.
+    assert (
+        failure_note(MediaSet(items=(Media(media_type="image/jpeg", data=b"x" * 5000),)), urls)
+        is None
+    )
+
+
 # ── data: URI ────────────────────────────────────────────────────
 
 
