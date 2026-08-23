@@ -190,8 +190,15 @@ class Store(Protocol):
         """
         ...
 
-    def requeue_for_structure(self, *, source_key: str | None = None) -> RequeueResult:
+    def requeue_for_structure(
+        self, *, source_key: str | None = None, external_ids: Sequence[str] | None = None
+    ) -> RequeueResult:
         """판정을 지워 그 공고를 **다시 구조화할 수 있게** 되돌린다.
+
+        `external_ids`를 주면 그 게시판의 **그 공고들만** 되돌린다. ⚠️ `external_id`는 게시판
+        안에서만 유일하므로 `source_key` 없이 줄 수 없다 — 주면 `ValueError`다. 이게 없으면
+        결함 하나를 고치고 몇 건만 다시 판정하려 해도 게시판 전체가 재과금된다(실측: BU 3건을
+        되살리려면 40건을 다시 부른다).
 
         `structured_at`은 앞으로만 가므로(위 `update_structure_state`) 되돌리는 길이 따로
         있어야 한다. ⚠️ **전량 저장 전에 이게 있어야 한다** — 저장한 뒤 프롬프트 문제를

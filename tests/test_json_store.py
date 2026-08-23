@@ -718,6 +718,27 @@ def test_requeue_can_be_narrowed_to_one_board(store: JsonStore) -> None:
     assert [row.source_key for row in store.list_unstructured(10)] == ["CSU"]
 
 
+def test_requeue_can_be_narrowed_to_single_postings(store: JsonStore) -> None:
+    """⚠️ 이게 없으면 3건을 되살리려고 게시판 전체를 재과금한다."""
+    for external_id in ("1", "2", "3"):
+        _structured(store, _source_data(external_id))
+
+    result = store.requeue_for_structure(source_key="YTUS", external_ids=("1", "3"))
+
+    assert result.requeued == 2
+    assert sorted(row.external_id for row in store.list_unstructured(10)) == ["1", "3"]
+
+
+def test_requeue_by_posting_needs_the_board(store: JsonStore) -> None:
+    """⚠️ `external_id`는 게시판 안에서만 유일하다 — 번호만 받으면 남의 공고를 지운다."""
+    _structured(store, _source_data("1"))
+
+    with pytest.raises(ValueError, match="source_key"):
+        store.requeue_for_structure(external_ids=("1",))
+
+    assert store.list_unstructured(10) == (), "아무것도 바뀌지 않았다"
+
+
 def test_requeue_refuses_when_a_draft_cannot_be_read(store: JsonStore, data_dir: Path) -> None:
     """⚠️ 그 행이 승인된 것인지 모르는 채로 지우면 되돌릴 방법이 없다 — 멈추는 쪽이 맞다."""
     record = _structured(store, _source_data("1"))

@@ -48,6 +48,7 @@ from minjob_ingest.store.guards import (
     REQUEUED_STATE,
     check_only_state_changed,
     check_state_moves_forward,
+    requeue_scope,
     with_dedup,
 )
 from minjob_ingest.store.postgrest import (
@@ -188,11 +189,16 @@ class SupabaseStore:
                 " — 읽은 뒤 시도 횟수가 올라간 것으로 보인다"
             )
 
-    def requeue_for_structure(self, *, source_key: str | None = None) -> RequeueResult:
+    def requeue_for_structure(
+        self, *, source_key: str | None = None, external_ids: Sequence[str] | None = None
+    ) -> RequeueResult:
+        wanted_ids = requeue_scope(source_key, external_ids)
         protected = self._protected_ids()
         filters = {"structured_at": is_null(negated=True)}
         if source_key is not None:
             filters["source_key"] = eq(normalize_source_key(source_key))
+        if wanted_ids is not None:
+            filters["external_id"] = in_values(sorted(wanted_ids))
         # ⚠️ 전 컬럼을 읽는다 — `is_safe_to_replace`·`label`이 레코드 계약이라 부분 행으로는
         #    만들 수 없다. 운영자가 직접 부르는 드문 명령이라 그 비용을 받아들인다.
         records = self._decoded(

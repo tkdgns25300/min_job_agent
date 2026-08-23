@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import fields, replace
 from typing import Final
 
@@ -102,3 +102,20 @@ def with_dedup(stored: ReviewData, update: DedupUpdate) -> ReviewData:
         reject_reason=update.verdict.reject_reason,
         posted_at=update.verdict.posted_at,
     )
+
+
+def requeue_scope(
+    source_key: str | None, external_ids: Sequence[str] | None
+) -> frozenset[str] | None:
+    """되돌릴 공고 번호를 좁힌다 — `None`이면 그 게시판 전부다.
+
+    ⚠️ **`external_id`는 게시판 안에서만 유일하다**(SPEC §4). `source_key` 없이 번호만 받으면
+    같은 번호를 쓰는 다른 게시판의 공고를 함께 되돌린다 — 조용히 그러지 않고 거부한다.
+    """
+    if external_ids is None:
+        return None
+    if source_key is None:
+        raise ValueError("공고 번호로 되돌리려면 source_key 가 함께 있어야 한다")
+    if not external_ids:
+        raise ValueError("되돌릴 공고 번호가 비었다")
+    return frozenset(external_ids)

@@ -38,6 +38,7 @@ from minjob_ingest.store.guards import (
     REQUEUED_STATE,
     check_only_state_changed,
     check_state_moves_forward,
+    requeue_scope,
     with_dedup,
 )
 from minjob_ingest.store.serde import (
@@ -153,7 +154,10 @@ class JsonStore:
             rows[index] = to_row(record)
             self._write_rows(_SOURCE_DATA_FILE, rows)
 
-    def requeue_for_structure(self, *, source_key: str | None = None) -> RequeueResult:
+    def requeue_for_structure(
+        self, *, source_key: str | None = None, external_ids: Sequence[str] | None = None
+    ) -> RequeueResult:
+        wanted_ids = requeue_scope(source_key, external_ids)
         with self._write_lock:
             review_rows = self._read_rows(_REVIEW_DATA_FILE)
             protected = self._protected_ids(review_rows)
@@ -167,8 +171,10 @@ class JsonStore:
             rewritten: list[Row] = []
             for row in source_rows:
                 record = row_to_source_data(row)
-                if record.structured_at is None or (
-                    wanted is not None and record.source_key != wanted
+                if (
+                    record.structured_at is None
+                    or (wanted is not None and record.source_key != wanted)
+                    or (wanted_ids is not None and record.external_id not in wanted_ids)
                 ):
                     rewritten.append(row)
                     continue

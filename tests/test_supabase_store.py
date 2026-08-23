@@ -428,6 +428,25 @@ def test_requeue_can_be_limited_to_one_board(store: SupabaseStore) -> None:
     assert store.requeue_for_structure(source_key="PUTS").requeued == 1
 
 
+def test_requeue_can_be_narrowed_to_single_postings(store: SupabaseStore) -> None:
+    """⚠️ 서버가 걸러야 한다 — 전부 받아 여기서 고르면 되돌릴 것이 아닌 행도 지운다."""
+    for external_id in ("1", "2", "3"):
+        record = _source_data(external_id)
+        store.save_source_data(record)
+        store.update_structure_state(record.with_verdict_recorded(FIXED_NOW))
+
+    result = store.requeue_for_structure(source_key="YTUS", external_ids=("1", "3"))
+
+    assert result.requeued == 2
+    assert sorted(row.external_id for row in store.list_unstructured(10)) == ["1", "3"]
+
+
+def test_requeue_by_posting_needs_the_board(store: SupabaseStore) -> None:
+    """⚠️ 두 구현이 같은 규칙을 지켜야 한다 — 한쪽만 막으면 저장소를 바꿀 때 조용히 깨진다."""
+    with pytest.raises(ValueError, match="source_key"):
+        store.requeue_for_structure(external_ids=("1",))
+
+
 def test_requeue_stops_when_a_draft_cannot_be_read(
     store: SupabaseStore, server: FakePostgrest
 ) -> None:

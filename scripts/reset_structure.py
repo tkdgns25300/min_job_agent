@@ -31,12 +31,25 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     scope = parser.add_mutually_exclusive_group(required=True)
     scope.add_argument("--source", default=None, help="한 게시판만 (예: PCKWORLD)")
+    scope.add_argument(
+        "--posting",
+        action="append",
+        metavar="KEY/ID",
+        help="공고 하나만 (예: BU/58590 · 여러 번 줄 수 있다 · 게시판이 섞여도 된다)",
+    )
     scope.add_argument("--all", action="store_true", help="판정된 전부")
     parser.add_argument("--write", action="store_true", help="실제로 되돌린다 (기본은 미리보기)")
     args = parser.parse_args()
 
-    source = None if args.source is None else normalize_source_key(str(args.source))
-    scope_label = "전체" if source is None else source
+    if args.posting:
+        try:
+            wanted = _by_board(args.posting)
+        except ValueError as err:
+            print(f"⚠️ {err}")
+            return 2
+    else:
+        source = None if args.source is None else normalize_source_key(str(args.source))
+        wanted = {source: None}
 
     # ⚠️ **팩토리를 거친다.** `JsonStore`를 직접 만들면 Supabase로 넘어간 뒤 이 스크립트만
     #    로컬 파일을 되돌려, 운영자는 되돌린 줄 알지만 원장은 그대로다. CLAUDE.md가
@@ -46,25 +59,59 @@ def main() -> int:
         print(f"저장소: {session.label}")
 
         if not args.write:
-            # ⚠️ 미리보기는 **세기만 한다** — 되돌리기는 `Store`가 하나로 처리하므로 여기서
-            #    같은 판정을 흉내 내면 두 기준이 갈린다. 남은 미판정 수로 규모만 보여준다.
-            pending = store.list_unstructured(100_000, source_key=source)
-            print(f"{scope_label}: 지금 미판정 {len(pending)}건 — 되돌리면 여기에 더해진다")
+            for source, external_ids in wanted.items():
+                label = _label(source, external_ids)
+                if external_ids is not None:
+                    print(f"{label}: 되돌릴 공고 {len(external_ids)}건")
+                    continue
+                # ⚠️ 미리보기는 **세기만 한다** — 되돌리기는 `Store`가 하나로 처리하므로 여기서
+                #    같은 판정을 흉내 내면 두 기준이 갈린다. 남은 미판정 수로 규모만 보여준다.
+                pending = store.list_unstructured(100_000, source_key=source)
+                print(f"{label}: 지금 미판정 {len(pending)}건 — 되돌리면 여기에 더해진다")
             print("미리보기다 — 되돌리려면 --write 를 준다.")
             return 0
 
-        try:
-            result = store.requeue_for_structure(source_key=source)
-        except StoreError as err:
-            print(f"⚠️ 되돌리지 않았다 — {err}")
-            return 1
+        requeued = 0
+        skipped: list[str] = []
+        for source, external_ids in wanted.items():
+            try:
+                result = store.requeue_for_structure(source_key=source, external_ids=external_ids)
+            except StoreError as err:
+                # ⚠️ 한 게시판이 실패해도 나머지를 되돌린 사실은 알려야 한다 — 조용히 죽으면
+                #    운영자가 무엇이 되돌아갔는지 모른 채 재구조화를 돌린다.
+                print(f"⚠️ {_label(source, external_ids)}: 되돌리지 않았다 — {err}")
+                return 1
+            print(f"{_label(source, external_ids)}: {result.requeued}건을 미판정으로 되돌렸다")
+            requeued += result.requeued
+            skipped.extend(result.skipped)
 
-    print(f"{scope_label}: {result.requeued}건을 미판정으로 되돌렸다")
-    if result.skipped:
-        names = ", ".join(result.skipped[:_SKIPPED_SAMPLE])
-        print(f"⚠️ 초안을 지켜 건너뜀 {len(result.skipped)}건: {names}")
+    if len(wanted) > 1:
+        print(f"합계: {requeued}건")
+    if skipped:
+        names = ", ".join(skipped[:_SKIPPED_SAMPLE])
+        print(f"⚠️ 초안을 지켜 건너뜀 {len(skipped)}건: {names}")
         print("   (검수 상태가 PENDING이 아닌 행 — 운영자 승인·거절과 코드가 만든 거절 둘 다 포함)")
     return 0
+
+
+def _by_board(postings: list[str]) -> dict[str | None, tuple[str, ...] | None]:
+    """`KEY/ID` 목록을 게시판별로 묶는다 — `external_id`가 게시판 안에서만 유일해서다."""
+    grouped: dict[str | None, tuple[str, ...] | None] = {}
+    for raw in postings:
+        key, sep, external_id = str(raw).partition("/")
+        if not sep or not key.strip() or not external_id.strip():
+            raise ValueError(f"공고를 KEY/ID 로 적는다 (받은 값: {raw!r})")
+        source = normalize_source_key(key.strip())
+        grouped[source] = (*(grouped.get(source) or ()), external_id.strip())
+    return grouped
+
+
+def _label(source: str | None, external_ids: tuple[str, ...] | None) -> str:
+    if source is None:
+        return "전체"
+    if external_ids is None:
+        return source
+    return f"{source} {'·'.join(external_ids)}"
 
 
 if __name__ == "__main__":
