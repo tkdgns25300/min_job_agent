@@ -552,9 +552,9 @@ def _warn_if_details_failed(console: Console, report: CollectReport) -> None:
 def _warn_if_short(console: Console, report: CollectReport) -> None:
     """안전 상한에 걸려 요청 범위를 못 채웠으면 알린다.
 
-    이게 없으면 "범위 밖 0"만 보고 3개월을 다 받은 줄 안다 — 조용한 미달이다. 범위는 `--months`가
-    정하고 상한은 폭주 방지용이므로, **여기 걸리는 것은 정상 상황이 아니다** — 게시일 파싱이
-    깨졌다는 뜻이다(운영자가 옵션으로 풀 문제가 아니라 어댑터를 봐야 한다).
+    이게 없으면 "범위 밖 0"만 보고 요청한 범위를 다 받은 줄 안다 — 조용한 미달이다.
+    범위는 `--months`가 정하고 상한은 폭주 방지용이므로, **여기 걸리는 것은 정상 상황이
+    아니다** — 게시일 파싱이 깨졌다는 뜻이다(운영자가 옵션으로 풀 문제가 아니라 어댑터를 본다).
     """
     if not report.short_of_cutoff:
         return

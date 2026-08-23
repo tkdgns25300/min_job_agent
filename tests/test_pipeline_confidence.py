@@ -167,7 +167,7 @@ def test_a_poster_posting_is_looked_at_but_not_repaired() -> None:
     """⚠️ 그림을 보낸 공고는 `verify`가 비우지 않고 세기만 한다 — **어느 칸도 원문과 대조된 적이
     없다**(SPEC §5.5b). 자동 승인하면 "확인했다"는 말이 거짓이 된다.
 
-    실측: 사람이 볼 24건 중 21건(88%)이 이 경우다 — 전량 환산 ≈554건 중 대부분.
+    실측(1주치 전량 473건): 사람이 볼 72건 중 62건(86%)이 이 경우다 — 2개월 환산 약 560건 중 대부분.
     """
     assert _graded(_draft(), media_sent=True) is Confidence.MEDIUM
 

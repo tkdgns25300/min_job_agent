@@ -352,7 +352,7 @@ def test_dry_run_leaves_no_run_record(board_html: tuple[str, str], tmp_path: Pat
 def test_months_none_disables_the_date_cutoff(board_html: tuple[str, str], tmp_path: Path) -> None:
     """`--months 0`은 "날짜로 자르지 않음"이다(목록에 날짜가 없는 게시판·전량 수집용).
 
-    ⚠️ 오늘 날짜를 **한참 뒤로** 준다. 가까운 날짜로 확인하면 기본 컷오프(3개월)로도 아무것도
+    ⚠️ 오늘 날짜를 **한참 뒤로** 준다. 가까운 날짜로 확인하면 기본 컷오프(2개월)로도 아무것도
     걸러지지 않아, `None`이 무시되고 기본값이 적용돼도 테스트가 통과한다.
     """
     board = _Board(*board_html)

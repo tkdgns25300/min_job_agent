@@ -20,7 +20,7 @@
 경로를 알게 되면 그때 채운다.
 
 ⚠️ 그래서 `NEEDS_DETAIL_REQUEST = False`다. 상세를 요청하면 글마다 쓸모없는 요청이 하나씩
-늘어난다(3개월 백필이면 수백 건). 본문은 `parse_list`가 `list_meta["_body_html"]`로 넘기고
+늘어난다(2개월 백필이면 수백 건). 본문은 `parse_list`가 `list_meta["_body_html"]`로 넘기고
 `parse_detail`이 텍스트로 바꾼다 — `_` 접두 키는 `collect`가 `raw_meta`에 저장하지 않는다
 (그러면 `raw_text`와 그대로 중복된다).
 """

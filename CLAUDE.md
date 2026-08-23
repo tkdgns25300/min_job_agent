@@ -146,7 +146,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/minjob-ingest list-sources [KEY]   # 등록 소스 확인 (네트워크 없음)
 .venv/bin/minjob-ingest check-gemini         # Vertex 인증·연결 (유료 API 실호출 1회)
 .venv/bin/minjob-ingest snapshot [--source K]  # fixture용 HTML 확보 (게시판 요청)
-.venv/bin/minjob-ingest collect --months 3     # 공고 수집 (게시판 요청 · 무료)
+.venv/bin/minjob-ingest collect --months 2     # 공고 수집 (게시판 요청 · 무료)
 .venv/bin/minjob-ingest structure --limit 20   # AI 구조화 (⚠️ 유료 · 범위 필수 · `--lite`로 값싼 모델)
 .venv/bin/minjob-ingest structure --all --workers 8   # 전량 (게시판 8곳씩 동시 · 게시판 안은 순차)
 .venv/bin/minjob-ingest dedup                  # 같은 자리 묶기 (무료 · structure 뒤 자동 실행됨)

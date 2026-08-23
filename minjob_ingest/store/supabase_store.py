@@ -288,7 +288,7 @@ class SupabaseStore:
     def _posted_on_by_source_id(self) -> Mapping[str, date]:
         """라운드 경계용 게시일. **원자료에서 가져온다**(`DedupCandidate` docstring).
 
-        두 컬럼만 읽는 이유: `raw_text`·`raw_html`까지 3,188행 받으면 수십 MB다. 여기서는
+        두 컬럼만 읽는 이유: `raw_text`·`raw_html`까지 수천 행 받으면 수십 MB다. 여기서는
         레코드를 만들지 않으니 컬럼 집합 검사를 거치지 않아도 된다.
         """
         by_id: dict[str, date] = {}

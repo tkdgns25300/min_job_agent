@@ -71,8 +71,8 @@ def missing_for_promotion(draft: ReviewData) -> tuple[str, ...]:
 def grade(draft: ReviewData, *, media_sent: bool, media_missed: bool) -> Confidence:
     """검수 큐를 가르는 등급. `high`면 `build_draft`가 `APPROVED`로 만든다.
 
-    실측(표본 138건 · 2026-08-17): high 108 · medium 21 · low 3 — 전량 3,188건 환산으로
-    사람이 볼 것은 약 554건(17%)이고 그중 23건(96%)이 그림 때문이다(포스터 21 · 못 받음 2).
+    실측(1주치 전량 473건 · 2026-08-23): high 365 · medium 80 · low 20 — 사람이 볼 것은
+    72건(15% · 2개월 환산 약 560건)이고 그중 62건(86%)이 그림 때문이다.
     """
     if (
         missing_for_promotion(draft)

@@ -370,7 +370,7 @@ def structure_pending(
     """미판정 원자료를 게시판별로 나눠 처리한다 — 게시판 간 병렬 · 게시판 안은 오래된 것부터.
 
     ⚠️ **한 건의 실패가 나머지를 멈추지 않는다**(CLAUDE.md "에러는 경계에서만"). 실패는
-    세어서 리포트로 돌리고 다음 공고로 간다 — 3,188건짜리 실행이 350번째에서 죽으면
+    세어서 리포트로 돌리고 다음 공고로 간다 — 수천 건짜리 실행이 350번째에서 죽으면
     나머지에 영원히 도달하지 못한다.
 
     ⚠️ **집계와 진행 표시는 락 안에서 한 스레드씩** 한다. `_Tally`도 `on_result`가 쓰는
@@ -380,7 +380,7 @@ def structure_pending(
         raise ValueError(f"workers는 1 이상이어야 함 ({workers})")
     if posters is not None:
         # ⚠️ **한 건도 처리하기 전에** 확인한다. 버킷 이름이 틀렸거나 권한이 없는 것은 한 번
-        #    물어보면 알 수 있는 것이라, 포스터 공고 480건마다 실패로 알아내지 않는다
+        #    물어보면 알 수 있는 것이라, 포스터 공고 약 630건마다 실패로 알아내지 않는다
         #    (`publish`가 `check_jobs_columns`를 앞에 두는 것과 같은 자리·같은 이유).
         posters.check_bucket()
     pending = store.list_unstructured(_ALL_LIMIT, source_key=options.source_key)
@@ -783,7 +783,7 @@ def _note_failure(
             reason = f"{reason} · 실패 기록도 실패({_reason(store_err)})"
             # ⚠️ **여기서도 원장이 깨진 것을 알린다.** 안 하면 모델 실패와 저장 실패가 겹칠 때
             #    (프롬프트가 깨져 전건이 `ExtractionError` + 원장 손상) 멈춤이 영원히 안 걸려
-            #    3,188번 과금하고 아무것도 저장하지 못한다. `structure_attempts`도 저장이라
+            #    수천 번 과금하고 아무것도 저장하지 못한다. `structure_attempts`도 저장이라
             #    시도 상한조차 올라가지 않아 다음 실행이 그대로 반복한다.
             store_failed = True
     return StructureResult(

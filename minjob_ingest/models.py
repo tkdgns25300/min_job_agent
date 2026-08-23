@@ -849,7 +849,7 @@ class SourceHealth:
     #: "언제까지는 정상이었나"를 영구히 잃는다. 한 번도 읽은 적이 없으면 `None`이다.
     last_success_at: datetime | None = None
     #: ⚠️ **이번에 훑은 기간의 시작**(게시일 컷오프). 이게 없으면 `last_rows`·`last_new_count`를
-    #: 해석할 수 없다 — 3개월 백필 258행과 데일리 18행이 "급감"으로 보인다.
+    #: 해석할 수 없다 — 백필 258행과 데일리 18행이 "급감"으로 보인다.
     last_cutoff: date | None = None
     #: 목록에서 읽은 행 수(범위 밖 포함). **0이면 목록 자체를 못 읽었다는 뜻**이다.
     last_rows: int = 0

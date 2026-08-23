@@ -433,7 +433,7 @@ class _OrderTrackingStore:
 
 
 def test_the_batch_isolates_one_failure_from_the_rest(store: JsonStore) -> None:
-    """한 건이 실패해도 나머지를 계속 처리한다 — 3,188건이 350번째에서 멈추면 안 된다."""
+    """한 건이 실패해도 나머지를 계속 처리한다 — 수천 건이 350번째에서 멈추면 안 된다."""
     good = _source_data("1")
     bad = _source_data("2", raw_text="본문", fetched_at=datetime(2026, 8, 10, 9, 1, tzinfo=KST))
     store.save_source_data(good)
@@ -683,7 +683,7 @@ def test_the_store_is_always_asked_for_everything() -> None:
         heresy=_NO_HERESY,
     )
 
-    assert asked[0][0] > 3_188, "수집한 3,188건이 한 번에 들어가야 한다"
+    assert asked[0][0] > 10_000, "수집 전량이 한 번에 들어가야 한다(2개월 실측 환산 약 3,700건)"
     assert asked[1][0] == asked[0][0], "limit이 조회를 자르지 않는다"
     assert asked[1][1] == "YTUS"
 
@@ -1425,7 +1425,7 @@ def test_a_broken_ledger_halts_even_when_the_model_also_fails(store: JsonStore) 
     """⚠️ 모델 실패와 저장 실패가 겹치면 멈춤이 영원히 안 걸리던 구멍(2026-08-15 검수).
 
     프롬프트가 깨져 전건이 `ExtractionError`인데 원장까지 손상되면, 실패를 기록하는 저장도
-    실패한다 — 그 사실을 흘리면 3,188번 과금하고 아무것도 저장하지 못한다. `structure_attempts`
+    실패한다 — 그 사실을 흘리면 수천 번 과금하고 아무것도 저장하지 못한다. `structure_attempts`
     도 저장이라 시도 상한조차 안 올라가 다음 실행이 그대로 반복한다.
     """
     _fill(store, {"DAESHIN": 20})
@@ -1955,7 +1955,7 @@ def test_a_text_posting_never_touches_storage(store: JsonStore) -> None:
 
 
 def test_the_bucket_is_checked_once_before_the_batch(store: JsonStore) -> None:
-    """⚠️ 버킷 이름·권한이 틀린 것을 **포스터 공고 480건마다** 실패로 알아내지 않는다."""
+    """⚠️ 버킷 이름·권한이 틀린 것을 **포스터 공고 약 630건마다** 실패로 알아내지 않는다."""
     for number in ("1", "2"):
         store.save_source_data(_source_data(external_id=number))
     posters = _FakePosters()

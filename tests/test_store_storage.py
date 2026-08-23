@@ -50,7 +50,7 @@ def test_the_bucket_check_passes_when_it_exists() -> None:
 
 
 def test_a_missing_bucket_stops_us_before_any_upload() -> None:
-    """⚠️ 이게 없으면 전량 실행이 포스터 공고마다 실패한다(추정 480건)."""
+    """⚠️ 이게 없으면 전량 실행이 포스터 공고마다 실패한다(2개월 추정 약 630건)."""
     fake = FakeStorage(bucket_exists=False)
     with _storage(fake) as storage, pytest.raises(StoreError, match="404"):
         storage.check_bucket()
