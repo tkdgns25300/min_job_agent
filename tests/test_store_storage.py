@@ -142,7 +142,7 @@ def test_nothing_is_uploaded_when_there_is_nothing_to_upload() -> None:
 
 def test_every_format_we_can_read_can_also_be_stored() -> None:
     """⚠️ **드리프트 테스트.** `sniff_media_type`이 내는 형식에 확장자가 없으면 그 포스터만
-    조용히 안 올라간다 — 검수의 96%가 포스터라 그 구멍이 크다."""
+    조용히 안 올라간다 — 검수의 80%가 포스터라 그 구멍이 크다."""
     readable = {
         "image/jpeg",
         "image/png",
