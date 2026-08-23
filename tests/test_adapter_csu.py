@@ -7,6 +7,7 @@ fixture(`list.html`)는 HTML이 아니라 **API JSON 응답**이다.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
 
@@ -35,6 +36,16 @@ def source() -> SourceConfig:
 @pytest.fixture(scope="module")
 def refs(source: SourceConfig) -> tuple[PostingRef, ...]:
     return csu.parse_list((_FIXTURES / "list.html").read_text(encoding="utf-8"), source)
+
+
+def _ref_with(*, body: str, attachments: Sequence[Sequence[str]]) -> PostingRef:
+    """본문·첨부만 정해 놓은 목록 참조. 상세 URL은 실제 공유용 형태를 쓴다."""
+    return PostingRef(
+        external_id="1118481",
+        url="https://csu.ac.kr/?m1=page_ministry_detail&menu_id=1110&board_content_id=1118481",
+        title="퍼스우리교회 전임 사역자 청빙공고",
+        list_meta={"_body_html": body, "_attachments": [list(pair) for pair in attachments]},
+    )
 
 
 # ── 목록 요청 ────────────────────────────────────────────────────
@@ -141,7 +152,30 @@ def test_attachments_keep_their_filenames(refs: tuple[PostingRef, ...]) -> None:
     assert attachments
     for attachment in attachments:
         assert attachment.name  # UUID 경로만 남으면 종류를 알 수 없다
-        assert attachment.url.startswith("https://csu.ac.kr/upload/")
+
+
+def test_attachments_use_the_same_file_api_as_inline_images() -> None:
+    """⚠️ **첨부 URL을 추측하지 않는다**(2026-08-23 실측으로 고쳤다).
+
+    JSON은 상대 경로(`board/202608//x.pdf`)만 주고 다운로드 루트를 알려주지 않는다. 처음엔
+    `/upload/`로 추측했고 **모든 첨부가 404**였는데, 포스터가 저장돼 있어서 오래 안 드러났다 —
+    그 포스터는 전부 **본문 인라인 그림**이었다.
+
+    게시판 에디터가 본문 HTML에 써 두는 인라인 URL이 **정답의 증거**다(추측이 아니라 게시판이
+    직접 쓴 값). 그것과 같은 형태여야 한다 — 그래서 둘을 한 테스트로 묶는다.
+    """
+    inline = "https://csu.ac.kr/api/file/get?path=html_editor/202608//abc.jpg"
+    body = f'<p><img src="{inline}"></p>'
+    ref = _ref_with(body=body, attachments=[["청빙공고.pdf", "board/202608//def.pdf"]])
+    raw = csu.parse_detail("", ref)
+
+    assert raw.image_urls == (inline,)
+    (attachment,) = raw.attachments
+    assert attachment.url == "https://csu.ac.kr/api/file/get?path=board/202608//def.pdf"
+    # ⚠️ 두 URL이 **같은 엔드포인트**를 지나야 한다 — 인라인만 되고 첨부는 404이던 상태를 막는다.
+    api = "https://csu.ac.kr/api/file/get?path="
+    assert raw.image_urls[0].startswith(api)
+    assert attachment.url.startswith(api)
 
 
 def test_passing_detail_html_is_rejected(refs: tuple[PostingRef, ...]) -> None:

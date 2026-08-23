@@ -68,8 +68,14 @@ _BODY_FIELD: Final = "body"
 _BODY_KEY: Final = "_body_html"
 #: 첨부 목록이 `parse_detail`로 건너가는 통로(같은 이유로 `_` 접두).
 _ATTACHMENTS_KEY: Final = "_attachments"
-#: 첨부 경로 앞에 붙는 업로드 루트(실측: `board/202608//x.pdf` → `/upload/board/...`).
-_UPLOAD_PREFIX: Final = "/upload/"
+#: 첨부 경로 앞에 붙는 파일 API(실측 2026-08-23). JSON은 상대 경로만 준다
+#: (`board/202608//x.pdf`) → `https://csu.ac.kr/api/file/get?path=board/202608//x.pdf`.
+#:
+#: ⚠️ **`/upload/`가 아니다.** 처음엔 그렇게 추측했는데 **모든 첨부가 404**였다 — 그런데도
+#: 포스터가 저장돼 있어서 오래 안 드러났다. 그 포스터는 전부 **본문 인라인 그림**이고,
+#: 그건 게시판 에디터가 본문 HTML에 이미 이 API 형태로 써 둔다(`html_editor/...`). 즉 인라인은
+#: 되고 첨부만 안 되는 상태였다. 두 URL이 다른 모양이라 한쪽 성공이 다른 쪽을 가려 준 것이다.
+_FILE_API_PREFIX: Final = "/api/file/get?path="
 
 #: 공고에서 살릴 `properties` 키. **화이트리스트로 둔다** — 서버가 필드를 추가했을 때
 #: 그것이 개인정보여도 자동으로 흘러들지 않게 하려는 것이다(`cert_data`가 그 예다).
@@ -154,12 +160,14 @@ def _attachments_of(ref: PostingRef) -> tuple[Attachment, ...]:
     """목록이 준 첨부. 파일명이 링크 텍스트가 되도록 앵커로 만들어 공용 파서에 넘긴다.
 
     경로가 상대(`board/202608//x.pdf`)라 `attachments_in`이 `base_url`로 절대화한다.
+
+    ⚠️ 접두어는 **본문 인라인 그림과 같은 파일 API**다(`_FILE_API_PREFIX` 주석 참조).
     """
     pairs = ref.list_meta.get(_ATTACHMENTS_KEY)
     if not isinstance(pairs, list) or not pairs:
         return ()
     links = "".join(
-        f'<a href="{_UPLOAD_PREFIX}{pair[1]}">{pair[0]}</a>'
+        f'<a href="{_FILE_API_PREFIX}{pair[1]}">{pair[0]}</a>'
         for pair in pairs
         if isinstance(pair, list) and len(pair) == 2
     )
