@@ -1117,12 +1117,26 @@ def test_a_rejection_the_operator_made_is_kept() -> None:
     assert record.is_safe_to_replace is False
 
 
-def test_an_approved_draft_is_still_kept() -> None:
-    """⚠️ 지금은 **운영자 승인과 자동 승인을 가릴 표시가 없다**(`reviewed_by` 미구현) —
-    구분이 안 되는 동안은 지키는 쪽이 안전하다."""
-    record = replace(_review_data(), review_status=ReviewStatus.APPROVED)
+def test_a_published_draft_is_kept() -> None:
+    """⚠️ **공개한 뒤부터 지킨다.** 되돌려서 새 판정이 거절이 되면 `review_data`는 거절인데
+    `jobs`의 공고는 그대로 남는다 — 회수 경로가 없다."""
+    record = replace(_review_data(), review_status=ReviewStatus.APPROVED, published_job_id=new_id())
 
     assert record.is_safe_to_replace is False
+
+
+def test_an_auto_approval_that_never_went_out_can_be_redone() -> None:
+    """⚠️ **넓게 지켰더니 공개될 수 없는 초안이 갇혔다**(2026-08-23 실행에서 잡았다).
+
+    자물쇠 셋이 비어 `publish`가 보류한 9건이 `APPROVED`라서 되돌려지지 않아, 규칙을 고쳐도
+    그 행에는 영영 적용되지 않았다(SPEC §5.7). 링크가 없으면 내보낸 것이 없어 **회수할 것도
+    없다** — 지킬 이유가 사라진다.
+    """
+    record = replace(_review_data(), review_status=ReviewStatus.APPROVED)
+
+    assert record.published_job_id is None, "아직 내보낸 것이 없다 — 이게 전제다"
+    assert not record.is_operator_approved, "자동 승인이다(high)"
+    assert record.is_safe_to_replace is True
 
 
 def test_a_new_rejection_replaces_the_old_pending_state() -> None:
@@ -1250,17 +1264,26 @@ def test_a_draft_without_a_kind_cannot_carry_a_position() -> None:
         _review(position=(Position.EVANGELIST,))
 
 
-def test_an_approved_draft_is_never_replaced_even_without_a_reviewer() -> None:
-    """⚠️ admin이 `reviewed_by`를 안 채운 채 승인만 해도 `published_job_id`가 붙는다.
+def test_an_approval_without_a_reviewer_is_still_kept_once_published() -> None:
+    """⚠️ admin이 `reviewed_by`를 안 채운 채 승인만 하는 길이 있다.
 
-    그 링크가 사라지면 이미 공개한 공고를 한 번 더 승격하게 된다(SPEC §4.2가 그 값으로
-    끌어올림을 찾는다). 저장과 되돌리기가 **같은 판정**을 써야 한쪽이 다른 쪽이 지키기로
-    한 행을 지우지 않는다(2026-08-14 검수).
+    그 행에 `published_job_id`가 붙은 뒤에는 링크가 사라지면 이미 공개한 공고를 한 번 더
+    승격하게 된다(SPEC §4.2가 그 값으로 끌어올림을 찾는다). 저장과 되돌리기가 **같은 판정**을
+    써야 한쪽이 다른 쪽이 지키기로 한 행을 지우지 않는다(2026-08-14 검수).
+
+    ⚠️ 승인이 `high` 밖에서 왔으면 `is_operator_approved`가 링크 없이도 먼저 지킨다.
     """
-    approved = replace(_review_data(), review_status=ReviewStatus.APPROVED)
+    published = replace(
+        _review_data(), review_status=ReviewStatus.APPROVED, published_job_id=new_id()
+    )
+    by_operator = replace(
+        _review_data(), review_status=ReviewStatus.APPROVED, confidence=Confidence.MEDIUM
+    )
 
-    assert not approved.is_operator_touched, "사람 손자국이 없어도"
-    assert not approved.is_safe_to_replace, "검수가 끝난 행은 지킨다"
+    assert not published.is_operator_touched, "사람 손자국이 없어도"
+    assert not published.is_safe_to_replace, "내보낸 행은 지킨다"
+    assert by_operator.is_operator_approved, "사람이 승인한 것으로 읽는다"
+    assert not by_operator.is_safe_to_replace, "링크가 없어도 지킨다"
 
 
 def test_a_pending_untouched_draft_is_replaceable() -> None:

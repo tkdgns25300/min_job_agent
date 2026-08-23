@@ -793,15 +793,21 @@ class ReviewData:
         계속 바뀌는데, 그 행까지 지키면 **고친 규칙이 이미 판정된 행에 영영 적용되지 않는다**
         (실측: 이단 규칙을 고쳤는데 잘못 거절된 2건을 되돌릴 길이 없었다).
 
-        ⚠️ **`APPROVED`는 사람이 승인한 것이든 자동이든 지킨다.** `reviewed_by`가 들어오면
-        자동 승인만 골라 되돌릴 수 있게 되지만(2026-08-21), 그 행은 **이미 `jobs`에 나가 있을
-        수 있다** — 되돌려서 새 판정이 거절이 되면 `review_data`는 거절인데 공개된 공고는 그대로
-        남는다(공개를 회수하는 경로가 없다). 그걸 열려면 회수 경로가 먼저다.
+        ⚠️ **`APPROVED`는 공개된 뒤부터 지킨다**(2026-08-23에 좁혔다). 되돌려서 새 판정이 거절이
+        되면 `review_data`는 거절인데 공개된 공고는 그대로 남는다 — 공개를 회수하는 경로가 없다.
+        ⚠️ 그런데 그 위험은 **`published_job_id`가 있을 때만** 있다. 링크가 없는 자동 승인 행은
+        내보낸 것이 없어 회수할 것도 없다. 넓게 잡아 두었더니 **공개될 수 없는 초안이 갇혔다**:
+        자물쇠 셋이 비어 `publish`가 보류한 9건(SPEC §5.7)이 `APPROVED`라서 되돌려지지 않아,
+        규칙을 고쳐도 그 행에는 영영 적용되지 않았다.
+        ⚠️ **사람이 승인한 행은 여전히 지킨다** — 자동 승인은 `high`에서만 일어나므로
+        `is_operator_touched`가 위에서 먼저 걸러낸다(`is_operator_approved`).
         """
         if self.is_operator_touched:
             return False
         if self.review_status is ReviewStatus.PENDING:
             return True
+        if self.review_status is ReviewStatus.APPROVED:
+            return self.published_job_id is None
         return self.reject_reason in _CRAWLER_REJECTIONS
 
     def carrying_operator_state_of(self, previous: ReviewData) -> ReviewData:

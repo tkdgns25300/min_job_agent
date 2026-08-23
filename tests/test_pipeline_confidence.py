@@ -50,9 +50,23 @@ def _draft(**overrides: object) -> ReviewData:
 
 
 def _graded(
-    draft: ReviewData, *, media_sent: bool = False, media_missed: bool = False
+    draft: ReviewData,
+    *,
+    media_sent: bool = False,
+    media_missed: bool = False,
+    can_compare: bool = True,
 ) -> Confidence:
-    return grade(draft, media_sent=media_sent, media_missed=media_missed)
+    return grade(draft, media_sent=media_sent, media_missed=media_missed, can_compare=can_compare)
+
+
+def test_a_draft_nobody_can_compare_needs_a_person() -> None:
+    """⚠️ **자동 승인하면 아무도 모르게 사라진다**(2026-08-23 실행에서 잡았다).
+
+    자물쇠가 비면 `dedup`이 `dedup_state`를 못 붙이고, 라벨 없는 초안은 `publish`가 보류한다
+    (SPEC §4.3) — `APPROVED`인데 **검수 큐에도 없고 `jobs`에도 없는 행**이 된다. 실측 465건
+    중 9건이 그 상태였고 전부 `region`이 비어 있었다.
+    """
+    assert _graded(_draft(), can_compare=False) is Confidence.LOW
 
 
 # ── 승격 6칸 ─────────────────────────────────────────────────────
@@ -167,7 +181,7 @@ def test_a_poster_posting_is_looked_at_but_not_repaired() -> None:
     """⚠️ 그림을 보낸 공고는 `verify`가 비우지 않고 세기만 한다 — **어느 칸도 원문과 대조된 적이
     없다**(SPEC §5.5b). 자동 승인하면 "확인했다"는 말이 거짓이 된다.
 
-    실측(1주치 전량 473건): 사람이 볼 69건 중 61건(88%)이 이 경우다 — 2개월 환산 약 540건 중 대부분.
+    실측(1주치 전량 473건): 사람이 볼 76건 중 61건(80%)이 이 경우다 — 2개월 환산 약 590건 중 대부분.
     """
     assert _graded(_draft(), media_sent=True) is Confidence.MEDIUM
 

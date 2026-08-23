@@ -315,8 +315,10 @@ def test_an_approval_between_our_read_and_write_wins(
     source = _source_data()
     store.save_source_data(source)
     store.upsert_review_data(_review_data(source.id))
-    # 우리가 읽은 다음 admin이 승인한 상황을 만든다.
+    # 우리가 읽은 다음 admin이 승인한 상황을 만든다. ⚠️ 등급도 함께 내린다 — 자동 승인은
+    # `high`에서만 일어나므로, `high`인 채 `APPROVED`면 그건 **우리가** 승인한 행이다.
     server.rows["review_data"][0]["review_status"] = ReviewStatus.APPROVED.value
+    server.rows["review_data"][0]["confidence"] = Confidence.MEDIUM.value
 
     assert store.upsert_review_data(_review_data(source.id, title="덮어쓰려는 초안")) is False
     assert server.rows["review_data"][0]["title"] != "덮어쓰려는 초안"
@@ -344,6 +346,31 @@ def test_an_approval_right_after_our_read_still_wins(
 
     assert store.upsert_review_data(_review_data(source.id, title="덮어쓰려는 초안")) is False
     assert server.rows[_REVIEW_DATA_TABLE][0]["title"] != "덮어쓰려는 초안"
+
+
+def test_publishing_right_after_our_read_keeps_the_link(
+    store: SupabaseStore, server: FakePostgrest
+) -> None:
+    """⚠️ **admin이 아니라 우리 다음 단계가 만드는 경쟁이다**(2026-08-23에 생겼다).
+
+    자동 승인 행은 게재 링크가 없을 때만 되돌릴 수 있게 좁혔는데(`is_safe_to_replace`), 그러면
+    우리가 읽은 뒤 `publish`가 링크를 붙이는 사이가 생긴다 — 그때 덮어쓰면 **방금 공개한 공고를
+    가리키는 링크가 사라지고** 다음 실행이 같은 공고를 한 번 더 공개한다.
+    """
+    source = _source_data()
+    store.save_source_data(source)
+    store.upsert_review_data(_review_data(source.id, review_status=ReviewStatus.APPROVED))
+    published = str(uuid4())
+
+    def publish_once(table: str) -> None:
+        if table == _REVIEW_DATA_TABLE:
+            server.rows[_REVIEW_DATA_TABLE][0]["published_job_id"] = published
+            server.after_read = None
+
+    server.after_read = publish_once
+
+    assert store.upsert_review_data(_review_data(source.id, title="덮어쓰려는 초안")) is False
+    assert server.rows[_REVIEW_DATA_TABLE][0]["published_job_id"] == published
 
 
 # ── 되돌리기 ───────────────────────────────────────────────────

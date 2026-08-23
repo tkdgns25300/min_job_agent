@@ -27,7 +27,7 @@ from minjob_ingest.lib import gemini
 from minjob_ingest.models import ReviewData, SourceData, new_id
 from minjob_ingest.pipeline.collect import CollectReport
 from minjob_ingest.pipeline.dedup import DedupReport
-from minjob_ingest.pipeline.extraction import Extraction
+from minjob_ingest.pipeline.extraction import Evidence, Extraction
 from minjob_ingest.pipeline.health import EMPTY_RUNS_ALARM
 from minjob_ingest.pipeline.heresy import HeresyEntry, HeresyMatch, HeresyRef
 from minjob_ingest.pipeline.structure import (
@@ -609,7 +609,8 @@ def test_the_preview_says_whether_the_draft_goes_out_without_a_person(
         posted_on=kst_now().date(),
         run_id=new_id(),
         fetched_at=kst_now(),
-        raw_text="성원교회 부목사 청빙. church@example.kr",
+        # ⚠️ 지역이 원문에 있어야 `high`가 된다 — 자물쇠 셋에 `region`이 들어간다(SPEC §5.7).
+        raw_text="서울 강남구 성원교회 부목사 청빙. church@example.kr",
     )
     complete = Extraction(
         is_church_recruitment=IsChurchRecruitment.YES,
@@ -618,6 +619,8 @@ def test_the_preview_says_whether_the_draft_goes_out_without_a_person(
         job_kind=(JobKind.MINISTRY,),
         position=(Position.ASSOCIATE_PASTOR,),
         contact_email="church@example.kr",
+        region=Region.SEOUL,
+        evidence=Evidence(region="서울 강남구"),
     )
 
     cli._print_preview(

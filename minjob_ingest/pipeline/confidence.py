@@ -68,19 +68,30 @@ def missing_for_promotion(draft: ReviewData) -> tuple[str, ...]:
     return tuple(name for name in PROMOTION_FIELDS if not filled[name])
 
 
-def grade(draft: ReviewData, *, media_sent: bool, media_missed: bool) -> Confidence:
+def grade(
+    draft: ReviewData, *, media_sent: bool, media_missed: bool, can_compare: bool
+) -> Confidence:
     """검수 큐를 가르는 등급. `high`면 `build_draft`가 `APPROVED`로 만든다.
 
-    실측(1주치 전량 473건 · 2026-08-23): high 368 · medium 80 · low 17 — 사람이 볼 것은
-    69건(15% · 2개월 환산 약 540건)이고 그중 61건(88%)이 그림 때문이다.
+    ⚠️ **`can_compare`는 `dedup.seat_of`가 판단한다**(부르는 쪽에서 받는다 · `media_sent`와
+    같은 방식). 여기서 자물쇠 규칙을 다시 쓰면 두 계산이 갈라진다.
+
+    실측(1주치 전량 473건 · 2026-08-23): high 361 · medium 80 · low 24 — 사람이 볼 것은
+    76건(16% · 2개월 환산 약 590건)이고 그중 61건(80%)이 그림 때문이다.
     """
     if (
         missing_for_promotion(draft)
         or draft.is_church_recruitment is not IsChurchRecruitment.YES
         or media_missed
+        or not can_compare
     ):
         # ⚠️ 게이트1 `UNCERTAIN`은 레코드 불변식도 `low`를 요구한다(SPEC §5.1) — 여기서
         #    다른 값을 내면 레코드가 아예 만들어지지 않아 규칙 오류가 즉시 드러난다.
+        # ⚠️⚠️ **`can_compare`가 없으면 자동 승인하면 안 된다**(2026-08-23 실행에서 잡았다).
+        #    자물쇠가 비면 `dedup`이 `dedup_state`를 못 붙이고, 라벨 없는 초안은 `publish`가
+        #    보류한다(SPEC §4.3) — `APPROVED`인데 **큐에도 없고 `jobs`에도 없는 행**이 되어
+        #    아무도 모르게 사라진다(실측 465건 중 9건 · 전부 `region`이 비었다). 승격 6칸에
+        #    `region`이 없어서 생긴 구멍이고, 사람이 지역을 채우면 풀린다.
         return Confidence.LOW
     if media_sent or _only_contact_is_unverified(draft) or draft.heresy_flag:
         # ⚠️ **이단 목록에 걸린 공고도 여기 온다**(SPEC §5.4 · 2026-08-19). 지역을 확인해

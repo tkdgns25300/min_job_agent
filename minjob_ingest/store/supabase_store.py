@@ -425,9 +425,14 @@ class SupabaseStore:
 def _untouched_since(existing: ReviewData) -> Mapping[str, str]:
     """읽었을 때와 **똑같은 행만** 고치게 하는 필터.
 
-    `is_safe_to_replace`가 보는 네 칸을 읽은 값으로 못 박는다 — 그 사이 min_job admin이
+    `is_safe_to_replace`가 보는 **다섯 칸**을 읽은 값으로 못 박는다 — 그 사이 min_job admin이
     승인하거나 교단을 확정하면 어느 칸이 바뀌므로 0행이 돌아오고, 우리는 덮어쓰지 않는다.
     JsonStore는 락으로 이걸 막았지만 여기는 **DB가 판정**한다.
+
+    ⚠️ **`published_job_id`도 못 박는다**(2026-08-23에 더했다). 자동 승인 행은 링크가 없을 때만
+    되돌릴 수 있게 좁혔는데(`is_safe_to_replace`), 그러면 우리가 읽은 뒤 `publish`가 링크를 붙이는
+    사이가 생긴다 — 그때 덮어쓰면 **방금 공개한 공고를 가리키는 링크가 사라진다**. admin이 아니라
+    **우리 다음 단계**가 만드는 경쟁이라 놓치기 쉽다.
     """
     return {
         "id": eq(str(existing.id)),
@@ -437,4 +442,7 @@ def _untouched_since(existing: ReviewData) -> Mapping[str, str]:
             is_null() if existing.reject_reason is None else eq(existing.reject_reason.value)
         ),
         "reviewed_by": is_null() if existing.reviewed_by is None else eq(existing.reviewed_by),
+        "published_job_id": (
+            is_null() if existing.published_job_id is None else eq(str(existing.published_job_id))
+        ),
     }

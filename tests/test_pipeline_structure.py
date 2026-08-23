@@ -46,6 +46,7 @@ from minjob_ingest.models import (
     new_id,
 )
 from minjob_ingest.pipeline import structure
+from minjob_ingest.pipeline.dedup import seat_of
 from minjob_ingest.pipeline.extraction import Evidence, Extraction, ExtractionError
 from minjob_ingest.pipeline.heresy import HeresyEntry, HeresyMatch, HeresyRef, screen
 from minjob_ingest.pipeline.media import BoardMediaSource, Media, MediaSet
@@ -1667,20 +1668,29 @@ def test_the_draft_carries_the_address() -> None:
 
 
 def _complete() -> Extraction:
-    """승격 6칸이 다 차는 모델 답 — 이게 `high`가 되는 기준선이다."""
+    """승격 6칸이 다 차는 모델 답 — 이게 `high`가 되는 기준선이다.
+
+    ⚠️ **`region`이 있어야 한다.** 승격 6칸에는 없지만 자물쇠 셋(`dedup.seat_of`)에는 있어서,
+    지역이 비면 중복 판정을 못 하고 그런 초안은 공개되지 않는다(`confidence.grade`).
+    """
     return replace(
         _extraction(),
         job_kind=(JobKind.MINISTRY,),
         position=(Position.ASSOCIATE_PASTOR,),
         contact_email="church@example.kr",
-        evidence=Evidence(position_items=("부목사 1명",)),
+        region=Region.GYEONGBUK,
+        evidence=Evidence(position_items=("부목사 1명",), region="경북 문경시"),
     )
 
 
 def test_a_high_draft_is_approved_without_a_person(store: JsonStore, data_dir: Path) -> None:
     """⚠️ **여기가 사람 게이트를 여는 자리다**(SPEC §5.7). 규칙이 느슨해지면 확인 안 된 값이
     검수 없이 공개된다."""
-    record = _source_data(raw_text="점촌제일교회에서 사역자를 청빙합니다. church@example.kr")
+    # ⚠️ 원문에 지역이 있어야 한다 — `verify`가 근거를 원문에서 찾지 못하면 `region`을 비우고,
+    #    지역이 없으면 중복 판정을 못 해 `high`가 되지 않는다(SPEC §5.5b · §5.7).
+    record = _source_data(
+        raw_text="경북 문경시 점촌제일교회에서 사역자를 청빙합니다. church@example.kr"
+    )
     store.save_source_data(record)
 
     result = structure_one(record, store, _FakeExtractor(_complete()), heresy=_NO_HERESY)
@@ -1762,6 +1772,49 @@ def test_a_posting_whose_image_never_arrived_is_not_approved(
     assert _drafts(data_dir)[0].confidence is Confidence.LOW
 
 
+def test_a_draft_without_a_region_is_never_approved(store: JsonStore, data_dir: Path) -> None:
+    """⚠️ **승격 6칸에 `region`이 없어서 생긴 구멍**(2026-08-23 실행에서 잡았다).
+
+    지역이 없으면 자물쇠 셋(`dedup.seat_of`)이 만들어지지 않아 `dedup_state`가 붙지 않고,
+    라벨 없는 초안은 `publish`가 보류한다 — 자동 승인하면 **검수 큐에도 없고 `jobs`에도
+    없는 행**이 되어 아무도 모른다(실측 465건 중 9건).
+    """
+    record = _source_data(raw_text="점촌제일교회에서 부목사 1명을 청빙합니다. church@example.kr")
+    store.save_source_data(record)
+
+    # ⚠️ 승격 6칸은 다 찬 초안이다 — 지역만 없다. 그래야 등급이 내려간 원인이 분명해진다.
+    result = structure_one(
+        record,
+        store,
+        _FakeExtractor(replace(_complete(), region=None, evidence=Evidence())),
+        heresy=_NO_HERESY,
+    )
+
+    assert result.verdict is Verdict.DRAFTED
+    draft = _drafts(data_dir)[0]
+    assert draft.region is None
+    assert seat_of(draft) is None, "자물쇠를 만들 수 없다 — 이게 전제다"
+    assert draft.review_status is not ReviewStatus.APPROVED, "공개될 수 없는 것을 승인하지 않는다"
+
+
+def test_every_approved_draft_can_be_compared(store: JsonStore, data_dir: Path) -> None:
+    """⚠️ **불변식: `APPROVED` ⟹ 공개 가능하다.** 자물쇠가 없으면 영구 미공개다.
+
+    fixture를 고쳐서 초록불이 되는 것을 막는다 — 규칙이 아니라 **결과**를 본다.
+    """
+    for index, extraction in enumerate((_complete(), replace(_complete(), region=None))):
+        record = _source_data(
+            external_id=f"seat-{index}",
+            raw_text="경북 문경시 점촌제일교회에서 부목사 1명을 청빙합니다. church@example.kr",
+        )
+        store.save_source_data(record)
+        structure_one(record, store, _FakeExtractor(extraction), heresy=_NO_HERESY)
+
+    for draft in _drafts(data_dir):
+        if draft.review_status is ReviewStatus.APPROVED:
+            assert seat_of(draft) is not None, f"공개될 수 없는 초안이 승인됐다 (id={draft.id})"
+
+
 def test_the_report_counts_what_was_approved_without_a_person(store: JsonStore) -> None:
     """⚠️ 자동 승인은 사람을 거치지 않고 공개된다 — 그 수가 실행 화면에 안 보이면 규칙이
     느슨해진 것을 알아챌 방법이 없다(SPEC §5.7).
@@ -1769,7 +1822,9 @@ def test_the_report_counts_what_was_approved_without_a_person(store: JsonStore) 
     ⚠️ **등급이 아니라 상태로 센다** — 거절된 초안도 등급은 `high`일 수 있어서, 등급으로
     세면 "자동 승인"이 실제보다 커 보인다(실측: 표본에서 거절 2건이 둘 다 `high`였다).
     """
-    record = _source_data(raw_text="점촌제일교회에서 부목사 1명을 청빙합니다. church@example.kr")
+    record = _source_data(
+        raw_text="경북 문경시 점촌제일교회에서 부목사 1명을 청빙합니다. church@example.kr"
+    )
     store.save_source_data(record)
     tally = structure._Tally()
 

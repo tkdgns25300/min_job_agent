@@ -46,6 +46,7 @@ from minjob_ingest.domain import (
 from minjob_ingest.lib.gemini import GeminiError
 from minjob_ingest.models import ReviewData, SourceData
 from minjob_ingest.pipeline.confidence import grade, review_status_for
+from minjob_ingest.pipeline.dedup import seat_of
 from minjob_ingest.pipeline.denomination import confirm
 from minjob_ingest.pipeline.extraction import Extraction, ExtractionError, has_prompt_evidence
 from minjob_ingest.pipeline.heresy import HeresyMatch, HeresyRef, screen
@@ -554,7 +555,14 @@ def build_draft(
     # ⚠️ 등급을 매긴 뒤 검수 상태를 다시 정한다 — 등급이 조립된 레코드에서 나오므로
     #    한 번에 만들 수 없다. `replace`가 불변식을 다시 검사하므로 게이트1 `UNCERTAIN`에
     #    `high`를 매기면 여기서 레코드가 거부된다(SPEC §5.1).
-    confidence = grade(draft, media_sent=media_sent, media_missed=media_missed)
+    # ⚠️ **중복 판정이 가능한지 등급이 알아야 한다** — 자물쇠가 비면 자동 승인해도 공개되지
+    #    않는다(`confidence.grade`의 ⚠️⚠️). 판단은 `dedup`의 것을 그대로 쓴다.
+    confidence = grade(
+        draft,
+        media_sent=media_sent,
+        media_missed=media_missed,
+        can_compare=seat_of(draft) is not None,
+    )
     return replace(
         draft,
         confidence=confidence,

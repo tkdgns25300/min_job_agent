@@ -696,7 +696,11 @@ def test_requeue_keeps_a_draft_the_operator_touched(store: JsonStore, data_dir: 
     판정 기준은 저장 쪽과 같은 `is_safe_to_replace` 하나여야 한다(2026-08-14 검수).
     """
     record = _structured(store, _source_data("1"))
-    approved = replace(_review_data(record.id), review_status=ReviewStatus.APPROVED)
+    approved = replace(
+        _review_data(record.id),
+        review_status=ReviewStatus.APPROVED,
+        published_job_id=new_id(),
+    )
     store.upsert_review_data(approved)
 
     result = store.requeue_for_structure()
