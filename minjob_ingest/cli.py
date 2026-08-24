@@ -40,6 +40,7 @@ from minjob_ingest.pipeline.collect import (
     DEFAULT_MONTHS,
     CollectOptions,
     CollectReport,
+    DailyWindow,
     LedgerConflict,
     Progress,
     ProgressSink,
@@ -119,6 +120,9 @@ _DAILY_WINDOW_RUNS: Final = 20
 
 #: `status`가 보여줄 실행 수. 어제·그제까지 보이면 "매일 도는가"를 알 수 있다.
 _STATUS_RUNS: Final = 5
+
+#: 실행 하나에 찍을 실패 게시판 수. 나머지는 개수로만 알린다("한 화면" 유지).
+_STATUS_ERRORS: Final = 5
 #: 요청마다 한 줄씩 찍어 리포트를 덮는 로거들. `--verbose`에서만 켠다.
 #: ⚠️ 구조화는 공고마다 한 줄을 찍는다 — 빼두면 전량 실행에서 진행 줄이 수천 줄에 묻힌다.
 _NOISY_LOGGERS = ("httpx", "httpcore", "minjob_ingest.lib.gemini")
@@ -212,9 +216,12 @@ def _dispatch(args: argparse.Namespace) -> int:
     if command == _PUBLISH:
         return _run_publish(dry_run=bool(args.dry_run), verbose=bool(args.verbose))
     if command == _DAILY:
-        return _run_daily(
-            limit=int(args.limit), dry_run=bool(args.dry_run), verbose=bool(args.verbose)
-        )
+        # ⚠️ **일을 시작하기 전에 거른다.** 뒤에서 걸리면 게시판 30곳을 3분간 훑은 뒤에야
+        #    멈춘다 — 외부 입력은 경계에서 검증한다(CLAUDE.md).
+        limit = int(args.limit)
+        if limit < 1:
+            raise ConfigError(f"--limit는 1 이상이어야 합니다 ({limit})")
+        return _run_daily(limit=limit, dry_run=bool(args.dry_run), verbose=bool(args.verbose))
     if command == _STATUS:
         return _run_status(runs=int(args.runs))
     # argparse가 이미 미등록 명령을 걸러내므로, 여기 오는 건 "서브파서는 추가했는데 연결을
@@ -1197,7 +1204,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     daily = subcommands.add_parser(
         _DAILY,
-        help="하루치를 한 번에 — 수집→구조화→중복→공개 (🌐 게시판 요청 · 💰 유료)",
+        help="하루치를 한 번에 — 수집→구조화(중복 판정 포함)→공개 (🌐 게시판 요청 · 💰 유료)",
     )
     daily.add_argument(
         "--limit",
@@ -1206,7 +1213,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"유료 호출 상한 (기본 {_DAILY_STRUCTURE_LIMIT} · 넘친 건은 다음 실행이 처리)",
     )
     daily.add_argument(
-        "--dry-run", action="store_true", help="무엇을 할지만 보여주고 아무것도 쓰지 않음"
+        "--dry-run",
+        action="store_true",
+        help="수집까지만 — 창·새 글 수를 보고 멈춘다 (유료 호출 0회)",
     )
     daily.add_argument("--verbose", action="store_true", help="로그까지 표시")
 
@@ -1314,7 +1323,7 @@ def _run_publish(*, dry_run: bool, verbose: bool) -> int:
 
 
 def _run_daily(*, limit: int, dry_run: bool, verbose: bool) -> int:
-    """하루치를 한 번에 — 수집 → 구조화 → 중복 → 공개.
+    """하루치를 한 번에 — 수집 → 구조화(중복 판정 포함) → 공개.
 
     ⚠️ **cron이 부를 수 있는 창구가 이것 하나다.** 단계별 명령은 사람이 화면을 보며 판단하는
     용도이고, 무인 실행에는 단계 사이의 규칙이 코드에 있어야 한다.
@@ -1322,25 +1331,23 @@ def _run_daily(*, limit: int, dry_run: bool, verbose: bool) -> int:
     ⚠️ **게시판 일부 실패는 통과한다**(SPEC §3 에러 격리). 다음 단계는 저장된 사실에서 자기
     일감을 다시 찾으므로(`structured_at IS NULL` 등) 한 게시판이 빠져도 할 일이 있다.
 
-    ⚠️ **판정이 미완이면 공개하지 않는다.** 저장이 연속 실패해 구조화가 멈추거나 중복 판정이
-    깨지면 `StoreError`가 올라오는데, 그 상태로 `jobs`에 쓰면 판정 안 된 행이 공개된다.
-    잃는 것은 없다 — 공개 대상(`APPROVED` + 미공개)은 다음 실행이 그대로 찾는다.
+    ⚠️ **중복 판정은 여기서 부르지 않는다** — `structure`가 끝나면 **무조건** 돌린다
+    (`_run_structure` · "잊어버릴 자리에 두지 않는다"). 여기서 또 부르면 전량을 두 번 훑는다
+    (실측 2026-08-24: 499건을 두 번 · 2개월이면 3,600건을 두 번).
+
+    ⚠️ **판정이 미완이면 공개하지 않는다.** 저장이 연속 실패하거나 중복 판정이 깨지면
+    `StoreError`가 `_run_structure`에서 올라오는데, 그 상태로 `jobs`에 쓰면 판정 안 된 행이
+    공개된다. 잃는 것은 없다 — 공개 대상(`APPROVED` + 미공개)은 다음 실행이 그대로 찾는다.
 
     ⚠️ **종료코드는 판정이 아니다.** "일을 끝냈나"만 답한다(0=끝냈다). 사람을 불러야 하는지는
-    `status`가 정한다 — 게시판 한 곳이 죽는 것은 정상 상황이라 여기서 실패로 세면 매일
-    빨간불이 되어 알림이 잡음이 된다.
+    `status`가 정한다 — 게시판 한 곳이 죽는 것도, 공고 몇 건의 공개 실패도 정상 상황이라
+    여기서 실패로 세면 매일 빨간불이 되어 알림이 잡음이 된다.
     """
     console = Console()
-    with opened_store(Settings.load()) as session:
-        window = daily_window(session.store.recent_runs(_DAILY_WINDOW_RUNS), today=kst_now().date())
-
-    console.heading("하루치 실행", note="미리보기" if dry_run else None)
-    console.field("수집 범위", f"최근 {window.days}일", note="마지막 성공 이후 + 여유")
-    if window.gap_note is not None:
-        # ⚠️ 조용히 자르지 않는다 — 상한에 걸렸다는 사실이 화면에 없으면 그 기간을 아무도 모른다.
-        console.warn(window.gap_note)
-
-    collected = _run_collect(
+    window = _planned_window(console, dry_run=dry_run)
+    # ⚠️ **종료코드를 보지 않는다** — 게시판 일부 실패는 통과다(위 docstring). 실패한 곳은
+    #    `source_health`에 남고 `status`가 판정한다.
+    _run_collect(
         config_path=None,
         only=None,
         months=None,
@@ -1349,28 +1356,56 @@ def _run_daily(*, limit: int, dry_run: bool, verbose: bool) -> int:
         verbose=verbose,
         mode=CrawlMode.DAILY,
     )
+    if dry_run:
+        return _previewed(console, limit=limit)
     try:
         _run_structure(
             limit=limit,
             source_key=None,
-            dry_run=dry_run,
+            dry_run=False,
             verbose=verbose,
             out=None,
             lite=False,
             workers=DEFAULT_WORKERS,
         )
     except StoreError as err:
-        return _stopped(console, "구조화", err)
-    try:
-        _run_dedup(dry_run=dry_run, verbose=verbose)
-    except StoreError as err:
-        return _stopped(console, "중복 판정", err)
-    published = _run_publish(dry_run=dry_run, verbose=verbose)
+        # ⚠️ 중복 판정도 이 안에서 돈다 — 어느 쪽이 깨졌든 공개를 건너뛰는 것이 맞다.
+        return _stopped(console, "구조화·중복 판정", err)
+    # ⚠️ 여기도 종료코드를 보지 않는다 — 공고 몇 건의 공개 실패는 **다음 실행이 이어받는다.**
+    _run_publish(dry_run=False, verbose=verbose)
 
     console.line()
     console.heading("하루치 끝")
-    console.field("게시판", "일부 실패" if collected else "전부 성공", note="자세히는 status")
-    return published
+    console.field("자세히", "minjob-ingest status", note="사람이 볼 것이 있나")
+    return 0
+
+
+def _planned_window(console: Console, *, dry_run: bool) -> DailyWindow:
+    """이번에 훑을 범위를 정하고 화면에 알린다.
+
+    ⚠️ 상한에 걸린 것을 **조용히 넘기지 않는다** — 화면에 없으면 못 덮은 기간을 아무도 모른다.
+    """
+    with opened_store(Settings.load()) as session:
+        window = daily_window(session.store.recent_runs(_DAILY_WINDOW_RUNS), today=kst_now().date())
+    console.heading("하루치 실행", note="미리보기" if dry_run else None)
+    console.field("수집 범위", f"최근 {window.days}일", note="마지막 성공 이후 + 여유")
+    if window.gap_note is not None:
+        console.warn(window.gap_note)
+    return window
+
+
+def _previewed(console: Console, *, limit: int) -> int:
+    """미리보기는 **수집까지만** 한다.
+
+    ⚠️⚠️ `structure --dry-run`은 **호출은 하되 저장만 안 한다**(프롬프트 확인용 · CLAUDE.md).
+    그걸 그대로 넘기면 "미리보기"가 최대 `limit`건을 과금한다 — 유료 호출이 실수로 도는 경로를
+    두지 않는다는 규칙을 정면으로 어긴다. 그래서 여기서 끊는다.
+    """
+    console.line()
+    console.heading("미리보기 끝")
+    console.field("건너뜀", "구조화·중복·공개", note=f"💰 실행하면 최대 {limit}건을 부른다")
+    console.field("확인한 것", "창·게시판·새 글 수", note="유료 호출 0회")
+    return 0
 
 
 def _stopped(console: Console, stage: str, err: StoreError) -> int:
@@ -1424,9 +1459,8 @@ def _print_runs(
         console.field("없음", "아직 한 번도 돌지 않았습니다")
         return
     for run in recent:
-        console.field(f"{run.started_at:%m/%d %H:%M}", _run_line(run, now=now))
-        for source_key, detail in sorted(run.error_detail.items()):
-            console.bullet(f"{source_key}  {detail}")
+        console.field(f"{run.started_at:%m/%d %H:%M}", _run_line(run, dead=run in dead, now=now))
+        _print_errors(console, run.error_detail)
     if dead:
         # ⚠️ 프로세스가 죽으면 `finished_at`을 채울 코드가 돌지 못한다 — 다음 실행이 아니라
         #    이 화면이 그걸 알려주는 유일한 자리다.
@@ -1436,10 +1470,21 @@ def _print_runs(
         )
 
 
-def _run_line(run: CrawlRun, *, now: datetime) -> str:
+def _print_errors(console: Console, errors: Mapping[str, str]) -> None:
+    """게시판별 실패 사유. ⚠️ **개수를 제한한다** — 30곳이 다 죽은 실행이 다섯 개면 150줄이
+    되어 "한 화면"이라는 약속이 깨지고, 정작 아래 '남은 일'이 화면 밖으로 밀린다."""
+    listed = sorted(errors.items())
+    for source_key, detail in listed[:_STATUS_ERRORS]:
+        console.bullet(f"{source_key}  {detail}")
+    if len(listed) > _STATUS_ERRORS:
+        console.bullet(f"… 그 밖 {len(listed) - _STATUS_ERRORS}곳")
+
+
+def _run_line(run: CrawlRun, *, dead: bool, now: datetime) -> str:
     if run.finished_at is None:
-        elapsed = _duration(now - run.started_at)
-        return f"{run.mode.value}  진행 중 또는 중단 ({elapsed} 경과)"
+        # ⚠️ 판정을 여기서 다시 하지 않는다 — 부르는 쪽이 `is_dead`로 이미 갈랐다.
+        state = "중단됨" if dead else "진행 중"
+        return f"{run.mode.value}  {state} ({_duration(now - run.started_at)} 경과)"
     boards = f"게시판 {run.sources_ok}곳 성공"
     if run.sources_failed:
         boards += f" · {run.sources_failed}곳 실패"
@@ -1450,7 +1495,15 @@ def _run_line(run: CrawlRun, *, now: datetime) -> str:
 
 
 def _duration(elapsed: timedelta) -> str:
+    """사람이 읽는 경과 시간.
+
+    ⚠️ **시간 단위가 필요하다** — 죽은 실행은 정의상 3시간 이상이라(`DEAD_RUN_AFTER`) 분으로만
+    쓰면 가장 중요한 줄이 `240분 0초`가 되고, 운영자가 나눠야 한다.
+    """
     minutes, seconds = divmod(int(elapsed.total_seconds()), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}시간 {minutes}분"
     return f"{minutes}분 {seconds}초" if minutes else f"{seconds}초"
 
 

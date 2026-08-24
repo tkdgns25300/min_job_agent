@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import logging
 from dataclasses import dataclass, field, replace
@@ -1334,18 +1335,25 @@ class _Stages:
     """어느 단계가 불렸는지 기록한다. 규칙은 **불렸나/안 불렸나**로만 검증된다."""
 
     called: list[str] = field(default_factory=list)
+    kwargs: list[tuple[str, object]] = field(default_factory=list)
     fail_at: str | None = None
     collect_code: int = 0
+    publish_code: int = 0
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cli, "_run_collect", self._stage("collect", self.collect_code))
         monkeypatch.setattr(cli, "_run_structure", self._stage("structure"))
         monkeypatch.setattr(cli, "_run_dedup", self._stage("dedup"))
-        monkeypatch.setattr(cli, "_run_publish", self._stage("publish"))
+        monkeypatch.setattr(cli, "_run_publish", self._stage("publish", self.publish_code))
+
+    def dry_run_of(self, stage: str) -> object:
+        """그 단계에 넘어간 `dry_run` 값. 안 불렸으면 `KeyError`."""
+        return next(value for name, value in self.kwargs if name == stage)
 
     def _stage(self, name: str, code: int = 0) -> _Stage:
-        def run(**_kwargs: object) -> int:
+        def run(**kwargs: object) -> int:
             self.called.append(name)
+            self.kwargs.append((name, kwargs.get("dry_run")))
             if self.fail_at == name:
                 raise StoreError(f"{name}: 저장이 연속 5번 실패해 멈췄다")
             return code
@@ -1353,15 +1361,16 @@ class _Stages:
         return run
 
 
-def test_daily_runs_the_four_stages_in_order(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_daily_runs_the_stages_in_order(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """⚠️ **중복 판정은 여기 없다** — `structure`가 끝나면 무조건 돌린다. 여기서 또 부르면
+    전량을 두 번 훑는다(실측 2026-08-24: 499건을 두 번 · 2개월이면 3,600건을 두 번)."""
     stages = _Stages()
     _status_store(monkeypatch, tmp_path)
     stages.install(monkeypatch)
 
     assert main(["daily"]) == 0
-    assert stages.called == ["collect", "structure", "dedup", "publish"]
+    assert stages.called == ["collect", "structure", "publish"]
+    assert "dedup" not in stages.called
 
 
 def test_daily_keeps_going_when_some_boards_fail(
@@ -1391,16 +1400,15 @@ def test_daily_does_not_publish_when_structuring_broke(
     assert "공개를 건너뜁니다" in capsys.readouterr().out
 
 
-def test_daily_does_not_publish_when_dedup_broke(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """⚠️ 묶기가 안 끝난 초안을 공개하면 **같은 자리가 여러 번** 뜬다(SPEC §4.1)."""
-    stages = _Stages(fail_at="dedup")
-    _status_store(monkeypatch, tmp_path)
-    stages.install(monkeypatch)
+def test_structure_runs_dedup_so_daily_does_not_have_to() -> None:
+    """⚠️ `daily`가 dedup을 안 부르는 근거를 못 박는다 — `structure`가 **무조건** 돌리기
+    때문이다(`_run_structure` · "잊어버릴 자리에 두지 않는다"). 그 전제가 깨지면 판정 없는
+    초안이 공개된다(SPEC §4.1).
+    """
+    source = inspect.getsource(cli._run_structure)
 
-    assert main(["daily"]) == 1
-    assert "publish" not in stages.called
+    assert "dedup_all(" in source, "구조화가 중복 판정을 직접 돌린다"
+    assert "if not dry_run:" in source, "미리보기에서는 돌리지 않는다"
 
 
 def test_daily_stamps_its_own_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1456,3 +1464,114 @@ def test_daily_caps_the_paid_calls(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert main(["daily"]) == 0
     assert seen == [cli._DAILY_STRUCTURE_LIMIT]
     assert cli._DAILY_STRUCTURE_LIMIT < 1000, "상한이 사고를 막을 만큼 낮아야 한다"
+
+
+def test_daily_dry_run_never_reaches_the_paid_stage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️⚠️ **미리보기가 돈을 쓰면 안 된다.** `structure --dry-run`은 **호출은 하되 저장만**
+    안 하므로(프롬프트 확인용 · CLAUDE.md), 그 값을 그대로 넘기면 "무엇을 할지만 본다"가
+    최대 500건을 과금한다 — 유료 호출이 실수로 도는 경로를 두지 않는다는 규칙을 어긴다.
+    """
+    stages = _Stages()
+    _status_store(monkeypatch, tmp_path)
+    stages.install(monkeypatch)
+
+    assert main(["daily", "--dry-run"]) == 0
+    assert stages.called == ["collect"], "수집까지만 한다"
+    assert stages.dry_run_of("collect") is True
+    out = capsys.readouterr().out
+    assert "유료 호출 0회" in out
+    assert "건너뜀" in out
+
+
+def test_daily_does_the_paid_stage_for_real_when_not_previewing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⚠️ 반대 방향도 못 박는다 — 본 실행에서 `dry_run=True`가 새면 **아무것도 저장되지 않는다.**"""
+    stages = _Stages()
+    _status_store(monkeypatch, tmp_path)
+    stages.install(monkeypatch)
+
+    assert main(["daily"]) == 0
+    assert [stages.dry_run_of(name) for name in ("structure", "publish")] == [False, False]
+
+
+def test_a_posting_that_failed_to_publish_does_not_fail_the_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⚠️ 공개 실패는 **다음 실행이 이어받는다** — 사람을 부를 일이 아니다.
+
+    `_run_publish`는 공고 하나라도 실패하면 1을 돌려주는데, 그걸 그대로 내보내면 워크플로가
+    빨간불이 된다. 판정은 `status`가 한다.
+    """
+    stages = _Stages(publish_code=1)
+    _status_store(monkeypatch, tmp_path)
+    stages.install(monkeypatch)
+
+    assert main(["daily"]) == 0
+    assert stages.called[-1] == "publish"
+
+
+def test_daily_refuses_a_useless_limit_before_touching_any_board(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ **일을 시작하기 전에 거른다.** 뒤에서 걸리면 게시판 30곳을 3분간 훑은 뒤에야 멈춘다
+    (실측). 외부 입력은 경계에서 검증한다(CLAUDE.md)."""
+    stages = _Stages()
+    _status_store(monkeypatch, tmp_path)
+    stages.install(monkeypatch)
+
+    assert main(["daily", "--limit", "0"]) == 1
+    assert stages.called == [], "게시판에 요청하기 전에 멈춘다"
+    assert "--limit는 1 이상" in capsys.readouterr().err
+
+
+def test_status_keeps_the_failure_list_to_one_screen(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 30곳이 다 죽은 실행이 다섯 개면 150줄이 되어 정작 '남은 일'이 화면 밖으로 밀린다."""
+    store = _status_store(monkeypatch, tmp_path)
+    run = store.start_run(CrawlMode.DAILY)
+    errors = {f"BOARD{index:02}": "타임아웃" for index in range(30)}
+    store.finish_run(
+        run.finish(sources_ok=0, sources_failed=len(errors), new_count=0, error_detail=errors)
+    )
+
+    main(["status"])
+    out = capsys.readouterr().out
+
+    assert out.count("타임아웃") == cli._STATUS_ERRORS
+    assert f"그 밖 {30 - cli._STATUS_ERRORS}곳" in out
+    assert "남은 일" in out, "요약이 화면에서 밀려나지 않는다"
+
+
+def test_status_says_stopped_not_maybe_for_a_dead_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 이미 죽었다고 판정한 실행을 "진행 중일 수도"라고 쓰면 운영자가 기다린다."""
+    store = _status_store(monkeypatch, tmp_path)
+    store.start_run(CrawlMode.DAILY)
+    monkeypatch.setattr(cli, "kst_now", lambda: kst_now() + timedelta(hours=4))
+
+    main(["status"])
+    out = capsys.readouterr().out
+
+    assert "중단됨" in out
+    assert "진행 중" not in out
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "expected"),
+    [
+        (timedelta(seconds=42), "42초"),
+        (timedelta(minutes=2, seconds=22), "2분 22초"),
+        (timedelta(hours=4), "4시간 0분"),
+        (timedelta(hours=13, minutes=5), "13시간 5분"),
+    ],
+    ids=["초", "분", "죽은 실행 경계", "반나절"],
+)
+def test_elapsed_time_reads_without_arithmetic(elapsed: timedelta, expected: str) -> None:
+    """⚠️ 죽은 실행은 정의상 3시간 이상이라 **분으로만 쓰면 `240분 0초`**가 된다 — 그게
+    운영자가 가장 먼저 보는 줄이다."""
+    assert cli._duration(elapsed) == expected

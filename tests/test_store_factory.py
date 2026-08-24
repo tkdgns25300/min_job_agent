@@ -6,22 +6,44 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from minjob_ingest.domain import StoreBackend
+from minjob_ingest.clock import kst_now
+from minjob_ingest.domain import (
+    Confidence,
+    CrawlMode,
+    Denomination,
+    DenominationSource,
+    IsChurchRecruitment,
+    ReviewStatus,
+    SourceHealthStatus,
+    StoreBackend,
+)
+from minjob_ingest.models import (
+    MAX_STRUCTURE_ATTEMPTS,
+    ReviewData,
+    SourceData,
+    SourceHealth,
+    new_id,
+)
 from minjob_ingest.settings import (
     ENV_STORE,
     ENV_SUPABASE_SERVICE_KEY,
     ENV_SUPABASE_URL,
     Settings,
     SupabaseConfigError,
+    SupabaseSettings,
 )
+from minjob_ingest.store.base import Store
 from minjob_ingest.store.factory import opened_store
 from minjob_ingest.store.json_store import JsonStore
+from minjob_ingest.store.postgrest import PostgrestClient
 from minjob_ingest.store.storage import SupabaseStorage
 from minjob_ingest.store.supabase_store import SupabaseStore
+from tests.fake_postgrest import FakePostgrest
 
 
 @pytest.fixture
@@ -138,3 +160,83 @@ def test_the_storage_root_is_built_once(data_dir: Path, monkeypatch: pytest.Monk
 
     assert supabase.storage_url == "https://x.supabase.co/storage/v1"
     assert supabase.rest_url == "https://x.supabase.co/rest/v1"
+
+
+# ── 두 구현이 같은 답을 내나 (SPEC §7 `status`) ──────────────────────
+
+
+def _seeded(store: Store) -> None:
+    """같은 사실을 두 저장소에 똑같이 넣는다 — 미판정 2 · 포기 1 · 검수 1 · 미공개 승인 1."""
+    now = kst_now()
+    first = SourceData(
+        source_key="YTUS",
+        external_id="1",
+        source_url="https://www.ytus.ac.kr/board/view/trXXR/1",
+        title="성원교회 부목사 청빙",
+        posted_on=now.date(),
+        run_id=new_id(),
+        fetched_at=now,
+        raw_text="성원교회 부목사 청빙",
+    )
+    second = replace(first, id=new_id(), external_id="2", source_url="https://x.test/2")
+    exhausted = replace(
+        first,
+        id=new_id(),
+        external_id="3",
+        source_url="https://x.test/3",
+        structure_attempts=MAX_STRUCTURE_ATTEMPTS,
+    )
+    for record in (first, second, exhausted):
+        store.save_source_data(record)
+    for record, status in ((first, ReviewStatus.APPROVED), (second, ReviewStatus.PENDING)):
+        store.upsert_review_data(
+            ReviewData(
+                posted_at=now.date(),
+                source_url=record.source_url,
+                source_data_id=record.id,
+                run_id=record.run_id,
+                is_church_recruitment=IsChurchRecruitment.YES,
+                confidence=(
+                    Confidence.HIGH if status is ReviewStatus.APPROVED else Confidence.MEDIUM
+                ),
+                denomination_source=DenominationSource.STATED,
+                denomination=Denomination.TONGHAP,
+                review_status=status,
+            )
+        )
+    store.upsert_health(
+        SourceHealth(
+            source_key="YTUS",
+            last_run_at=now,
+            last_status=SourceHealthStatus.OK,
+            first_run_at=now,
+            last_success_at=now,
+            last_rows=5,
+            last_posted_on=now.date(),
+        )
+    )
+    run = store.start_run(CrawlMode.DAILY)
+    store.finish_run(run.finish(sources_ok=1, sources_failed=0, new_count=3, error_detail={}))
+
+
+def test_both_stores_answer_status_the_same_way(data_dir: Path) -> None:
+    """⚠️ **`status`는 저장소를 바꿔도 같은 답을 내야 한다.** 두 구현에 같은 이름의 테스트를
+    두는 것으로는 한쪽 기대값을 함께 고치면 드리프트가 통과한다 — 여기서 **직접 견준다.**
+
+    한쪽만 서버 필터를 쓰고 다른 쪽은 레코드 속성을 쓰기 때문에(개수 조회 vs `needs_restructure`)
+    두 판정이 갈라질 수 있는 실제 여지가 있다.
+    """
+    server = FakePostgrest()
+    local: Store = JsonStore(data_dir)
+    remote: Store = SupabaseStore(
+        PostgrestClient(
+            SupabaseSettings(url="https://x.supabase.co", service_role_key="secret"),
+            transport=server.transport(),
+        )
+    )
+    for store in (local, remote):
+        _seeded(store)
+
+    assert local.pending_work() == remote.pending_work()
+    assert len(local.all_health()) == len(remote.all_health())
+    assert [run.mode for run in local.recent_runs(5)] == [run.mode for run in remote.recent_runs(5)]
