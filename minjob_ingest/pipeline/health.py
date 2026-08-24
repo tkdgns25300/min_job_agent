@@ -11,13 +11,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
 from minjob_ingest.domain import SourceHealthStatus
-from minjob_ingest.models import SourceHealth
+from minjob_ingest.models import CrawlRun, SourceHealth
 from minjob_ingest.pipeline.collect import CollectReport
 from minjob_ingest.store.base import Store
 
@@ -103,6 +103,20 @@ def record_failure(
     )
     store.upsert_health(health)
     return health
+
+
+#: 실행이 이만큼 지나도 안 끝났으면 **죽은 것**으로 읽는다.
+#:
+#: ⚠️ `SIGKILL`·OOM·러너 타임아웃은 코드가 `finished_at`을 채울 기회를 주지 않는다. 그래서
+#: "안 끝났다"는 상태만 남고, 지금 도는 것과 죽은 것을 **시각 차이로만** 가를 수 있다.
+#: ⚠️ 2개월 전량이 약 55분이라 3시간이면 정상 실행과 겹치지 않는다 — 좁히면 도는 실행을
+#: 죽었다고 부르고, 넓히면 죽은 것을 반나절 모른다.
+DEAD_RUN_AFTER = timedelta(hours=3)
+
+
+def is_dead(run: CrawlRun, *, now: datetime) -> bool:
+    """끝나지 않은 실행이 **죽은 것**인가(아니면 지금 도는 중인가)."""
+    return run.finished_at is None and now - run.started_at > DEAD_RUN_AFTER
 
 
 def alerts_for(health: SourceHealth, *, today: date) -> tuple[Alert, ...]:

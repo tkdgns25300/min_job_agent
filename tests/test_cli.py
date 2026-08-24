@@ -6,7 +6,7 @@ import argparse
 import json
 import logging
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -16,19 +16,35 @@ from minjob_ingest.cli import _NOISY_LOGGERS, _dispatch, main
 from minjob_ingest.clock import kst_now
 from minjob_ingest.console import Console
 from minjob_ingest.domain import (
+    Confidence,
+    CrawlMode,
+    Denomination,
+    DenominationSource,
     IsChurchRecruitment,
     JobKind,
     Position,
     Region,
+    ReviewStatus,
     SourceHealthStatus,
 )
 from minjob_ingest.fetch.client import FetchError
 from minjob_ingest.lib import gemini
-from minjob_ingest.models import ReviewData, SourceData, new_id
+from minjob_ingest.models import (
+    MAX_STRUCTURE_ATTEMPTS,
+    ReviewData,
+    SourceData,
+    SourceHealth,
+    new_id,
+)
 from minjob_ingest.pipeline.collect import CollectReport
 from minjob_ingest.pipeline.dedup import DedupReport
 from minjob_ingest.pipeline.extraction import Evidence, Extraction
-from minjob_ingest.pipeline.health import EMPTY_RUNS_ALARM
+from minjob_ingest.pipeline.health import (
+    DEAD_RUN_AFTER,
+    EMPTY_RUNS_ALARM,
+    FAILURES_ALARM,
+    QUIET_DAYS_NOTICE,
+)
 from minjob_ingest.pipeline.heresy import HeresyEntry, HeresyMatch, HeresyRef
 from minjob_ingest.pipeline.structure import (
     DEFAULT_WORKERS,
@@ -1123,3 +1139,180 @@ def test_dedup_on_a_real_store_judges_two_cross_posts(
     stored = [candidate.draft for candidate in store.dedup_candidates()]
     assert sorted(str(draft.dedup_state) for draft in stored) == ["DUPLICATE", "MASTER"]
     assert len({draft.dedup_key for draft in stored}) == 1, "한 자리로 묶였다"
+
+
+# ── status (SPEC §7) — ⚠️ **판정이 여기 모인다** ─────────────────────
+
+
+def _status_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> JsonStore:
+    monkeypatch.setenv("MINJOB_DATA_DIR", str(tmp_path / "data"))
+    return JsonStore(tmp_path / "data")
+
+
+def _ok_health(source_key: str = "YTUS", **overrides: object) -> SourceHealth:
+    # ⚠️ 시각을 **한 번만** 읽는다 — 두 번 읽으면 `first_run_at`이 `last_run_at`보다 늦어
+    #    레코드 불변식에 걸린다(모델이 실제로 잡아줬다).
+    now = kst_now()
+    base = SourceHealth(
+        source_key=source_key,
+        last_run_at=now,
+        last_status=SourceHealthStatus.OK,
+        first_run_at=now,
+        last_success_at=now,
+        last_rows=1,
+        last_posted_on=now.date(),
+    )
+    return replace(base, **overrides)  # type: ignore[arg-type]
+
+
+def test_a_quiet_run_reports_nothing_to_do(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 정상일 때 0이어야 한다 — 게시판이 조용한 날마다 워크플로가 빨간불이면 알림이
+    잡음이 되어 진짜 사고를 놓친다."""
+    store = _status_store(monkeypatch, tmp_path)
+    run = store.start_run(CrawlMode.DAILY)
+    store.finish_run(run.finish(sources_ok=30, sources_failed=0, new_count=0, error_detail={}))
+    store.upsert_health(_ok_health())
+
+    assert main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "문제 있는 곳 없음" in out
+    assert "DAILY" in out
+
+
+def test_a_board_failing_alone_does_not_fail_the_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⚠️ 게시판 한 곳이 죽는 것은 **정상 상황**이다(다운·개편). 연속 실패가 경보 기준을
+    넘을 때만 사람을 부른다 — 그 기준은 `pipeline.health`가 정한다(SPEC §7)."""
+    store = _status_store(monkeypatch, tmp_path)
+    store.upsert_health(_ok_health(consecutive_failures=1))
+
+    assert main(["status"]) == 0
+
+
+def test_a_board_failing_repeatedly_needs_a_person(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = _status_store(monkeypatch, tmp_path)
+    store.upsert_health(
+        _ok_health(
+            last_status=SourceHealthStatus.FAIL,
+            last_error="타임아웃",
+            consecutive_failures=FAILURES_ALARM,
+        )
+    )
+
+    assert main(["status"]) == 1
+    assert "YTUS" in capsys.readouterr().out
+
+
+def test_a_quiet_board_is_reported_but_does_not_fail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ **참고 정보로 사람을 부르지 않는다**(SPEC §7). 방학처럼 실제로 조용한 시기가 있고,
+    그걸 경보로 세면 조용한 게시판마다 매일 울려 잡음이 된다 — 그러면 진짜를 놓친다."""
+    store = _status_store(monkeypatch, tmp_path)
+    quiet = kst_now().date() - timedelta(days=QUIET_DAYS_NOTICE + 1)
+    store.upsert_health(_ok_health(last_posted_on=quiet))
+
+    assert main(["status"]) == 0, "조용한 것은 경보가 아니다"
+    assert "조용합니다" in capsys.readouterr().out, "그래도 화면에는 보여준다"
+
+
+def test_an_approved_draft_that_never_went_out_needs_a_person(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ **이게 어제 9건을 놓친 자리다.** 공개 경로가 막히면 그 공고는 큐에도 `jobs`에도 없다."""
+    store = _status_store(monkeypatch, tmp_path)
+    record = SourceData(
+        source_key="YTUS",
+        external_id="1",
+        source_url="https://www.ytus.ac.kr/board/view/trXXR/1",
+        title="성원교회 부목사 청빙",
+        posted_on=kst_now().date(),
+        run_id=new_id(),
+        fetched_at=kst_now(),
+        raw_text="성원교회 부목사 청빙",
+    )
+    store.save_source_data(record)
+    store.upsert_review_data(
+        ReviewData(
+            posted_at=record.posted_on,
+            source_url=record.source_url,
+            source_data_id=record.id,
+            run_id=record.run_id,
+            is_church_recruitment=IsChurchRecruitment.YES,
+            confidence=Confidence.HIGH,
+            denomination_source=DenominationSource.STATED,
+            denomination=Denomination.TONGHAP,
+            review_status=ReviewStatus.APPROVED,
+        )
+    )
+
+    assert main(["status"]) == 1
+    assert "공개 경로가 막혔습니다" in capsys.readouterr().out
+
+
+def test_a_posting_we_gave_up_on_needs_a_person(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 재시도 상한을 넘긴 공고는 **스스로 낫지 않는다** — 다음 실행이 건드리지 않으므로
+    사람이 원인을 고쳐 시도 횟수를 리셋해야 한다(SPEC §4)."""
+    store = _status_store(monkeypatch, tmp_path)
+    store.save_source_data(
+        replace(
+            SourceData(
+                source_key="YTUS",
+                external_id="1",
+                source_url="https://www.ytus.ac.kr/board/view/trXXR/1",
+                title="성원교회 부목사 청빙",
+                posted_on=kst_now().date(),
+                run_id=new_id(),
+                fetched_at=kst_now(),
+                raw_text="성원교회 부목사 청빙",
+            ),
+            structure_attempts=MAX_STRUCTURE_ATTEMPTS,
+        )
+    )
+
+    assert main(["status"]) == 1
+    assert "재시도 상한 초과" in capsys.readouterr().out
+
+
+def test_a_killed_run_is_reported_as_dead(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ `SIGKILL`은 `finished_at`을 채울 기회를 주지 않는다 — 이 화면이 알려주는 유일한 곳이다.
+
+    ⚠️ **경계를 `DEAD_RUN_AFTER`로 표현하지 않는다.** 상수를 기준으로 쓰면 값이 바뀔 때 테스트도
+    같이 움직여 **아무것도 못 잡는다**(실제로 그렇게 썼다가 뮤테이션이 살아남았다). 시간을
+    못박아 둔다 — 4시간 전에 시작해 안 끝난 실행은 죽은 것이다.
+    """
+    store = _status_store(monkeypatch, tmp_path)
+    store.start_run(CrawlMode.DAILY)
+    monkeypatch.setattr(cli, "kst_now", lambda: kst_now() + timedelta(hours=4))
+
+    assert main(["status"]) == 1
+    assert "끝나지 않은 실행" in capsys.readouterr().out
+
+
+def test_a_run_still_going_is_not_called_dead(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 경계를 좁히면 **도는 실행을 죽었다고 부른다** — 2개월 전량이 약 55분이다.
+
+    1시간 전에 시작한 실행은 아직 도는 중일 수 있다.
+    """
+    store = _status_store(monkeypatch, tmp_path)
+    store.start_run(CrawlMode.BACKFILL)
+    monkeypatch.setattr(cli, "kst_now", lambda: kst_now() + timedelta(hours=1))
+
+    assert main(["status"]) == 0
+    assert "진행 중" in capsys.readouterr().out
+
+
+def test_the_dead_run_boundary_leaves_room_for_a_full_backfill() -> None:
+    """⚠️ 상수 자체를 못박는다 — 2개월 전량 실측이 약 55분이라 그보다 넉넉해야 한다."""
+    assert timedelta(hours=1) < DEAD_RUN_AFTER

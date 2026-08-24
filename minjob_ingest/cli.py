@@ -18,7 +18,7 @@ from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import fields
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Final
 from uuid import UUID
@@ -52,6 +52,7 @@ from minjob_ingest.pipeline.health import (
     AlertKind,
     alerts_for,
     days_since_last_posting,
+    is_dead,
     record_failure,
     record_success,
 )
@@ -89,7 +90,7 @@ from minjob_ingest.sources.registry import (
     find_source,
     load_sources,
 )
-from minjob_ingest.store.base import Store, StoreError
+from minjob_ingest.store.base import PendingWork, Store, StoreError
 from minjob_ingest.store.factory import opened_store
 from minjob_ingest.store.serde import to_row
 
@@ -101,6 +102,10 @@ _SNAPSHOT = "snapshot"
 _STRUCTURE = "structure"
 _DEDUP = "dedup"
 _PUBLISH = "publish"
+_STATUS = "status"
+
+#: `status`가 보여줄 실행 수. 어제·그제까지 보이면 "매일 도는가"를 알 수 있다.
+_STATUS_RUNS: Final = 5
 #: 요청마다 한 줄씩 찍어 리포트를 덮는 로거들. `--verbose`에서만 켠다.
 #: ⚠️ 구조화는 공고마다 한 줄을 찍는다 — 빼두면 전량 실행에서 진행 줄이 수천 줄에 묻힌다.
 _NOISY_LOGGERS = ("httpx", "httpcore", "minjob_ingest.lib.gemini")
@@ -193,6 +198,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _run_dedup(dry_run=bool(args.dry_run), verbose=bool(args.verbose))
     if command == _PUBLISH:
         return _run_publish(dry_run=bool(args.dry_run), verbose=bool(args.verbose))
+    if command == _STATUS:
+        return _run_status(runs=int(args.runs))
     # argparse가 이미 미등록 명령을 걸러내므로, 여기 오는 건 "서브파서는 추가했는데 연결을
     # 잊은" 경우다 — 조용히 성공(0)하는 대신 크래시로 알린다.
     raise RuntimeError(f"명령 '{command}'이 _dispatch에 연결되지 않았다")
@@ -1164,6 +1171,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="무엇이 나갈지만 보여주고 쓰지 않음"
     )
     publish.add_argument("--verbose", action="store_true", help="로그까지 표시")
+
+    # ⚠️ **읽기만 한다.** 무인 실행(GitHub Actions)이 남긴 것을 사람이 확인하는 창구이고,
+    #    이게 없으면 운영자가 SQL을 써야 한다.
+    status = subcommands.add_parser(
+        _STATUS, help="실행·게시판·남은 일을 한 화면에 (무료 · 아무것도 쓰지 않음)"
+    )
+    status.add_argument(
+        "--runs", type=int, default=_STATUS_RUNS, help=f"보여줄 실행 수 (기본 {_STATUS_RUNS})"
+    )
     return parser
 
 
@@ -1257,6 +1273,118 @@ def _run_publish(*, dry_run: bool, verbose: bool) -> int:
             report = publish_all(session.store, session.jobs, dry_run=dry_run)
         _print_publish_report(console, report, dry_run=dry_run)
         return 1 if report.failed else 0
+
+
+def _run_status(*, runs: int) -> int:
+    """실행·게시판·남은 일을 한 화면에. **아무것도 쓰지 않는다.**
+
+    ⚠️ **판정이 여기 모인다**(운영자 결정 2026-08-24). `daily`는 일하고 이 명령이 판정한다 —
+    게시판 한 곳이 죽는 것은 정상 상황이라 `daily`가 그걸로 실패 코드를 내면 매일 빨간불이
+    되고 알림이 잡음이 된다. 무엇이 경보인지는 `pipeline.health.alerts_for`가 정하고
+    (SPEC §7) 여기서 다시 정하지 않는다.
+
+    종료코드: **사람이 손을 써야 하면 1**. GitHub Actions가 `daily` 다음에 이 명령을 돌려
+    그 코드로 워크플로 성패를 정한다.
+    """
+    console = Console()
+    now = kst_now()
+    with opened_store(Settings.load()) as session:
+        store = session.store
+        console.heading("현황", note="게시판에 요청하지 않음")
+        console.field("저장소", session.label)
+        recent = store.recent_runs(runs)
+        health = store.all_health()
+        work = store.pending_work()
+
+    dead = tuple(run for run in recent if is_dead(run, now=now))
+    alerts = tuple(alert for item in health for alert in alerts_for(item, today=now.date()))
+    _print_runs(console, recent, dead=dead, now=now)
+    _print_boards(console, health, alerts=alerts, today=now.date())
+    _print_pending(console, work)
+    # ⚠️ **참고 정보로 사람을 부르지 않는다**(SPEC §7) — 화면에는 보여주고 판정에서만 뺀다.
+    #    조용한 게시판마다 매일 울리면 잡음이 되어 진짜 사고를 놓친다.
+    needs_person = any(alert.kind.is_warning for alert in alerts)
+    return 1 if dead or needs_person or work.given_up or work.approved_unpublished else 0
+
+
+def _print_runs(
+    console: Console, recent: Sequence[CrawlRun], *, dead: Sequence[CrawlRun], now: datetime
+) -> None:
+    console.heading("최근 실행")
+    if not recent:
+        console.field("없음", "아직 한 번도 돌지 않았습니다")
+        return
+    for run in recent:
+        console.field(f"{run.started_at:%m/%d %H:%M}", _run_line(run, now=now))
+        for source_key, detail in sorted(run.error_detail.items()):
+            console.bullet(f"{source_key}  {detail}")
+    if dead:
+        # ⚠️ 프로세스가 죽으면 `finished_at`을 채울 코드가 돌지 못한다 — 다음 실행이 아니라
+        #    이 화면이 그걸 알려주는 유일한 자리다.
+        console.warn(
+            f"끝나지 않은 실행 {len(dead)}건 — 강제 종료됐을 수 있습니다",
+            "어디까지 진행됐는지는 아래 '남은 일'로 확인합니다",
+        )
+
+
+def _run_line(run: CrawlRun, *, now: datetime) -> str:
+    if run.finished_at is None:
+        elapsed = _duration(now - run.started_at)
+        return f"{run.mode.value}  진행 중 또는 중단 ({elapsed} 경과)"
+    boards = f"게시판 {run.sources_ok}곳 성공"
+    if run.sources_failed:
+        boards += f" · {run.sources_failed}곳 실패"
+    return (
+        f"{run.mode.value}  {_duration(run.finished_at - run.started_at)}"
+        f"  {boards}  신규 {run.new_count}건"
+    )
+
+
+def _duration(elapsed: timedelta) -> str:
+    minutes, seconds = divmod(int(elapsed.total_seconds()), 60)
+    return f"{minutes}분 {seconds}초" if minutes else f"{seconds}초"
+
+
+def _print_boards(
+    console: Console,
+    health: Sequence[SourceHealth],
+    *,
+    alerts: Sequence[Alert],
+    today: date,
+) -> None:
+    """⚠️ **경보와 참고 정보를 함께 보여준다.** 참고 정보는 판정에 안 쓰지만 화면에서 빠지면
+    "조용한 게시판"과 "잘 도는 게시판"이 구별되지 않는다."""
+    console.heading(f"게시판 {len(health)}곳")
+    if not alerts:
+        console.ok("문제 있는 곳 없음")
+        return
+    for alert in alerts:
+        line = f"{alert.source_key}  {_alert_sentence(alert, today=today)}"
+        if alert.kind.is_warning:
+            console.warn(line)
+        else:
+            console.bullet(line)
+
+
+def _print_pending(console: Console, work: PendingWork) -> None:
+    console.heading("남은 일")
+    # ⚠️ 앞 둘은 **0이어야 정상**이다(`PendingWork` 주석) — 눈에 띄게 붙여 준다.
+    console.field(
+        "미구조화",
+        f"{work.unstructured}건",
+        note="💰 다음 실행이 부를 것" if work.unstructured else None,
+    )
+    console.field(
+        "포기된 행",
+        f"{work.given_up}건",
+        note="⚠ 재시도 상한 초과 — 원인을 봐야 합니다" if work.given_up else None,
+    )
+    console.field("검수 대기", f"{work.pending_review}건", note="min_job 검수 페이지")
+    console.field(
+        "미공개 승인",
+        f"{work.approved_unpublished}건",
+        note="⚠ 공개 경로가 막혔습니다" if work.approved_unpublished else None,
+    )
 
 
 def _print_publish_report(console: Console, report: PublishReport, *, dry_run: bool) -> None:
