@@ -7,28 +7,31 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Final
 
 import httpx
 import pytest
 
-from minjob_ingest.clock import kst_now
+from minjob_ingest.clock import KST, kst_now
 from minjob_ingest.domain import CrawlMode
 from minjob_ingest.fetch.client import SourceClient
-from minjob_ingest.models import SourceData
+from minjob_ingest.models import CrawlRun, SourceData
 from minjob_ingest.paths import PROJECT_ROOT
 from minjob_ingest.pipeline.collect import (
+    DAILY_WINDOW_CAP_DAYS,
     CollectOptions,
     CollectReport,
     Conflict,
+    DailyWindow,
     LedgerConflict,
     Progress,
     ProgressSink,
     _require_dates_for_cutoff,  # 폭주 방지 가드
     collect_source,
     cutoff_date,
+    daily_window,
     plan_page,
     require_no_conflicts,
 )
@@ -39,6 +42,8 @@ from minjob_ingest.store.base import LedgerEntry
 from minjob_ingest.store.json_store import JsonStore
 
 _TODAY: Final = date(2026, 8, 4)
+#: 창 계산은 시각을 받으므로 그날 정오로 못박는다(자정 경계에서 흔들리지 않게).
+_TODAY_NOW: Final = datetime(2026, 8, 4, 12, 0, tzinfo=KST)
 
 
 def _ref(external_id: str, *, title: str = "청빙 공고", on: date | None = _TODAY) -> PostingRef:
@@ -935,3 +940,56 @@ def test_a_posting_the_board_never_dated_is_stored_as_seen_today(
 
     assert report.saved == 18
     assert all(record.posted_on == today for record in store.list_unstructured(50))
+
+
+# ── 데일리 창 (운영자 결정 2026-08-24) ───────────────────────────
+
+
+def _run(*, days_ago: int, failed: int = 0, finished: bool = True) -> CrawlRun:
+    started = _TODAY_NOW - timedelta(days=days_ago)
+    run = CrawlRun(mode=CrawlMode.DAILY, started_at=started)
+    if not finished:
+        return run
+    return run.finish(sources_ok=30 - failed, sources_failed=failed, new_count=1, error_detail={})
+
+
+def test_the_window_is_one_day_plus_margin_after_a_clean_run() -> None:
+    """정상 경로 — 어제 성공했으면 이틀만 훑는다. 매일 7일을 다시 훑지 않는다."""
+    window = daily_window([_run(days_ago=1)], today=_TODAY)
+
+    assert window == DailyWindow(days=2)
+
+
+def test_the_window_widens_by_itself_while_runs_keep_failing() -> None:
+    """⚠️ **실패한 실행은 기준이 되지 못한다.** 그걸 기준으로 삼으면 못 가져온 글이 다음
+    실행의 창 밖으로 밀려 영구히 유실된다."""
+    runs = [_run(days_ago=1, failed=30), _run(days_ago=2, failed=1), _run(days_ago=3)]
+
+    assert daily_window(runs, today=_TODAY) == DailyWindow(days=4)
+
+
+def test_an_unfinished_run_is_not_a_baseline() -> None:
+    """⚠️ 죽은 실행은 어디까지 했는지 모른다 — 그 앞의 성공을 기준으로 삼는다."""
+    runs = [_run(days_ago=1, finished=False), _run(days_ago=3)]
+
+    assert daily_window(runs, today=_TODAY) == DailyWindow(days=4)
+
+
+def test_the_first_ever_run_uses_the_cap() -> None:
+    """⚠️ 하루만 보면 그 앞은 아무도 가져오지 않는다."""
+    assert daily_window([], today=_TODAY) == DailyWindow(days=DAILY_WINDOW_CAP_DAYS)
+
+
+def test_a_long_gap_is_capped_but_says_what_it_missed() -> None:
+    """⚠️ **조용히 자르지 않는다.** 공백이 10일인데 7일만 훑고 끝내면 3일치를 아무도 모른다."""
+    window = daily_window([_run(days_ago=10)], today=_TODAY)
+
+    assert window.days == DAILY_WINDOW_CAP_DAYS
+    assert window.gap_note is not None
+    assert "4일치가 창 밖" in window.gap_note, window.gap_note
+    assert "--days 11" in window.gap_note, "메우는 명령을 알려줘야 한다"
+
+
+def test_a_run_finished_today_still_looks_back_a_day() -> None:
+    """⚠️ 0일 창은 **오늘 올라온 글만** 보게 되어, 실행 중에 올라온 글을 놓친다."""
+    assert daily_window([_run(days_ago=0)], today=_TODAY).days >= 1

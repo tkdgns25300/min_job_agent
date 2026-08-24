@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Protocol
 
 import pytest
 
@@ -36,7 +37,7 @@ from minjob_ingest.models import (
     SourceHealth,
     new_id,
 )
-from minjob_ingest.pipeline.collect import CollectReport
+from minjob_ingest.pipeline.collect import DAILY_WINDOW_MARGIN_DAYS, CollectReport
 from minjob_ingest.pipeline.dedup import DedupReport
 from minjob_ingest.pipeline.extraction import Evidence, Extraction
 from minjob_ingest.pipeline.health import (
@@ -65,6 +66,7 @@ from minjob_ingest.settings import (
     ENV_VERTEX_PROJECT,
     Settings,
 )
+from minjob_ingest.store.base import StoreError
 from minjob_ingest.store.json_store import JsonStore
 
 #: `structure` 명령이 시작하자마자 읽는 이단 목록의 대역. 실제 파일은 실명 122건이 담겨
@@ -1316,3 +1318,141 @@ def test_a_run_still_going_is_not_called_dead(
 def test_the_dead_run_boundary_leaves_room_for_a_full_backfill() -> None:
     """⚠️ 상수 자체를 못박는다 — 2개월 전량 실측이 약 55분이라 그보다 넉넉해야 한다."""
     assert timedelta(hours=1) < DEAD_RUN_AFTER
+
+
+# ── daily — 단계 사이의 규칙 (운영자 결정 2026-08-24) ────────────────
+
+
+class _Stage(Protocol):
+    """`_run_*` 하나의 모양. ⚠️ `Callable[..., int]`은 `...`이 암묵적 `Any`라 쓸 수 없다."""
+
+    def __call__(self, **kwargs: object) -> int: ...
+
+
+@dataclass
+class _Stages:
+    """어느 단계가 불렸는지 기록한다. 규칙은 **불렸나/안 불렸나**로만 검증된다."""
+
+    called: list[str] = field(default_factory=list)
+    fail_at: str | None = None
+    collect_code: int = 0
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cli, "_run_collect", self._stage("collect", self.collect_code))
+        monkeypatch.setattr(cli, "_run_structure", self._stage("structure"))
+        monkeypatch.setattr(cli, "_run_dedup", self._stage("dedup"))
+        monkeypatch.setattr(cli, "_run_publish", self._stage("publish"))
+
+    def _stage(self, name: str, code: int = 0) -> _Stage:
+        def run(**_kwargs: object) -> int:
+            self.called.append(name)
+            if self.fail_at == name:
+                raise StoreError(f"{name}: 저장이 연속 5번 실패해 멈췄다")
+            return code
+
+        return run
+
+
+def test_daily_runs_the_four_stages_in_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stages = _Stages()
+    _status_store(monkeypatch, tmp_path)
+    stages.install(monkeypatch)
+
+    assert main(["daily"]) == 0
+    assert stages.called == ["collect", "structure", "dedup", "publish"]
+
+
+def test_daily_keeps_going_when_some_boards_fail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⚠️ 게시판 한 곳이 죽는 것은 **정상 상황**이다(SPEC §3 에러 격리). 다음 단계는 저장된
+    사실에서 자기 일감을 다시 찾으므로 그 게시판이 빠져도 할 일이 있다."""
+    stages = _Stages(collect_code=1)
+    _status_store(monkeypatch, tmp_path)
+    stages.install(monkeypatch)
+
+    assert main(["daily"]) == 0, "게시판 실패로 실패 코드를 내면 매일 빨간불이 된다"
+    assert "publish" in stages.called
+
+
+def test_daily_does_not_publish_when_structuring_broke(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️⚠️ **이 규칙이 깨지면 판정 안 된 행이 공개된다.** 저장이 연속 실패한 것은 원장이
+    깨진 것이지 그 공고가 이상한 게 아니다 — 그 상태로 `jobs`에 쓰면 안 된다."""
+    stages = _Stages(fail_at="structure")
+    _status_store(monkeypatch, tmp_path)
+    stages.install(monkeypatch)
+
+    assert main(["daily"]) == 1
+    assert stages.called == ["collect", "structure"], "dedup·publish 를 건너뛴다"
+    assert "공개를 건너뜁니다" in capsys.readouterr().out
+
+
+def test_daily_does_not_publish_when_dedup_broke(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """⚠️ 묶기가 안 끝난 초안을 공개하면 **같은 자리가 여러 번** 뜬다(SPEC §4.1)."""
+    stages = _Stages(fail_at="dedup")
+    _status_store(monkeypatch, tmp_path)
+    stages.install(monkeypatch)
+
+    assert main(["daily"]) == 1
+    assert "publish" not in stages.called
+
+
+def test_daily_stamps_its_own_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """⚠️ 모드가 없으면 `crawl_run`에서 "2개월 백필 3,700건"과 "데일리 18건"을 구분할 수 없다."""
+    seen: list[object] = []
+    _status_store(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli,
+        "_run_collect",
+        lambda **kwargs: seen.append(kwargs["mode"]) or 0,  # type: ignore[func-returns-value]
+    )
+    for name in ("_run_structure", "_run_dedup", "_run_publish"):
+        monkeypatch.setattr(cli, name, lambda **_kwargs: 0)
+
+    assert main(["daily"]) == 0
+    assert seen == [CrawlMode.DAILY]
+
+
+def test_daily_asks_for_the_window_it_computed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 창을 계산해 놓고 넘기지 않으면 기본 범위(2개월)로 돌아 매일 전량을 훑는다."""
+    seen: list[object] = []
+    store = _status_store(monkeypatch, tmp_path)
+    run = store.start_run(CrawlMode.DAILY)
+    store.finish_run(run.finish(sources_ok=30, sources_failed=0, new_count=1, error_detail={}))
+    monkeypatch.setattr(
+        cli,
+        "_run_collect",
+        lambda **kwargs: seen.append(kwargs["days"]) or 0,  # type: ignore[func-returns-value]
+    )
+    for name in ("_run_structure", "_run_dedup", "_run_publish"):
+        monkeypatch.setattr(cli, name, lambda **_kwargs: 0)
+
+    assert main(["daily"]) == 0
+    assert seen == [DAILY_WINDOW_MARGIN_DAYS], "오늘 성공했으니 여유만큼만 본다"
+    assert f"최근 {DAILY_WINDOW_MARGIN_DAYS}일" in capsys.readouterr().out
+
+
+def test_daily_caps_the_paid_calls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """⚠️ 원장이 비어 보이는 사고에서 무인 실행이 수천 건을 부르지 않게 한다."""
+    seen: list[object] = []
+    _status_store(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "_run_collect", lambda **_kwargs: 0)
+    monkeypatch.setattr(
+        cli,
+        "_run_structure",
+        lambda **kwargs: seen.append(kwargs["limit"]) or 0,  # type: ignore[func-returns-value]
+    )
+    for name in ("_run_dedup", "_run_publish"):
+        monkeypatch.setattr(cli, name, lambda **_kwargs: 0)
+
+    assert main(["daily"]) == 0
+    assert seen == [cli._DAILY_STRUCTURE_LIMIT]
+    assert cli._DAILY_STRUCTURE_LIMIT < 1000, "상한이 사고를 막을 만큼 낮아야 한다"

@@ -18,7 +18,7 @@ from uuid import UUID
 
 from minjob_ingest.clock import kst_now, months_before
 from minjob_ingest.fetch.client import FetchError, SourceClient
-from minjob_ingest.models import SourceData
+from minjob_ingest.models import CrawlRun, SourceData
 from minjob_ingest.sources.adapters.base import ParseError, PostingRef, RawPosting
 from minjob_ingest.sources.adapters.registry import Adapter, needs_detail_request
 from minjob_ingest.sources.registry import SourceConfig
@@ -39,6 +39,53 @@ PAGE_SAFETY_CEILING: Final = 100
 #: 그쪽은 "얼마나 벌어지면 다른 자리로 보나"다 — 원장은 창보다 오래된 글도 들고 있으므로 라운드는
 #: 창과 무관하게 판정한다.
 DEFAULT_MONTHS: Final = 2
+
+#: 데일리 창의 **상한**. 마지막 성공이 이보다 오래됐으면 여기서 자르고 경고한다.
+#:
+#: ⚠️ 자르는 이유는 부담이 아니라 **정직함**이다. 공백이 10일인데 조용히 7일만 훑으면 3일치를
+#: 아무도 모른다 — 상한에 걸렸다는 사실을 화면에 띄워 운영자가 손으로 메우게 한다.
+DAILY_WINDOW_CAP_DAYS: Final = 7
+
+#: 마지막 성공에 더하는 여유. 실행이 도는 **중에** 올라온 글과, 상세를 못 읽어 저장되지 않은
+#: 글에게 다음 실행의 재시도 기회를 준다(그 글은 원장에 없어 "새 글"로 다시 보인다).
+DAILY_WINDOW_MARGIN_DAYS: Final = 1
+
+
+@dataclass(frozen=True, slots=True)
+class DailyWindow:
+    """데일리가 훑을 범위. **왜 그 값인지**를 함께 들고 다닌다."""
+
+    days: int
+    #: 상한에 걸려 **못 덮은 기간**이 있으면 그 사연. 없으면 `None`.
+    gap_note: str | None = None
+
+
+def daily_window(runs: Sequence[CrawlRun], *, today: date) -> DailyWindow:
+    """마지막 **성공한** 실행 이후 + 여유. 상한(`DAILY_WINDOW_CAP_DAYS`)에서 자른다.
+
+    ⚠️ **실패한 실행은 기준이 되지 못한다.** 그걸 기준으로 삼으면 못 가져온 글이 다음 실행의
+    창 밖으로 밀려 영구히 유실된다 — 실패했으면 창을 좁히지 않는 것이 규칙이다.
+
+    ⚠️ **한 번도 성공한 적이 없으면 상한을 쓴다.** 첫 실행(또는 계속 실패 중)에서 하루만 보면
+    그 앞은 아무도 가져오지 않는다.
+
+    `runs`는 **새것부터**여야 한다(`Store.recent_runs` 계약) — 앞에서부터 찾는다.
+    """
+    for run in runs:
+        if run.finished_at is None or run.sources_failed:
+            continue
+        elapsed = (today - run.started_at.date()).days + DAILY_WINDOW_MARGIN_DAYS
+        if elapsed <= DAILY_WINDOW_CAP_DAYS:
+            return DailyWindow(days=max(elapsed, DAILY_WINDOW_MARGIN_DAYS))
+        return DailyWindow(
+            days=DAILY_WINDOW_CAP_DAYS,
+            gap_note=(
+                f"마지막 성공이 {run.started_at:%Y-%m-%d}입니다 —"
+                f" {elapsed - DAILY_WINDOW_CAP_DAYS}일치가 창 밖입니다."
+                f" `collect --days {elapsed}`로 손으로 메우세요"
+            ),
+        )
+    return DailyWindow(days=DAILY_WINDOW_CAP_DAYS)
 
 
 class LedgerConflict(Exception):

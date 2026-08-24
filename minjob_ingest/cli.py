@@ -44,6 +44,7 @@ from minjob_ingest.pipeline.collect import (
     Progress,
     ProgressSink,
     collect_source,
+    daily_window,
 )
 from minjob_ingest.pipeline.dedup import DedupReport, dedup_all
 from minjob_ingest.pipeline.extraction import GeminiExtractor
@@ -102,7 +103,19 @@ _SNAPSHOT = "snapshot"
 _STRUCTURE = "structure"
 _DEDUP = "dedup"
 _PUBLISH = "publish"
+_DAILY = "daily"
 _STATUS = "status"
+
+#: 데일리 한 번에 부를 **유료 호출 상한**(운영자 결정 2026-08-24).
+#:
+#: ⚠️ 하루 실측이 약 68건이라 정상 변동에는 걸리지 않는다. 이 값이 막는 것은 **원장 사고**다 —
+#: 초기화·마이그레이션 실수로 미판정이 수천 건이 되면 무인 실행이 그만큼 과금하고, 아침에야
+#: 알게 된다. 넘친 건은 `structured_at`이 그대로 NULL이라 **다음 실행이 이어서** 처리한다.
+_DAILY_STRUCTURE_LIMIT: Final = 500
+
+#: 창을 계산할 때 훑을 실행 수. 마지막 **성공**을 찾아야 하므로 실패가 몇 번 이어져도
+#: 그 앞까지 닿아야 한다 — 상한(7일)에 걸릴 만큼 넉넉하다.
+_DAILY_WINDOW_RUNS: Final = 20
 
 #: `status`가 보여줄 실행 수. 어제·그제까지 보이면 "매일 도는가"를 알 수 있다.
 _STATUS_RUNS: Final = 5
@@ -198,6 +211,10 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _run_dedup(dry_run=bool(args.dry_run), verbose=bool(args.verbose))
     if command == _PUBLISH:
         return _run_publish(dry_run=bool(args.dry_run), verbose=bool(args.verbose))
+    if command == _DAILY:
+        return _run_daily(
+            limit=int(args.limit), dry_run=bool(args.dry_run), verbose=bool(args.verbose)
+        )
     if command == _STATUS:
         return _run_status(runs=int(args.runs))
     # argparse가 이미 미등록 명령을 걸러내므로, 여기 오는 건 "서브파서는 추가했는데 연결을
@@ -213,6 +230,7 @@ def _run_collect(
     days: int | None,
     dry_run: bool,
     verbose: bool,
+    mode: CrawlMode = CrawlMode.BACKFILL,
 ) -> int:
     """게시판에서 공고를 수집한다. ⚠️ **게시판에 실제로 요청한다.**
 
@@ -221,7 +239,9 @@ def _run_collect(
     """
     console = Console()
     with _console_logging(console, verbose=verbose):
-        return _collect_all(console, config_path, only, months=months, days=days, dry_run=dry_run)
+        return _collect_all(
+            console, config_path, only, months=months, days=days, dry_run=dry_run, mode=mode
+        )
 
 
 def _collect_all(
@@ -232,13 +252,16 @@ def _collect_all(
     months: int | None,
     days: int | None,
     dry_run: bool,
+    mode: CrawlMode,
 ) -> int:
     sources = _collect_targets(load_sources(config_path), only)
     with opened_store(Settings.load()) as session:
         store = session.store
         console.field("저장소", session.label)
         # dry-run은 아무것도 쓰지 않는다 — 실행 기록(crawl_run)도 남기지 않는다.
-        run = None if dry_run else store.start_run(CrawlMode.BACKFILL)
+        # ⚠️ 모드는 **어떤 명령을 쳤나**로 정해진다. 이 값 없이는 `crawl_run`을 나중에 볼 때
+        #    "2개월 백필 3,700건"과 "데일리 18건"을 구분할 수 없다(SPEC §7 `last_cutoff`).
+        run = None if dry_run else store.start_run(mode)
 
         failures: dict[str, str] = {}
         saved_total = 0
@@ -1172,6 +1195,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     publish.add_argument("--verbose", action="store_true", help="로그까지 표시")
 
+    daily = subcommands.add_parser(
+        _DAILY,
+        help="하루치를 한 번에 — 수집→구조화→중복→공개 (🌐 게시판 요청 · 💰 유료)",
+    )
+    daily.add_argument(
+        "--limit",
+        type=int,
+        default=_DAILY_STRUCTURE_LIMIT,
+        help=f"유료 호출 상한 (기본 {_DAILY_STRUCTURE_LIMIT} · 넘친 건은 다음 실행이 처리)",
+    )
+    daily.add_argument(
+        "--dry-run", action="store_true", help="무엇을 할지만 보여주고 아무것도 쓰지 않음"
+    )
+    daily.add_argument("--verbose", action="store_true", help="로그까지 표시")
+
     # ⚠️ **읽기만 한다.** 무인 실행(GitHub Actions)이 남긴 것을 사람이 확인하는 창구이고,
     #    이게 없으면 운영자가 SQL을 써야 한다.
     status = subcommands.add_parser(
@@ -1273,6 +1311,77 @@ def _run_publish(*, dry_run: bool, verbose: bool) -> int:
             report = publish_all(session.store, session.jobs, dry_run=dry_run)
         _print_publish_report(console, report, dry_run=dry_run)
         return 1 if report.failed else 0
+
+
+def _run_daily(*, limit: int, dry_run: bool, verbose: bool) -> int:
+    """하루치를 한 번에 — 수집 → 구조화 → 중복 → 공개.
+
+    ⚠️ **cron이 부를 수 있는 창구가 이것 하나다.** 단계별 명령은 사람이 화면을 보며 판단하는
+    용도이고, 무인 실행에는 단계 사이의 규칙이 코드에 있어야 한다.
+
+    ⚠️ **게시판 일부 실패는 통과한다**(SPEC §3 에러 격리). 다음 단계는 저장된 사실에서 자기
+    일감을 다시 찾으므로(`structured_at IS NULL` 등) 한 게시판이 빠져도 할 일이 있다.
+
+    ⚠️ **판정이 미완이면 공개하지 않는다.** 저장이 연속 실패해 구조화가 멈추거나 중복 판정이
+    깨지면 `StoreError`가 올라오는데, 그 상태로 `jobs`에 쓰면 판정 안 된 행이 공개된다.
+    잃는 것은 없다 — 공개 대상(`APPROVED` + 미공개)은 다음 실행이 그대로 찾는다.
+
+    ⚠️ **종료코드는 판정이 아니다.** "일을 끝냈나"만 답한다(0=끝냈다). 사람을 불러야 하는지는
+    `status`가 정한다 — 게시판 한 곳이 죽는 것은 정상 상황이라 여기서 실패로 세면 매일
+    빨간불이 되어 알림이 잡음이 된다.
+    """
+    console = Console()
+    with opened_store(Settings.load()) as session:
+        window = daily_window(session.store.recent_runs(_DAILY_WINDOW_RUNS), today=kst_now().date())
+
+    console.heading("하루치 실행", note="미리보기" if dry_run else None)
+    console.field("수집 범위", f"최근 {window.days}일", note="마지막 성공 이후 + 여유")
+    if window.gap_note is not None:
+        # ⚠️ 조용히 자르지 않는다 — 상한에 걸렸다는 사실이 화면에 없으면 그 기간을 아무도 모른다.
+        console.warn(window.gap_note)
+
+    collected = _run_collect(
+        config_path=None,
+        only=None,
+        months=None,
+        days=window.days,
+        dry_run=dry_run,
+        verbose=verbose,
+        mode=CrawlMode.DAILY,
+    )
+    try:
+        _run_structure(
+            limit=limit,
+            source_key=None,
+            dry_run=dry_run,
+            verbose=verbose,
+            out=None,
+            lite=False,
+            workers=DEFAULT_WORKERS,
+        )
+    except StoreError as err:
+        return _stopped(console, "구조화", err)
+    try:
+        _run_dedup(dry_run=dry_run, verbose=verbose)
+    except StoreError as err:
+        return _stopped(console, "중복 판정", err)
+    published = _run_publish(dry_run=dry_run, verbose=verbose)
+
+    console.line()
+    console.heading("하루치 끝")
+    console.field("게시판", "일부 실패" if collected else "전부 성공", note="자세히는 status")
+    return published
+
+
+def _stopped(console: Console, stage: str, err: StoreError) -> int:
+    """저장이 깨져 멈췄다 — **공개를 건너뛴다.**
+
+    판정이 미완인 채 `jobs`에 쓰면 중복이나 미판정 행이 공개된다. 다음 실행이 이어서 한다.
+    """
+    console.line()
+    console.error(f"{stage}에서 멈췄습니다 — 공개를 건너뜁니다: {err}")
+    console.warn("원장이 깨졌을 수 있습니다", "`minjob-ingest status`로 남은 일을 확인하세요")
+    return 1
 
 
 def _run_status(*, runs: int) -> int:

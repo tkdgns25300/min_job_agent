@@ -151,10 +151,11 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/minjob-ingest structure --all --workers 8   # 전량 (게시판 8곳씩 동시 · 게시판 안은 순차)
 .venv/bin/minjob-ingest dedup                  # 같은 자리 묶기 (무료 · structure 뒤 자동 실행됨)
 .venv/bin/minjob-ingest publish                # jobs 에 공개 + 끌어올림 (무료 · Supabase 전용)
+.venv/bin/minjob-ingest daily                  # 하루치 한 번에 (🌐 · 💰 상한 500 · cron 창구)
 .venv/bin/minjob-ingest status                 # 실행·게시판·남은 일 (무료 · 읽기만 · 종료코드가 판정)
 ```
 ⚠️ **`structure`는 `--limit N` 또는 `--all`이 없으면 실행을 거부한다** — 유료 호출이 옵션 없이 전량으로 도는 경로를 두지 않는다. 확인용은 `--dry-run`(호출은 하되 저장 안 함).
-아직 없는 명령(Phase 1): `daily`. ~~`backfill`~~은 만들지 않는다 — `collect --months 2`가 그 일이다.
+~~`backfill`~~은 만들지 않는다 — `collect --months 2`가 그 일이다.
 
 **일회성 스크립트**(CLI 명령이 아니다 · `scripts/`)
 ```bash
