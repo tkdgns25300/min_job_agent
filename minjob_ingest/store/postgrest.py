@@ -341,6 +341,12 @@ def lt(value: int) -> str:
     return f"lt.{value}"
 
 
+def gte(value: int) -> str:
+    """`col=gte.3` — `lt`의 여집합. 둘을 나란히 두면 "재시도 대상"과 "포기한 것"이
+    **같은 경계**를 쓴다(`MAX_STRUCTURE_ATTEMPTS` 하나로 갈린다)."""
+    return f"gte.{value}"
+
+
 def lte(value: int) -> str:
     """`col=lte.3` — 조건부 갱신에서 "그동안 더 커지지 않았나"를 DB가 판정하게 한다."""
     return f"lte.{value}"

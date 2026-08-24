@@ -254,6 +254,8 @@ def _passes(stored: object, expression: str) -> bool:
             return isinstance(stored, int) and stored < int(argument)
         case "lte":
             return isinstance(stored, int) and stored <= int(argument)
+        case "gte":
+            return isinstance(stored, int) and stored >= int(argument)
         case "is":
             return stored is None if argument == "null" else _unknown(expression)
         case "not":

@@ -97,6 +97,25 @@ class DedupUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class PendingWork:
+    """아직 끝나지 않은 일의 개수(`status` 화면 · SPEC §7).
+
+    ⚠️ **셋은 "0이어야 정상"이다** — `given_up`·`approved_unpublished`는 값이 있으면 사람이
+    봐야 하고, `unstructured`는 유료 호출이 남았다는 뜻이다(데일리에서 0이 아니면 상한에
+    걸렸거나 구조화가 중간에 죽었다). `pending_review`만 정상적으로 값을 갖는다.
+    """
+
+    #: 아직 판정하지 않은 원자료. 💰 다음 실행이 부를 대상이다.
+    unstructured: int = 0
+    #: 재시도 상한(3회)을 넘겨 포기한 원자료 — 원인을 사람이 봐야 한다.
+    given_up: int = 0
+    #: min_job 검수 페이지에 뜨는 초안.
+    pending_review: int = 0
+    #: ⚠️ 승인됐는데 공개되지 않은 초안. **공개 경로가 막힌 것**이다(2026-08-23 실측 9건).
+    approved_unpublished: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class LedgerEntry:
     """원장에 이미 있는 글의 식별 정보. `external_id`가 여전히 같은 글을 가리키는지 확인용.
 
@@ -275,6 +294,26 @@ class Store(Protocol):
 
     def upsert_health(self, record: SourceHealth) -> None:
         """게시판 상태를 기록한다. 이어붙이기는 `SourceHealth.advance`가 계산한다."""
+        ...
+
+    def recent_runs(self, limit: int) -> tuple[CrawlRun, ...]:
+        """최근 실행을 **새것부터**. `status` 화면과 **데일리 창 계산**이 함께 쓴다.
+
+        ⚠️ 순서가 계약이다 — 창 계산이 "가장 최근의 성공한 실행"을 앞에서부터 찾는다.
+        """
+        ...
+
+    def all_health(self) -> tuple[SourceHealth, ...]:
+        """게시판 상태 전량(30행). 문제 있는 곳만 걸러 오지 않는다 — 무엇이 문제인지는
+        `pipeline.health.alerts_for`가 정하고, 그 기준이 여기로 새면 두 곳으로 갈라진다."""
+        ...
+
+    def pending_work(self) -> PendingWork:
+        """남은 일의 **개수만**. 화면 한 줄씩이 되는 값들이다.
+
+        ⚠️ **레코드를 받아 세지 않는다.** `list_unstructured`로 세면 `raw_text`·`raw_html`까지
+        전량이 와서 수천 행에서 수십 MB가 된다 — 조회 한 번에 개수만 받는다.
+        """
         ...
 
 

@@ -29,6 +29,7 @@ from minjob_ingest.domain import (
 from minjob_ingest.models import (
     MAX_STRUCTURE_ATTEMPTS,
     Attachment,
+    CrawlRun,
     ReviewData,
     SourceData,
     SourceHealth,
@@ -908,3 +909,73 @@ def test_a_verdict_on_a_row_the_operator_owns_is_a_bug(store: JsonStore) -> None
                 )
             ]
         )
+
+
+# ── status 조회 (SPEC §7) — ⚠️ SupabaseStore 와 **같은 단정**을 쓴다 ────
+
+
+def test_recent_runs_come_newest_first(store: JsonStore, data_dir: Path) -> None:
+    """⚠️ 순서가 계약이다 — 데일리 창 계산이 **앞에서부터** 성공한 실행을 찾는다.
+
+    ⚠️ 파일에는 **옛것을 먼저** 넣는다 — 추가 순서를 그대로 돌려주면 통과하지 못한다.
+    """
+    newer = CrawlRun(mode=CrawlMode.DAILY, started_at=FIXED_NOW)
+    older = CrawlRun(mode=CrawlMode.BACKFILL, started_at=FIXED_NOW - timedelta(days=2))
+    _write_raw(data_dir, "crawl_run.json", [to_row(older), to_row(newer)])
+
+    assert [run.id for run in store.recent_runs(10)] == [newer.id, older.id]
+
+
+def test_recent_runs_refuses_a_useless_limit(store: JsonStore) -> None:
+    with pytest.raises(ValueError, match="1 이상"):
+        store.recent_runs(0)
+
+
+def test_all_health_returns_every_board(store: JsonStore) -> None:
+    """문제 있는 곳만 걸러 오지 않는다 — 무엇이 문제인지는 `pipeline.health`가 정한다."""
+    for key in ("YTUS", "PUTS"):
+        store.upsert_health(
+            SourceHealth(
+                source_key=key,
+                last_run_at=FIXED_NOW,
+                last_status=SourceHealthStatus.OK,
+                first_run_at=FIXED_NOW,
+                last_success_at=FIXED_NOW,
+                last_rows=1,
+            )
+        )
+
+    assert sorted(item.source_key for item in store.all_health()) == ["PUTS", "YTUS"]
+
+
+def test_pending_work_splits_retryable_from_given_up(store: JsonStore) -> None:
+    """⚠️ 두 수가 **같은 경계**를 써야 한다 — 겹치면 합이 실제보다 크고, 빠지면 사라진다.
+
+    ⚠️ 개수를 **다르게** 만든다(2 대 1) — 둘이 같으면 경계가 겹쳐도 통과한다.
+    """
+    for external_id in ("1", "2"):
+        store.save_source_data(_source_data(external_id))
+    store.save_source_data(replace(_source_data("3"), structure_attempts=MAX_STRUCTURE_ATTEMPTS))
+
+    work = store.pending_work()
+
+    assert (work.unstructured, work.given_up) == (2, 1)
+
+
+def test_pending_work_ignores_an_approved_draft_already_out(store: JsonStore) -> None:
+    """⚠️ 이미 공개된 행을 세면 **매일 "막혔다"고 거짓 경보**가 뜬다 — 242행이 다 걸린다."""
+    published, waiting = _source_data("1"), _source_data("2")
+    for record in (published, waiting):
+        store.save_source_data(record)
+    store.upsert_review_data(
+        replace(
+            _review_data(published.id),
+            review_status=ReviewStatus.APPROVED,
+            published_job_id=new_id(),
+        )
+    )
+    store.upsert_review_data(replace(_review_data(waiting.id), review_status=ReviewStatus.APPROVED))
+
+    work = store.pending_work()
+
+    assert work.approved_unpublished == 1, "공개된 것은 세지 않는다"

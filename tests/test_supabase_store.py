@@ -755,3 +755,76 @@ def _patched_columns(server: FakePostgrest) -> set[str]:
 
 def _changed_fields(before: ReviewData, after: ReviewData) -> set[str]:
     return {f.name for f in fields(ReviewData) if getattr(before, f.name) != getattr(after, f.name)}
+
+
+# ── status 조회 (SPEC §7) ──────────────────────────────────────
+
+
+def test_recent_runs_come_newest_first(store: SupabaseStore, server: FakePostgrest) -> None:
+    """⚠️ 순서가 계약이다 — 데일리 창 계산이 **앞에서부터** 성공한 실행을 찾는다."""
+    older = CrawlRun(mode=CrawlMode.BACKFILL, started_at=FIXED_NOW - timedelta(days=2))
+    newer = CrawlRun(mode=CrawlMode.DAILY, started_at=FIXED_NOW)
+    # ⚠️ 저장 순서를 **거꾸로** 넣는다 — 정렬이 없으면 통과하는 테스트가 되지 않게.
+    server.seed("crawl_run", to_row(older), to_row(newer))
+
+    got = store.recent_runs(10)
+
+    assert [run.id for run in got] == [newer.id, older.id]
+
+
+def test_recent_runs_refuses_a_useless_limit(store: SupabaseStore) -> None:
+    with pytest.raises(ValueError, match="1 이상"):
+        store.recent_runs(0)
+
+
+def test_all_health_returns_every_board(store: SupabaseStore) -> None:
+    """문제 있는 곳만 걸러 오지 않는다 — 무엇이 문제인지는 `pipeline.health`가 정한다."""
+    for key in ("YTUS", "PUTS"):
+        store.upsert_health(_health(source_key=key))
+
+    assert sorted(item.source_key for item in store.all_health()) == ["PUTS", "YTUS"]
+
+
+def test_pending_work_counts_without_fetching_rows(
+    store: SupabaseStore, server: FakePostgrest
+) -> None:
+    """⚠️ **개수만 받아야 한다.** 레코드로 세면 `raw_text`·`raw_html`까지 와서 수천 행에서
+    수십 MB가 된다 — 전량 실행에서 `status`가 그만큼 느려지고 메모리를 먹는다."""
+    store.save_source_data(_source_data("1"))
+    server.requests.clear()
+
+    store.pending_work()
+
+    assert server.requests, "조회가 있었어야 한다"
+    assert all(request.method == "HEAD" for request in server.requests), (
+        f"본문을 받는 요청이 섞였다: {[r.method for r in server.requests]}"
+    )
+
+
+def test_pending_work_splits_retryable_from_given_up(store: SupabaseStore) -> None:
+    """⚠️ 두 수가 **같은 경계**를 써야 한다 — 겹치면 합이 실제보다 크고, 빠지면 사라진다.
+
+    ⚠️ 개수를 **다르게** 만든다(2 대 1) — 둘이 같으면 경계가 겹쳐도 통과한다.
+    """
+    for external_id in ("1", "2"):
+        store.save_source_data(_source_data(external_id))
+    store.save_source_data(replace(_source_data("3"), structure_attempts=MAX_STRUCTURE_ATTEMPTS))
+
+    work = store.pending_work()
+
+    assert (work.unstructured, work.given_up) == (2, 1)
+
+
+def test_pending_work_ignores_an_approved_draft_already_out(store: SupabaseStore) -> None:
+    """⚠️ 이미 공개된 행을 세면 **매일 "막혔다"고 거짓 경보**가 뜬다 — 242행이 다 걸린다."""
+    published, waiting = _source_data("1"), _source_data("2")
+    for record in (published, waiting):
+        store.save_source_data(record)
+    store.upsert_review_data(
+        _review_data(published.id, review_status=ReviewStatus.APPROVED, published_job_id=uuid4())
+    )
+    store.upsert_review_data(_review_data(waiting.id, review_status=ReviewStatus.APPROVED))
+
+    work = store.pending_work()
+
+    assert work.approved_unpublished == 1, "공개된 것은 세지 않는다"

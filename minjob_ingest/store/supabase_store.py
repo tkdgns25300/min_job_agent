@@ -26,7 +26,7 @@ from datetime import date
 from typing import Final
 
 from minjob_ingest.clock import kst_now, parse_iso_date
-from minjob_ingest.domain import CrawlMode, normalize_source_key
+from minjob_ingest.domain import CrawlMode, ReviewStatus, normalize_source_key
 from minjob_ingest.models import (
     MAX_STRUCTURE_ATTEMPTS,
     CrawlRun,
@@ -38,6 +38,7 @@ from minjob_ingest.store.base import (
     DedupCandidate,
     DedupUpdate,
     LedgerEntry,
+    PendingWork,
     RequeueResult,
     StoreError,
 )
@@ -56,6 +57,7 @@ from minjob_ingest.store.postgrest import (
     PostgrestClient,
     chunked,
     eq,
+    gte,
     in_values,
     is_null,
     lt,
@@ -65,6 +67,7 @@ from minjob_ingest.store.serde import (
     SerdeError,
     ledger_entry_of_row,
     ledger_key_of_row,
+    row_to_crawl_run,
     row_to_review_data,
     row_to_source_data,
     row_to_source_health,
@@ -391,6 +394,43 @@ class SupabaseStore:
 
     def upsert_health(self, record: SourceHealth) -> None:
         self._client.upsert(_SOURCE_HEALTH, [to_row(record)], on_conflict="source_key")
+
+    def recent_runs(self, limit: int) -> tuple[CrawlRun, ...]:
+        if limit <= 0:
+            raise ValueError(f"limit는 1 이상이어야 함 ({limit})")
+        rows = self._client.select(_CRAWL_RUN, columns=_ALL, order="started_at.desc", limit=limit)
+        return tuple(self._decoded(rows, row_to_crawl_run, _CRAWL_RUN))
+
+    def all_health(self) -> tuple[SourceHealth, ...]:
+        rows = self._client.select(_SOURCE_HEALTH, columns=_ALL, order="source_key")
+        return tuple(self._decoded(rows, row_to_source_health, _SOURCE_HEALTH))
+
+    def pending_work(self) -> PendingWork:
+        # ⚠️ **개수만 받는다**(`client.count`는 본문을 받지 않는다). 레코드로 세면
+        #    `raw_text`·`raw_html`까지 와서 수천 행에서 수십 MB가 된다.
+        # ⚠️ 앞 둘은 `list_unstructured`와 **같은 경계**를 쓴다 — `lt`/`gte`가 여집합이라
+        #    "재시도할 것"과 "포기한 것"이 겹치지도 빠지지도 않는다.
+        pending_verdict = {"structured_at": is_null()}
+        return PendingWork(
+            unstructured=self._client.count(
+                _SOURCE_DATA,
+                filters={**pending_verdict, "structure_attempts": lt(MAX_STRUCTURE_ATTEMPTS)},
+            ),
+            given_up=self._client.count(
+                _SOURCE_DATA,
+                filters={**pending_verdict, "structure_attempts": gte(MAX_STRUCTURE_ATTEMPTS)},
+            ),
+            pending_review=self._client.count(
+                _REVIEW_DATA, filters={"review_status": eq(ReviewStatus.PENDING.value)}
+            ),
+            approved_unpublished=self._client.count(
+                _REVIEW_DATA,
+                filters={
+                    "review_status": eq(ReviewStatus.APPROVED.value),
+                    "published_job_id": is_null(),
+                },
+            ),
+        )
 
     # ── 공통 헬퍼 ───────────────────────────────────────────────
 

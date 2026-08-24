@@ -25,12 +25,13 @@ from pathlib import Path
 from typing import Final
 
 from minjob_ingest.clock import kst_now
-from minjob_ingest.domain import CrawlMode, normalize_source_key
+from minjob_ingest.domain import CrawlMode, ReviewStatus, normalize_source_key
 from minjob_ingest.models import CrawlRun, ReviewData, SourceData, SourceHealth
 from minjob_ingest.store.base import (
     DedupCandidate,
     DedupUpdate,
     LedgerEntry,
+    PendingWork,
     RequeueResult,
     StoreError,
 )
@@ -46,6 +47,7 @@ from minjob_ingest.store.serde import (
     SerdeError,
     ledger_entry_of_row,
     ledger_key_of_row,
+    row_to_crawl_run,
     row_to_review_data,
     row_to_source_data,
     row_to_source_health,
@@ -313,6 +315,35 @@ class JsonStore:
             else:
                 rows[index] = to_row(record)
             self._write_rows(_SOURCE_HEALTH_FILE, rows)
+
+    def recent_runs(self, limit: int) -> tuple[CrawlRun, ...]:
+        if limit <= 0:
+            raise ValueError(f"limit는 1 이상이어야 함 ({limit})")
+        runs = self._decode_rows(_CRAWL_RUN_FILE, row_to_crawl_run)
+        # ⚠️ 파일 순서(추가된 순)에 기대지 않는다 — 새것부터가 계약이다(`Store.recent_runs`).
+        newest_first = sorted(runs, key=lambda run: run.started_at, reverse=True)
+        return tuple(newest_first[:limit])
+
+    def all_health(self) -> tuple[SourceHealth, ...]:
+        return tuple(self._decode_rows(_SOURCE_HEALTH_FILE, row_to_source_health))
+
+    def pending_work(self) -> PendingWork:
+        # ⚠️ 판정 기준을 여기서 다시 쓰지 않는다 — 레코드가 아는 것을 묻는다
+        #    (`needs_restructure`·`exhausted_attempts`·`is_safe_to_replace`와 같은 규율).
+        source_rows = self._decode_rows(_SOURCE_DATA_FILE, row_to_source_data)
+        drafts = self._decode_rows(_REVIEW_DATA_FILE, row_to_review_data)
+        return PendingWork(
+            unstructured=sum(1 for record in source_rows if record.needs_restructure),
+            given_up=sum(1 for record in source_rows if record.exhausted_attempts),
+            pending_review=sum(
+                1 for draft in drafts if draft.review_status is ReviewStatus.PENDING
+            ),
+            approved_unpublished=sum(
+                1
+                for draft in drafts
+                if draft.review_status is ReviewStatus.APPROVED and draft.published_job_id is None
+            ),
+        )
 
     # ── 파일 I/O ────────────────────────────────────────────────
 
