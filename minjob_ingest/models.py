@@ -861,7 +861,11 @@ class SourceHealth:
     last_rows: int = 0
     #: 그중 새로 저장한 건수. 데일리에서 0인 것은 **정상**이다(원장이 걸러낸 것).
     last_new_count: int = 0
-    #: 컷오프 안에서 관측한 가장 최근 게시일. `None`이면 그 기간에 글이 없었다는 뜻이다.
+    #: **지금까지 이 게시판에서 본 가장 최근 게시일**. `None`이면 한 번도 글을 본 적이 없다.
+    #:
+    #: ⚠️ **"이번 창 안의 최신"이 아니다**(2026-08-24에 뜻을 좁혔다). 창이 2일인 데일리에서
+    #: 창 안에 글이 없다고 이 값을 비우면, §7의 "최신 글이 60일 이상" 판정이 영구히 불가능해지고
+    #: 대신 "컷오프 이후 글 없음"이 **매일** 뜬다 — 상시 경보는 아무도 안 보게 된다.
     last_posted_on: date | None = None
     consecutive_failures: int = 0
     #: **목록 행이 0**인 실행이 연속된 횟수 — §7 소프트 실패(셀렉터 깨짐·로그인벽 전환) 신호.
@@ -1060,7 +1064,16 @@ class _Observation:
         posted_on: date | None,
     ) -> _Observation:
         if not failed:
-            return cls(cutoff=cutoff, rows=rows, new_count=new_count, posted_on=posted_on)
+            return cls(
+                cutoff=cutoff,
+                rows=rows,
+                new_count=new_count,
+                # ⚠️ **창 안에 글이 없는 것은 "게시일을 관측하지 못한 것"이다**(2026-08-24에 고쳤다).
+                #    None으로 덮으면 §7의 "최신 글이 60일 이상" 판정이 불가능해지고, 그 대신
+                #    "컷오프 이후 글 없음"이 뜬다 — 데일리 창이 2일이라 **대부분의 게시판이
+                #    매일** 그 줄을 만든다. 상시 뜨는 경보는 아무도 안 보게 된다.
+                posted_on=posted_on if posted_on is not None else _previous_posted_on(previous),
+            )
         if previous is None:
             return cls(cutoff=None, rows=0, new_count=0, posted_on=None)
         return cls(
@@ -1069,6 +1082,11 @@ class _Observation:
             new_count=previous.last_new_count,
             posted_on=previous.last_posted_on,
         )
+
+
+def _previous_posted_on(previous: SourceHealth | None) -> date | None:
+    """직전까지 본 최신 게시일. 없으면 `None` — **한 번도 글을 본 적이 없는 게시판**이다."""
+    return None if previous is None else previous.last_posted_on
 
 
 def _next_empty_runs(previous: SourceHealth | None, status: SourceHealthStatus) -> int:

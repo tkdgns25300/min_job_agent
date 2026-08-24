@@ -141,8 +141,12 @@ def days_since_last_posting(health: SourceHealth, *, today: date) -> int | None:
 def _has_no_recent_postings(health: SourceHealth, *, today: date) -> bool:
     """목록은 읽혔는데 최근 글이 없나.
 
-    두 모습이 있다: 훑은 기간 안에 아무 글도 없었거나(`last_posted_on`이 없음), 최신 글이
-    한참 전이거나. **목록을 못 읽은 경우는 여기가 아니라 `LISTING_EMPTY`다.**
+    두 모습이 있다: **한 번도 글을 본 적이 없거나**(`last_posted_on`이 없음 — 새 게시판이거나
+    파싱이 빗나갔다), 최신 글이 한참 전이거나. **목록을 못 읽은 경우는 여기가 아니라
+    `LISTING_EMPTY`다.**
+
+    ⚠️ 앞쪽이 "이번 창 안에 글이 없다"였을 때는 데일리 창(2일)에서 **대부분의 게시판이 매일**
+    걸렸다 — `last_posted_on`의 뜻을 "지금까지 본 최신"으로 좁혀 해소했다(`SourceHealth`).
     """
     if health.last_rows == 0:
         return False

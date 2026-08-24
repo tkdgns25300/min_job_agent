@@ -233,3 +233,35 @@ def test_a_dated_board_with_nothing_in_the_window_is_still_quiet() -> None:
         posted_on=None,
     )
     assert AlertKind.NO_RECENT_POSTINGS in _kinds(health)
+
+
+def test_a_window_without_postings_keeps_the_last_one_we_saw(tmp_path: Path) -> None:
+    """⚠️ **데일리 창(2일)에서는 대부분의 게시판이 창 안에 새 글이 없다**(2026-08-24 실측: 30곳
+    중 7곳). 그때 `last_posted_on`을 비우면 §7의 "최신 글이 60일 이상" 판정이 영구히
+    불가능해지고, 대신 "컷오프 이후 글 없음"이 **매일** 떠서 아무도 안 보게 된다.
+    """
+    store = JsonStore(tmp_path / "data")
+    first = record_success(
+        store,
+        _report(rows=10, newest=date(2026, 8, 20)),
+        run_id=None,
+        at=_NOW,
+    )
+    assert first.last_posted_on == date(2026, 8, 20)
+
+    # 다음 실행 — 목록은 읽혔지만 창(2일) 안에 새 글이 없다
+    second = record_success(store, _report(rows=10, newest=None), run_id=None, at=_NOW)
+
+    assert second.last_posted_on == date(2026, 8, 20), "지금까지 본 최신을 지키다"
+    assert alerts_for(second, today=date(2026, 8, 24)) == (), "이틀 조용한 것은 알릴 일이 아니다"
+
+
+def test_a_board_quiet_for_months_still_gets_noticed(tmp_path: Path) -> None:
+    """⚠️ 위 보존이 60일 규칙을 **살려두는지** 확인한다 — 죽이면 조용해진 게시판을 못 잡는다."""
+    store = JsonStore(tmp_path / "data")
+    record_success(store, _report(rows=10, newest=date(2026, 5, 1)), run_id=None, at=_NOW)
+    health = record_success(store, _report(rows=10, newest=None), run_id=None, at=_NOW)
+
+    kinds = [alert.kind for alert in alerts_for(health, today=date(2026, 8, 24))]
+
+    assert AlertKind.NO_RECENT_POSTINGS in kinds
