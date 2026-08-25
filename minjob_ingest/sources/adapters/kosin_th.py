@@ -61,6 +61,12 @@ _DATE_CELL: Final = "td.f-date"
 _NO_CELL: Final = "td.f-num"
 #: 고정공지 — class와 번호 칸(숫자 없음) 두 신호를 독립적으로 본다(실측: 둘 다 있다).
 _NOTICE_CLASS: Final = "isnotice"
+#: 끝을 넘긴 페이지의 데이터행 수. ⚠️ **고정공지가 페이지 끝없이 반복 렌더된다**(실측 2026-08-25:
+#: 공고는 29페이지에서 끝나고 30페이지 이후는 공지 1행만 온다). 그 한 행을 공지로 걸러내면
+#: `require_some_kept`가 "전부 걸러짐"으로 보아 **끝까지 훑는 백필이 늘 실패로 끝난다**.
+#: 진짜 셀렉터 깨짐은 **꽉 찬** 페이지에서 일어나므로(YTUS 실측 18행) 데이터행이 이것뿐일 때만
+#: "끝"으로 본다 — 공고가 하나라도 남으면 예외가 아니다.
+_END_OF_LIST_ROWS: Final = 1
 #: 첨부 표시 아이콘의 alt(실측). 상세 첨부·이미지가 빗나갔는지 보는 독립 신호.
 _ATTACHMENT_ICON_ALT: Final = "첨부파일있음"
 _PAGE_PARAM: Final = "pg"
@@ -87,12 +93,14 @@ def parse_list(html: str, source: SourceConfig) -> tuple[PostingRef, ...]:
     """목록 HTML → 공고 참조들. 고정공지는 제외한다."""
     table = require_one(parse_html(html), _LIST_TABLE, what=f"{SOURCE_KEY} 목록")
     data_rows = rows_with_data(table)
-    refs = [_ref_from_row(row, source) for row in data_rows if not _is_notice(row)]
+    refs = [_ref_from_row(row, source) for row in data_rows if not _is_skippable_row(row)]
+    if not refs and len(data_rows) <= _END_OF_LIST_ROWS:
+        return ()  # 끝을 넘겼다 — 실패가 아니다(`_END_OF_LIST_ROWS` 참조)
     require_some_kept(
         refs,
         data_rows,
         source_key=SOURCE_KEY,
-        filtered_by=f"공지 판정(`{_NOTICE_CLASS}`·{_NO_CELL})",
+        filtered_by=f"공지 판정(`{_NOTICE_CLASS}`·{_NO_CELL})·빈 제목",
     )
     return as_listing(refs, source_key=SOURCE_KEY)
 
@@ -118,10 +126,31 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
     )
 
 
+def _is_skippable_row(row: Tag) -> bool:
+    """건너뛸 행인가 — 고정공지이거나 **게시판에 제목이 없는 행**."""
+    return _is_notice(row) or _is_untitled(row)
+
+
 def _is_notice(row: Tag) -> bool:
     """고정공지 행. 번호 칸이 이미지(`공지`)라 텍스트가 비고 숫자가 아니다(실측)."""
     classes: list[str] = row.get_attribute_list("class")
     return _NOTICE_CLASS in classes or not cell_text(row, _NO_CELL).isdigit()
+
+
+def _is_untitled(row: Tag) -> bool:
+    """제목 링크는 있는데 글자가 없는 행.
+
+    ⚠️ **실측(2026-08-25): 18페이지 176번(2019-11-18)은 게시판에서도 제목이 빈칸이다.**
+    `PostingRef`가 빈 제목을 거부하므로 그대로 두면 **그 한 행이 게시판 전체를 실패시킨다** —
+    범위를 넓게 잡아(`--months 0`·긴 백필) 18페이지에 닿는 순간 이 소스가 통째로 0건이 된다.
+    `--months 2`는 1페이지에서 멈춰 여태 드러나지 않았다. 제목 없는 공고는 `jobs.title`이
+    NOT NULL이라 어차피 공개되지 않으므로 건너뛰어 잃는 것이 없다.
+
+    ⚠️ **링크가 아예 없는 행은 걸러내지 않는다** — 그건 셀렉터가 깨진 신호이므로
+    `_ref_from_row`가 실패해야 한다. 행 전부가 빈 제목이면 `require_some_kept`가 잡는다.
+    """
+    link = row.select_one(_DETAIL_LINK)
+    return link is not None and not link.get_text(" ", strip=True)
 
 
 def _ref_from_row(row: Tag, source: SourceConfig) -> PostingRef:

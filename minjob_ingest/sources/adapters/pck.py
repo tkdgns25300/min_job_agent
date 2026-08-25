@@ -75,6 +75,12 @@ _FILE_BOX: Final = "div.mw_basic_view_file"
 _FILE_LINK: Final = 'a[href^="javascript:file_download"]'
 _FILE_URL: Final = re.compile(r"file_download\('([^']+)'")
 _UNNAMED_FILE: Final = "attachment"
+#: 게시판이 본문에 심는 **껍데기 그림** — 공고 내용이 아니다. 실측(2026-08-25): 4건이
+#: `/skin/board/calling/img/icon_loading.gif`(2KB 로딩 아이콘)를 포스터로 올려 보냈다. 그림이
+#: 있다고 판정되면 ① Gemini에 쓸모없는 바이트를 보내고 ② 등급이 내려가 사람이 볼 것이 늘고
+#: ③ `verify`가 "포스터가 원문"으로 보아 그 행의 빈 칸을 만들지 않는다(SPEC §5.5b).
+#: 진짜 포스터는 업로드 경로에 있고 스킨 디렉터리에는 없다.
+_SKIN_IMAGE_MARKER: Final = "/skin/board/"
 
 
 def list_request(source: SourceConfig, page: int) -> ListRequest:
@@ -103,13 +109,20 @@ def parse_detail(html: str, ref: PostingRef) -> RawPosting:
         for part in ("" if extra is None else normalized_text(extra), normalized_text(body))
         if part
     )
-    images = image_urls_in(body, base_url=ref.url)
+    images = _posting_images(body, base_url=ref.url)
     files = _attachments(soup.select_one(_FILE_BOX), base_url=ref.url)
     # 본문 앞 상자(`extra`)까지 한 범위로 — `raw_text`가 둘을 이어 붙이는 것과 짝을 맞춘다.
     # ⚠️ 감싸는 태그를 새로 만들지 않는다 — 원문에 없던 마크업을 증거에 넣지 않는다.
     raw_html = "".join(structural_html(part) for part in (extra, body) if part is not None)
     return RawPosting(
         ref=ref, raw_text=raw_text, raw_html=raw_html, image_urls=images, attachments=files
+    )
+
+
+def _posting_images(body: Tag, *, base_url: str) -> tuple[str, ...]:
+    """본문 그림 중 **게시판 껍데기를 뺀** 것(`_SKIN_IMAGE_MARKER` 참조)."""
+    return tuple(
+        url for url in image_urls_in(body, base_url=base_url) if _SKIN_IMAGE_MARKER not in url
     )
 
 

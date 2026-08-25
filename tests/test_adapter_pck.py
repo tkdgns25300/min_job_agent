@@ -127,6 +127,26 @@ def test_detail_carries_the_extra_fields_before_the_body(refs: tuple[PostingRef,
     assert "제출서류" in raw.raw_text
 
 
+def test_board_skin_image_is_not_a_poster() -> None:
+    """⚠️ 실측(2026-08-25): 4건이 본문의 `icon_loading.gif`(2KB)를 포스터로 올려 보냈다.
+
+    껍데기 그림이 남으면 ① 값없는 바이트를 유료 호출에 싣고 ② 등급이 내려가 검수가 늘고
+    ③ `verify`가 "포스터가 원문"으로 보아 그 행의 빈 칸을 만들지 않는다.
+    """
+    ref = PostingRef(
+        external_id="5485",
+        url="https://pck.or.kr/bbs/board.php?bo_table=SM05_05&wr_id=5485",
+        title="울릉제일교회 담임목사 청빙",
+    )
+    html = (
+        '<div class="mw_basic_view_content"><p>담임목사를 청빙합니다.</p>'
+        '<img src="/skin/board/calling/img/icon_loading.gif"/>'
+        '<img src="/data/file/SM05_05/poster.jpg"/></div>'
+    )
+    raw = pck.parse_detail(html, ref)
+    assert raw.image_urls == ("https://pck.or.kr/data/file/SM05_05/poster.jpg",)
+
+
 def test_attachment_url_comes_out_of_the_javascript_call(refs: tuple[PostingRef, ...]) -> None:
     """⚠️ 첨부 href가 `javascript:file_download('URL','0')`이다 — href를 그대로 쓰면 못 읽는다."""
     raw = pck.parse_detail((_FIXTURES / "detail.html").read_text(encoding="utf-8"), refs[0])

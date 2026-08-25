@@ -117,7 +117,7 @@
       "encoding": "utf-8",
       "list_url": "https://pck.or.kr/bbs/board.php?bo_table=SM05_05",
       "detail_pattern": "/bbs/board.php?bo_table=SM05_05&wr_id={id}",
-      "fetch_note": "그누보드. bo_notice 5개 pinned skip. pagination page. apex OK(www 불요). ⚠️2026-08-04 재실측: 고정공지는 5개가 아니라 **2개**이고 `bo_notice` 클래스가 없다 — 번호 칸의 아이콘 이미지가 유일한 신호다. 목록 표는 `form#fboardlist` 안에 있고 빈 tr 23개가 섞여 있다."
+      "fetch_note": "그누보드. bo_notice 5개 pinned skip. pagination page. apex OK(www 불요). ⚠️2026-08-04 재실측: 고정공지는 5개가 아니라 **2개**이고 `bo_notice` 클래스가 없다 — 번호 칸의 아이콘 이미지가 유일한 신호다. 목록 표는 `form#fboardlist` 안에 있고 빈 tr 23개가 섞여 있다. ⚠️2026-08-25 실측: 본문에 게시판 껍데기 그림(`/skin/board/calling/img/icon_loading.gif` · 2KB 로딩 아이콘)이 섞여 **4건이 그것을 포스터로 올려 보냈다** → `/skin/board/`는 뺀다. 진짜 포스터는 업로드 경로에 있다."
     },
     {
       "key": "SJS",
@@ -209,7 +209,7 @@
       "encoding": "utf-8",
       "list_url": "https://best.kosin.ac.kr/th/index.php?pCode=MN6000030&mode=list",
       "detail_pattern": "/th/index.php?pCode=MN6000030&mode=view&idx={id}",
-      "fetch_note": "IIS/PHP. 공지 pinned. 청빙+타 교단 혼재→교단은 공고별 판정. HEAD Content-Length:0→GET. ⚠️2026-08-04 재실측: **2페이지 이상의 상세 href에 `pg=N`이 끼어들어** config `detail_pattern` 접두 매칭이 전 행에서 실패한다 → id를 쿼리 이름(`idx`)으로 뽑아야 한다. 안 하면 1페이지 말고 전부 유실된다."
+      "fetch_note": "IIS/PHP. 공지 pinned. 청빙+타 교단 혼재→교단은 공고별 판정. HEAD Content-Length:0→GET. ⚠️2026-08-04 재실측: **2페이지 이상의 상세 href에 `pg=N`이 끼어들어** config `detail_pattern` 접두 매칭이 전 행에서 실패한다 → id를 쿼리 이름(`idx`)으로 뽑아야 한다. 안 하면 1페이지 말고 전부 유실된다. ⚠️2026-08-25 실측(끝까지 훑기): ①18페이지 176번(2019-11-18)은 **게시판에서도 제목이 빈칸**이라 그 한 행이 소스 전체를 실패시켰다 → 빈 제목 행은 건너뛴다. ②공고는 **29페이지**에서 끝나는데 30페이지 이후에도 **고정공지 1행이 계속 렌더된다** → 데이터행이 그 하나뿐이면 '끝'으로 본다(실패 아님). 고친 뒤 --months 0 = 30페이지·430행·2016-04-19까지."
     },
     {
       "key": "HAPSHIN",

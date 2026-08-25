@@ -97,12 +97,61 @@ def test_other_denominations_and_non_calls_are_kept(refs: tuple[PostingRef, ...]
 
 
 def test_notice_row_is_detected_by_class_and_by_number(source: SourceConfig) -> None:
-    """공지 신호가 둘이다(`tr.isnotice` · 번호 칸이 `공지` 이미지라 숫자가 없다)."""
+    """공지 신호가 둘이다(`tr.isnotice` · 번호 칸이 `공지` 이미지라 숫자가 없다).
+
+    ⚠️ 행을 **둘** 둔다 — 데이터행 하나뿐인 페이지는 "끝을 넘겼다"로 보기 때문이다
+    (`_END_OF_LIST_ROWS`). 실제 페이지는 12~16행이라 이쪽이 실측에 가깝다.
+    """
     by_class = _row(row_class="isnotice")
     by_icon = _row(no='<img alt="공지" src="/_Img/Board/default/icon_notice.png"/>')
     for notice in (by_class, by_icon):
         with pytest.raises(ParseError, match="전부 걸러짐"):
-            kosin_th.parse_list(_list_html(notice), source)
+            kosin_th.parse_list(_list_html(notice, notice), source)
+
+
+def test_untitled_row_is_skipped_instead_of_failing_the_board(source: SourceConfig) -> None:
+    """⚠️ 실측(2026-08-25): 18페이지 176번(2019-11-18)은 **게시판에서도 제목이 빈칸**이다.
+
+    `PostingRef`가 빈 제목을 거부하므로, 건너뛰지 않으면 그 한 행이 게시판 전체를 실패시킨다.
+    """
+    refs = kosin_th.parse_list(_list_html(_row(), _row(no="176", ident="176", title="")), source)
+    assert [ref.external_id for ref in refs] == ["304339"]
+
+
+def test_all_rows_untitled_is_still_an_error(source: SourceConfig) -> None:
+    """⚠️ 전부 빈 제목이면 셀렉터가 깨진 것이다 — 건너뛰기가 그 신호를 삼키면 안 된다."""
+    with pytest.raises(ParseError, match="전부 걸러짐"):
+        kosin_th.parse_list(_list_html(_row(title=""), _row(ident="9", title="")), source)
+
+
+def test_page_past_the_end_is_the_end_not_a_failure(source: SourceConfig) -> None:
+    """⚠️ 실측: 공고는 29페이지에서 끝나는데 30페이지 이후에도 **고정공지가 계속 렌더된다**.
+
+    그 한 행을 "전부 걸러짐"으로 보면 끝까지 훑는 백필이 늘 실패로 끝난다. 빈 결과를 주면
+    수집 루프가 `within_cutoff == 0`으로 멈춘다.
+    """
+    notice_only = _row(row_class="isnotice", title=_NOTICE_TITLE)
+    assert kosin_th.parse_list(_list_html(notice_only), source) == ()
+
+
+def test_full_page_of_notices_is_still_an_error(source: SourceConfig) -> None:
+    """⚠️ 끝 판정을 **데이터행 1개**로 좁히는 이유 — 꽉 찬 페이지가 전부 걸러지면 셀렉터 깨짐이다.
+
+    YTUS에서 `td.num` 클래스가 바뀌자 공고 18건이 전부 공지로 판정돼 조용히 0건이 됐다.
+    """
+    with pytest.raises(ParseError, match="전부 걸러짐"):
+        kosin_th.parse_list(_list_html(*(_row(row_class="isnotice"),) * 2), source)
+
+
+def test_row_without_a_title_link_still_fails(source: SourceConfig) -> None:
+    """⚠️ 링크가 **아예 없는** 행은 건너뛰지 않는다 — 빈 제목과 달리 셀렉터 깨짐이다."""
+    linkless = (
+        '<tr class="child_1"><td class="f-num num"><p>431</p></td>'
+        '<td class="f-tit subject"><p>제목만 있고 링크가 없다</p></td>'
+        '<td class="f-date date"><p>2026-06-05</p></td></tr>'
+    )
+    with pytest.raises(ParseError, match="상세 링크가 없음"):
+        kosin_th.parse_list(_list_html(linkless), source)
 
 
 def test_missing_date_cell_is_rejected(source: SourceConfig) -> None:
