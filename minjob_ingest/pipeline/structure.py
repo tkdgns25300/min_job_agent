@@ -78,10 +78,6 @@ DEFAULT_WORKERS: Final = 4
 #: ("못 맞추면 기타") — 비워두면 레코드 불변식에 걸려 그 공고가 사라진다.
 _GENERAL_ROLE_FALLBACK: Final = "기타"
 
-#: `--all`의 조회 상한. JSON 단계에선 `list_unstructured`가 어차피 전량을 읽고 자르므로
-#: 배치로 나눠도 얻는 것이 없다. ⚠️ Supabase 전환 때 배치 루프로 바꾼다(ROADMAP 1-2 3단계).
-_ALL_LIMIT: Final = 100_000
-
 
 class Verdict(StrEnum):
     """한 공고를 어떻게 처리했나. 리포트 집계와 진행 표시가 이 값으로 갈린다."""
@@ -384,10 +380,9 @@ def structure_pending(
         #    물어보면 알 수 있는 것이라, 포스터 공고 약 630건마다 실패로 알아내지 않는다
         #    (`publish`가 `check_jobs_columns`를 앞에 두는 것과 같은 자리·같은 이유).
         posters.check_bucket()
-    pending = store.list_unstructured(_ALL_LIMIT, source_key=options.source_key)
-    if len(pending) == _ALL_LIMIT:
-        # 조용한 부분 성공을 만들지 않는다 — 리포트만 보면 전량을 끝낸 것처럼 보인다.
-        _LOG.warning("조회 상한 %d건에 걸렸다 — 남은 공고가 더 있다", _ALL_LIMIT)
+    # ⚠️ **조회는 언제나 전량이다**(유료 상한은 아래 `_Budget`이 따로 건다). 큰 수를 상한처럼
+    #    주면 한 번의 요청이 되고, 서버가 조용히 자르면 "전량 끝냈다"가 거짓이 된다.
+    pending = store.list_unstructured(None, source_key=options.source_key)
     boards = group_by_source(pending)
     budget = _Budget(options.limit)
     tally = _Tally()

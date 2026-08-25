@@ -425,7 +425,7 @@ class _OrderTrackingStore:
         self.inner.update_structure_state(record)
 
     def list_unstructured(
-        self, limit: int, *, source_key: str | None = None
+        self, limit: int | None, *, source_key: str | None = None
     ) -> tuple[SourceData, ...]:
         return self.inner.list_unstructured(limit, source_key=source_key)
 
@@ -656,7 +656,7 @@ class _BrokenOnFirstStore:
         self.inner.update_structure_state(record)
 
     def list_unstructured(
-        self, limit: int, *, source_key: str | None = None
+        self, limit: int | None, *, source_key: str | None = None
     ) -> tuple[SourceData, ...]:
         return self.inner.list_unstructured(limit, source_key=source_key)
 
@@ -665,12 +665,17 @@ def test_the_store_is_always_asked_for_everything() -> None:
     """`limit`은 **판정 수**를 세는 비용 상한이라 조회 자체는 항상 전량이다.
 
     조회를 `limit`으로 자르면 목록 앞머리의 대기 공고가 상한을 먹어 뒤에 도달하지 못한다.
+
+    ⚠️⚠️ **전량을 큰 수로 흉내내지 않는다**(2026-08-25에 고쳤다). 큰 수를 주면 한 번의
+    요청이 되고, PostgREST가 `db-max-rows`로 조용히 자르면 **에러 없이** 일부만 받아
+    "전량 구조화했다"가 거짓이 된다. `None`은 페이지네이션 + **개수 검산**을 지나므로
+    잘리면 요란하게 멈춘다(`dedup_candidates`와 같은 이유 · SPEC §4.1).
     """
-    asked: list[tuple[int, str | None]] = []
+    asked: list[tuple[int | None, str | None]] = []
 
     class _RecordingStore:
         def list_unstructured(
-            self, limit: int, *, source_key: str | None = None
+            self, limit: int | None, *, source_key: str | None = None
         ) -> tuple[SourceData, ...]:
             asked.append((limit, source_key))
             return ()
@@ -684,7 +689,7 @@ def test_the_store_is_always_asked_for_everything() -> None:
         heresy=_NO_HERESY,
     )
 
-    assert asked[0][0] > 10_000, "수집 전량이 한 번에 들어가야 한다(2개월 실측 환산 약 3,700건)"
+    assert asked[0][0] is None, "전량은 `None`이다 — 큰 수는 조용히 잘릴 수 있다"
     assert asked[1][0] == asked[0][0], "limit이 조회를 자르지 않는다"
     assert asked[1][1] == "YTUS"
 
@@ -738,7 +743,7 @@ class _BrokenStateStore:
         raise StoreError("디스크 상태 불일치")
 
     def list_unstructured(
-        self, limit: int, *, source_key: str | None = None
+        self, limit: int | None, *, source_key: str | None = None
     ) -> tuple[SourceData, ...]:
         return self.inner.list_unstructured(limit, source_key=source_key)
 

@@ -185,7 +185,7 @@ class Store(Protocol):
     # ── 구조화 (SPEC §4) ─────────────────────────────────────────
 
     def list_unstructured(
-        self, limit: int, *, source_key: str | None = None
+        self, limit: int | None, *, source_key: str | None = None
     ) -> tuple[SourceData, ...]:
         """판정이 안 끝났고 시도 상한도 안 넘긴 원자료를 오래된 것부터 최대 `limit`건.
 

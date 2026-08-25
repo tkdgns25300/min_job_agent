@@ -151,15 +151,19 @@ class SupabaseStore:
     # ── 구조화 (SPEC §4) ─────────────────────────────────────────
 
     def list_unstructured(
-        self, limit: int, *, source_key: str | None = None
+        self, limit: int | None, *, source_key: str | None = None
     ) -> tuple[SourceData, ...]:
-        if limit <= 0:
+        if limit is not None and limit <= 0:
             raise ValueError(f"limit는 1 이상이어야 함 ({limit})")
         # ⚠️ 시도 상한을 **서버에서** 거른다. `MAX_STRUCTURE_ATTEMPTS`는 Python 상수이고
         #    DB에 박지 않았으므로(마이그레이션 주석) 값을 쿼리로 넘긴다.
         filters = {"structured_at": is_null(), "structure_attempts": lt(MAX_STRUCTURE_ATTEMPTS)}
         if source_key is not None:
             filters["source_key"] = eq(normalize_source_key(source_key))
+        # ⚠️ **전량이면 `limit`을 주지 않는다**(`limit=None`) — 큰 수를 주면 한 번의 요청이
+        #    되고, 서버가 `db-max-rows`로 조용히 자르면 **에러 없이** 일부만 받는다. 그러면
+        #    "전량 구조화했다"가 거짓이 된다. `limit=None`은 페이지네이션 + **개수 검산**을
+        #    지나므로, 잘리면 요란하게 멈춘다(`dedup_candidates`와 같은 이유 · SPEC §4.1).
         rows = self._client.select(
             _SOURCE_DATA, columns=_ALL, order="fetched_at.asc", filters=filters, limit=limit
         )

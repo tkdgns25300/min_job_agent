@@ -828,3 +828,34 @@ def test_pending_work_ignores_an_approved_draft_already_out(store: SupabaseStore
     work = store.pending_work()
 
     assert work.approved_unpublished == 1, "공개된 것은 세지 않는다"
+
+
+def test_asking_for_everything_survives_a_server_that_truncates(
+    store: SupabaseStore, server: FakePostgrest
+) -> None:
+    """⚠️⚠️ **큰 `limit` 한 방으로 전량을 받으려 하면 안 된다.**
+
+    PostgREST에 `db-max-rows`가 걸려 있으면 그 한 번의 요청이 **에러 없이** 일부만 돌려주고,
+    "전량 구조화했다"가 거짓이 된다. 서버 설정은 SQL로 볼 수 없어 믿을 수 없다(ROADMAP 1-6).
+
+    `limit=None`은 **총량에 닿을 때까지 이어 받는** 길이라 서버가 몇 행씩 자르든 전량이 온다.
+    그래서 서버 설정을 풀 필요가 없다 — 클라이언트가 어느 쪽이든 옳게 동작한다.
+    """
+    for external_id in ("1", "2", "3"):
+        store.save_source_data(_source_data(external_id))
+    server.truncate_to = 2  # 서버가 페이지당 2행만 돌려준다
+
+    got = store.list_unstructured(None)
+
+    assert len(got) == 3, "잘려도 이어 받아 전량이 온다"
+    assert len(server.requests) > 1, "한 번에 못 받았으면 페이지를 더 받아야 한다"
+
+
+def test_a_capped_query_is_still_one_request(store: SupabaseStore, server: FakePostgrest) -> None:
+    """⚠️ `--limit N`은 **일부러** 자르는 것이라 검산 대상이 아니다 — 왕복도 한 번이어야 한다."""
+    for external_id in ("1", "2", "3"):
+        store.save_source_data(_source_data(external_id))
+    server.requests.clear()
+
+    assert len(store.list_unstructured(2)) == 2
+    assert len(server.requests) == 1

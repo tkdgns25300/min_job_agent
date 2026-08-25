@@ -131,9 +131,9 @@ class JsonStore:
     # ── 구조화 ──────────────────────────────────────────────────
 
     def list_unstructured(
-        self, limit: int, *, source_key: str | None = None
+        self, limit: int | None, *, source_key: str | None = None
     ) -> tuple[SourceData, ...]:
-        if limit <= 0:
+        if limit is not None and limit <= 0:
             raise ValueError(f"limit는 1 이상이어야 함 ({limit})")
         wanted = None if source_key is None else normalize_source_key(source_key)
         pending = [
@@ -142,7 +142,7 @@ class JsonStore:
             if record.needs_restructure and (wanted is None or record.source_key == wanted)
         ]
         pending.sort(key=lambda record: record.fetched_at)
-        return tuple(pending[:limit])
+        return tuple(pending if limit is None else pending[:limit])
 
     def update_structure_state(self, record: SourceData) -> None:
         with self._write_lock:

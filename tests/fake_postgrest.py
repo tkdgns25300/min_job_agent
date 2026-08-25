@@ -54,6 +54,8 @@ class FakePostgrest:
         #: 빼고 넣어도 `OPEN`이 되는데, 가짜가 비워 두면 그 행이 앵커 조회(`status=eq.OPEN`)에
         #: 아예 안 걸린다 — 공개한 자리가 앵커가 되는 경로가 통째로 검증되지 않는다(2026-08-21).
         self.defaults: dict[str, dict[str, object]] = {}
+        #: 서버가 **조용히 자르는** 상황(`db-max-rows`) 흉내. `None`이면 자르지 않는다.
+        self.truncate_to: int | None = None
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self._handle)
@@ -118,6 +120,10 @@ class FakePostgrest:
         offset = int(params.get("offset", "0"))
         limit = params.get("limit")
         window = ordered[offset : offset + int(limit)] if limit is not None else ordered[offset:]
+        if self.truncate_to is not None:
+            # ⚠️ **`db-max-rows`를 흉내낸다** — 진짜 PostgREST는 총계를 정직하게 보고하면서
+            #    행만 자른다. 그래서 개수 검산이 없으면 **에러 없이** 일부만 받는다.
+            window = window[: self.truncate_to]
         selected = [_project(row, params.get("select")) for row in window]
         reported = str(total) if "count=exact" in prefer else "*"
         # ⚠️ **돌려줄 행이 없으면 범위 쪽이 `*`다** — 진짜 PostgREST가 `*/0`으로 답한다.
