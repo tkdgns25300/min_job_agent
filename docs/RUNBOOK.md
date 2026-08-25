@@ -375,6 +375,54 @@ minjob-ingest status --runs 10    최근 실행을 10개까지
 
 ⚠️ **구조화 중에 죽은 실행은 "끝나지 않은 실행"으로 안 잡힌다.** `crawl_run`은 수집이 끝날 때 닫히고 구조화는 그 테이블을 만들지 않는다(SPEC §4). 그때는 **미구조화 건수**가 남아 있는 것이 신호다.
 
+## 자동 실행 (GitHub Actions) — 🌐 · 💰
+
+`.github/workflows/crawl.yml` 하나다. 러너에서 `daily`를 돌리고 **`status`의 종료코드가 워크플로의 성공/실패를 정한다.**
+
+```
+checkout → python 3.12 → 설치 → 이단 목록을 시크릿에서 러너에 쓴다
+        → list-sources (무료) → check-gemini (💰 1회) → daily (🌐💰) → status
+```
+
+### 처음 켤 때 — 순서가 있다
+
+**1. 시크릿 8개 등록** — 리포 → Settings → Secrets and variables → Actions → **Repository secrets**의 `New repository secret`. (위쪽 `Environment secrets`는 쓰지 않는다.)
+
+`gh`가 있으면 `.env`에서 한 번에 넣을 수 있다:
+
+```bash
+for k in VERTEX_AI_PROJECT_ID VERTEX_AI_LOCATION VERTEX_AI_CLIENT_EMAIL \
+         VERTEX_AI_PRIVATE_KEY VERTEX_MODEL SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY; do
+  gh secret set "$k" --repo tkdgns25300/min_job_agent \
+    --body "$(grep -m1 "^$k=" .env | cut -d= -f2- | sed 's/^"//; s/"$//')"
+done
+gh secret set HERESY_REF --repo tkdgns25300/min_job_agent < config/heresy-ref.json
+```
+
+⚠️ `MINJOB_STORE=supabase`는 비밀이 아니라 워크플로에 평문으로 들어 있다. `VERTEX_MODEL_LITE`는 `daily`가 `--lite`를 쓰지 않아 필요 없다.
+
+**2. 수동으로 한 번** — Actions 탭 → `하루치 수집` → `Run workflow`. 확인만 하려면 `dry_run`을 켠다(유료 호출 0회).
+
+**3. 막힌 게시판이 있나 본다** — 로그와 `status` 출력을 본다. ⚠️ **여기가 이 단계의 목적이다**: 지금까지 수집은 전부 운영자 PC의 **한국 IP**에서 했고 러너는 **GitHub의 해외 데이터센터 IP**다. 해외 IP를 막는 게시판이 있으면 그곳만 403이 되고 UA를 맞춰도 IP는 바꿀 수 없다. 막힌 곳이 나오면 선택지는 둘이다 — 그 게시판만 `config/sources.json`에서 `enabled: false`로 빼거나, cron을 포기하고 계속 로컬에서 `daily`를 돌린다.
+
+**4. 이상 없으면 cron을 켠다** — `crawl.yml`의 `schedule` 두 줄 주석을 푼다.
+
+```yaml
+  schedule:
+    - cron: "0 22 * * *"   # UTC 22:00 = KST 07:00
+```
+
+### 알아둘 것
+
+| | |
+|---|---|
+| **빨간불 조건** | 죽은 실행 · 게시판 경보 · 포기된 행 · 승인했는데 공개 안 된 행 |
+| **빨간불이 **아닌** 것** | 검수 대기(`PENDING`) · 조용한 게시판 · 게시판 일부 실패 — 정상 운영이다 |
+| **겹침** | `concurrency: crawl`로 기다린다. **취소하지 않는다** — 구조화는 글마다 저장해서 끊으면 과금한 건이 버려진다 |
+| **비용** | 실측 건당 $0.0127 · 하루 평균 37건 → **약 $0.47/일 · $14/월**. Actions 자체는 공개 리포라 무료 |
+| **cron 지연** | GitHub 스케줄은 부하에 따라 늦게 뜬다. 창이 "마지막 성공 이후 + 1일"이라 하루 밀려도 빠지는 글은 없다 |
+| **이단 목록** | 리포에 없다(공개 리포 · 실명 자료). 시크릿에서 러너 임시 폴더로 쓰고 `MINJOB_HERESY_REF`로 넘긴다. **없으면 유료 호출 전에 멈춘다** |
+
 ## 저장소 바꾸기 — 로컬 파일 → Supabase
 
 ```bash
@@ -399,6 +447,12 @@ SUPABASE_SERVICE_ROLE_KEY=<service_role 키>
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy && .venv/bin/pytest -q
 ```
 자동 수정: `.venv/bin/ruff check --fix . && .venv/bin/ruff format .`
+
+⚠️ **워크플로를 고쳤으면 하나 더** — 위 4개는 YAML을 보지 못한다(파이썬만 본다).
+
+```bash
+actionlint .github/workflows/crawl.yml     # 없으면 brew install actionlint
+```
 
 ## 셋업 — 컴퓨터마다 1회
 

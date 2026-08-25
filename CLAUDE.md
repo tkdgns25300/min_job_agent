@@ -28,7 +28,7 @@
 
 ```
 [운영자 로컬 CLI]  ─ 백필·수동 실행 (Phase 1 기본)
-[GitHub Actions cron] ─ 매일 자동 (⚠️ Supabase 전환 후에만)
+[GitHub Actions cron] ─ 매일 자동 (✅ 2026-08-25 `crawl.yml` · cron은 첫 수동 실행 뒤 켠다)
         │  config(소스 레지스트리) + env(Vertex·Supabase 키)
         ▼
 [크롤러 프로세스]  fetch → 구조화 → 중복 판정 → 공개      ← 끝나면 소멸
@@ -37,7 +37,9 @@
                                      └─ PENDING  ──▶ min_job admin 검수 ──▶ 승인 → 다음 실행이 공개
 ```
 
-> ⚠️ **순서 제약(필수)**: **JsonStore(로컬 파일) 단계에서 GitHub Actions를 붙이지 않는다.** ephemeral 러너에선 JSON 원장이 매 실행 사라져 → 31곳 전량 재크롤 + 전량 재구조화(비용) + 산출물 유실. `crawl.yml`은 **SupabaseStore 전환(ROADMAP 1-6) 이후**에 만든다. 그전까지 실행은 운영자 로컬.
+> ✅ **순서 제약은 해소됐다(2026-08-25).** Supabase로 전환한 뒤 `.github/workflows/crawl.yml`을 만들었다 — 러너는 `MINJOB_STORE=supabase`로만 돈다. **그 제약이 있던 이유는 여전히 유효하다**: ephemeral 러너 + JsonStore 조합은 매 실행 원장을 잃어 31곳 전량 재크롤 + 전량 재구조화(비용) + 산출물 유실을 만든다 — 워크플로에서 `MINJOB_STORE`를 지우거나 바꾸지 말 것.
+>
+> ⚠️ **워크플로 YAML은 커밋 전 게이트 4개가 보지 못한다.** `actionlint .github/workflows/crawl.yml`을 따로 돌린다(`brew install actionlint`). 실측 2026-08-25: `runner.*`를 job 수준 `env:`에 썼더니 GitHub이 워크플로를 **검증 단계에서 거부**하는 상태였고(실행 자체가 안 된다) 그것을 이 도구가 잡았다.
 
 ### 파이프라인
 
@@ -139,6 +141,10 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 .venv/bin/mypy                 # strict + disallow_any_explicit
 .venv/bin/pytest -q            # fixture만 사용 · 네트워크 금지
+```
+⚠️ **`.github/workflows/`를 고쳤으면 하나 더** — 위 4개는 YAML을 보지 못한다.
+```bash
+actionlint .github/workflows/crawl.yml   # 컨텍스트 사용 규칙 + run 블록 shellcheck
 ```
 
 **실행**
@@ -288,4 +294,4 @@ python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 5. **증분**: 원장(`source_key`+`external_id`)으로 판정 · "이미 본 글에서 중단" 로직 없음 · 공지행 제외
 6. **AI**: 출력 스키마 강제 + enum 정규화 · **`structured_at` 기록**(게이트1 탈락 포함) · 빈 응답은 실패 처리 · 모델 ID는 env
 7. **경계**: `jobs`는 **자기가 만들었고 claim 전인 행**만(INSERT·`posted_at`) · `churches` 쓰기 없음 · **`../min_job` 파일 미수정** · 유료 호출·전량 수집은 운영자
-8. **커밋 전**: `data/`·`.env` 미포함 · fixture 개인정보 마스킹 · Actions는 Supabase 전환 후에만
+8. **커밋 전**: `data/`·`.env` 미포함 · fixture 개인정보 마스킹 · `heresy-ref.json` 미포함(실명 자료 · 공개 리포) · **`.github/workflows/`를 고쳤으면 `actionlint`**(게이트 4개가 YAML을 보지 못한다)

@@ -344,13 +344,18 @@
   - 보내는 칸은 `guards.DEDUP_LABEL_FIELDS`(+`DEDUP_VERDICT_FIELDS`) — **`with_dedup`이 바꾸는 칸과 같아야** 하고 드리프트 테스트가 짝을 지킨다
   - ⚠️ **행 하나에 요청 하나다**(부분 갱신은 행마다 값이 달라 묶을 수 없다). 첫 전량에서만 3,000번쯤 나가고 그 뒤로는 판정이 멱등해서 거의 없다
 
-### 1-7. 배포 (GitHub Actions) — ⚠️ **1-6 이후에만**
-> ephemeral 러너 + JsonStore 조합은 매 실행 원장을 잃어 **전량 재크롤·재구조화·산출물 유실**을 만든다. `crawl.yml`은 **Supabase 전환(1-6) 완료 후** 작성한다(CLAUDE.md 순서 제약).
-- [ ] `.github/workflows/crawl.yml` — 매일 **07:00 KST** cron(DAILY) + `workflow_dispatch`(수동 재실행)
-  - ⚠️ **`publish`가 `structure` 뒤에 자동으로 이어지지 않는다**(자동으로 붙는 것은 `dedup`뿐) — workflow에서 순서를 명시해야 공개까지 간다
-- [ ] ⚠️ **이단 목록을 러너에 넣는 단계** — `config/heresy-ref.json`은 **커밋하지 않는데**(실명 자료) `load_ref`는 파일이 없으면 **실행을 멈춘다**(조용히 넘어가지 않게 일부러 그렇게 했다). GH Secret에서 파일을 쓰고 **`MINJOB_HERESY_REF`**로 가리킨다
-- [ ] GH Secrets — Vertex·Supabase service key (+ 위 이단 목록)
-- [ ] 첫 자동 실행 검증 + crawl_run/source_health 확인
+### 1-7. 배포 (GitHub Actions) — ✅ 파일 작성됨 · 첫 실행 대기
+> **순서 제약은 지켰다** — 1-6(Supabase 전환)을 마친 뒤 2026-08-25에 `crawl.yml`을 만들었다. 그 제약의 이유는 여전히 유효하다: ephemeral 러너 + JsonStore 조합은 매 실행 원장을 잃어 **전량 재크롤·재구조화·산출물 유실**을 만든다 — 워크플로의 `MINJOB_STORE=supabase`를 지우지 말 것.
+- [x] `.github/workflows/crawl.yml` ✅ 2026-08-25 — `workflow_dispatch` + **cron은 주석 상태**(아래 러너 IP 항목). 순서를 명시한다: `list-sources`(무료) → `check-gemini`(💰1회) → `daily` → `status`
+  - ⚠️ **`publish`가 `structure` 뒤에 자동으로 이어지지 않는다**(자동으로 붙는 것은 `dedup`뿐) — 그래서 workflow가 단계를 잇지 않고 **`daily` 하나를 부른다**(그 안에서 순서가 보장된다)
+  - ⚠️ **`status`가 워크플로의 성패를 정한다** — `daily`의 종료코드는 게시판 일부 실패를 통과시키므로 판정에 쓸 수 없다. 검수 대기(`PENDING`)는 빨간불이 아니다(실 DB로 확인: 226건에도 종료코드 0)
+  - ⚠️ **`runner.*`는 job 수준 `env:`에서 쓸 수 없다** — `MINJOB_HERESY_REF: ${{ runner.temp }}/…`로 썼더니 GitHub이 워크플로를 **검증 단계에서 거부**하는 상태였다(실행 자체가 안 된다). `$GITHUB_ENV`로 다음 단계에 넘긴다. **`actionlint`가 잡았다** — 이 파일은 파이썬 게이트 4개가 보지 못하므로 `actionlint .github/workflows/crawl.yml`을 따로 돌린다
+  - ⚠️ **`${{ }}`를 `run:`의 셸 명령에 직접 박지 않는다** — 입력값이 명령으로 해석된다. `env:`로 받아 `"$VAR"`로 쓴다
+  - ⚠️ **`cache-dependency-path: pyproject.toml`** — `setup-python`의 pip 캐시 기본값이 `**/requirements.txt`인데 우리는 그 파일이 없어 지정하지 않으면 실패한다
+- [x] ⚠️ **이단 목록을 러너에 넣는 단계** ✅ 2026-08-25 — `config/heresy-ref.json`은 **커밋하지 않는데**(실명 자료) `load_ref`는 파일이 없으면 **실행을 멈춘다**(조용히 넘어가지 않게 일부러 그렇게 했다). GH Secret에서 **`$RUNNER_TEMP`에** 쓰고 **`MINJOB_HERESY_REF`**로 가리킨다(체크아웃 안에 두지 않는다 — 공개 리포다). 빈 시크릿은 유료 호출 전에 `::error::`로 멈춘다. 왕복 검증: 22,723바이트 → `load_ref` 122항목
+- [x] GH Secrets ✅ 2026-08-25 — 8개(Vertex 5 · Supabase 2 · `HERESY_REF`). 워크플로가 참조하는 이름과 **8/8 정확히 일치**(빠짐·남음 0). `MINJOB_STORE=supabase`는 비밀이 아니라 워크플로에 평문
+- [ ] **첫 수동 실행 검증** — ⚠️ **여기서 볼 것은 러너 IP다.** 지금까지 수집은 전부 운영자 PC의 **한국 IP**였고 러너는 **GitHub의 해외 데이터센터 IP**다. 해외 IP를 막는 게시판이 있으면 그곳만 403이 되고 UA를 맞춰도 IP는 바꿀 수 없다 — **돌려보기 전엔 알 수 없다**. 막힌 곳이 나오면 그 게시판만 `enabled: false`로 빼거나, cron을 포기하고 로컬 `daily`를 유지한다
+- [ ] 이상 없으면 **cron 주석 해제**(`0 22 * * *` = 07:00 KST) + crawl_run/source_health 확인
 
 > **Phase 1 완료 기준**: GitHub Actions가 매일 31곳을 긁어 구조화·중복 판정까지 하고, **확인할 것이 없는 공고는 `jobs`에 공개**되며 나머지는 `PENDING`으로 남는다. 실행은 `crawl_run`·`source_health`로 관측된다.
 
