@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import signal
 import sys
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
@@ -141,13 +142,46 @@ _FIELD_NOTE_SAMPLE: Final = 4
 _UNFILLED_SAMPLES: Final = 6
 
 
+class Terminated(BaseException):
+    """`SIGTERM`을 받았다 — 정리하고 끝낸다.
+
+    ⚠️ **`BaseException`을 상속한다.** 보통 예외로 두면 게시판·공고 단위 `except`가 삼켜서
+    종료 요청이 무시된다(`KeyboardInterrupt`·`SystemExit`가 같은 이유로 그렇게 돼 있다).
+    """
+
+
+def _stop_on_sigterm() -> None:
+    """`SIGTERM`을 예외로 바꿔 **이미 있는 정리 경로**에 태운다.
+
+    ⚠️ 프로세스가 그냥 죽으면 `crawl_run.finished_at`이 NULL로 남아 다음 사람이 "돌고 있나
+    죽었나"를 시각으로만 추측하게 된다(`status`의 3시간 판정). `Ctrl-C`는 파이썬이 이미
+    `KeyboardInterrupt`로 바꿔 주는데 **`SIGTERM`은 아무 예외도 만들지 않는다** — GitHub
+    Actions의 취소·타임아웃이 그걸 보내므로 무인 실행에서 매번 시체가 남는다.
+
+    ⚠️ **`SIGKILL`·OOM은 이걸로도 못 덮는다** — 코드를 한 줄도 더 실행하지 못한다. 그래서
+    시각 기반 판정(`health.DEAD_RUN_AFTER`)을 **함께** 둔다. 큐 시스템들이 종료 처리와
+    heartbeat를 같이 두는 것과 같은 이유다.
+    """
+
+    def raise_terminated(signum: int, _frame: object) -> None:
+        raise Terminated(f"SIGTERM({signum})을 받아 중단했습니다")
+
+    signal.signal(signal.SIGTERM, raise_terminated)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """종료 코드를 반환한다(0=성공). 예외는 사용자용 메시지로 바꿔 보여준다."""
     parser = _build_parser()
     args = parser.parse_args(argv)
+    _stop_on_sigterm()
 
     try:
         return _dispatch(args)
+    except (Terminated, KeyboardInterrupt) as err:
+        # ⚠️ 실행 기록은 여기 오기 전에 이미 닫혔다(`_collect_all`의 `except BaseException`).
+        #    여기서는 사람에게 알리기만 한다 — 추적을 쏟아내면 무엇이 남았는지 안 보인다.
+        print(f"[{_PROGRAM}] 중단됨: {err or type(err).__name__}", file=sys.stderr)
+        return 1
     except ConfigError as err:
         print(f"[{_PROGRAM}] config 오류: {err}", file=sys.stderr)
         return 1

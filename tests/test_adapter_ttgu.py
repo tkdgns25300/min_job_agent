@@ -44,13 +44,23 @@ def refs(source: SourceConfig) -> tuple[PostingRef, ...]:
     return ttgu.parse_list((_FIXTURES / "list.html").read_text(encoding="utf-8"), source)
 
 
-def _row(*, no: str = "1128", href: str = "", date_text: str = "2026.07.29") -> str:
+def _row(
+    *, no: str = "1128", href: str = "", date_text: str = "2026.07.29", badges: str = ""
+) -> str:
     link = href or "https://www.ttgu.ac.kr/index.php?mid=ttgu_board_03&document_srl=1107457"
     return (
         f'<tr><td class="no">{no}</td>'
         f'<td class="title"><a class="hx" href="{link}">가</a>'
-        f'<span class="extraimages"></span></td>'
+        f'<span class="extraimages">{badges}</span></td>'
         f'<td class="time">{date_text}</td><td class="m_no">1</td></tr>'
+    )
+
+
+def _badge(name: str) -> str:
+    """XE 문서모듈이 `span.extraimages`에 넣는 배지. 넷 다 그 폴더에 있는 것을 실측했다."""
+    return (
+        f'<img src="https://www.ttgu.ac.kr/modules/document/tpl/icons//{name}.gif"'
+        f' alt="{name}" title="{name}" />'
     )
 
 
@@ -161,3 +171,31 @@ def test_attachment_bearing_posting_is_measured(
     assert marked, "목록에 첨부 표시된 공고가 없다 — 대조 신호가 사라졌다"
     raw = ttgu.parse_detail(path.read_text(encoding="utf-8"), marked[0])
     assert raw.attachments or raw.image_urls, "첨부·이미지를 하나도 못 찾았다"
+
+
+def test_a_new_post_badge_is_not_an_attachment(source: SourceConfig) -> None:
+    """⚠️⚠️ **이것 때문에 게시판이 통째로 실패했다**(2026-08-25 실측).
+
+    `span.extraimages`는 첨부 전용이 아니라 XE 문서모듈의 **배지 자리**다. 아무 `img`나 세면
+    **당일 올라온 글**이 `new.gif` 때문에 "첨부 있음"이 되고, 첨부가 없으면 상세에서 교차
+    확인(`require_attachment_evidence`)이 터져 그 게시판이 통째로 실패한다.
+
+    ⚠️ 백필에서는 대부분 하루 지난 글이라 안 걸렸다 — **데일리가 당일 글을 잡으면서** 드러났다.
+    """
+    for name in ("new", "update", "secret"):
+        (ref,) = ttgu.parse_list(_list_html(_row(badges=_badge(name))), source)
+        assert ref.list_meta["has_attachment"] is False, f"{name}.gif 는 첨부가 아니다"
+
+
+def test_a_file_badge_is_an_attachment(source: SourceConfig) -> None:
+    """⚠️ 반대 방향도 못 박는다 — 좁히다가 진짜 첨부까지 놓치면 첨부만 있는 공고를 잃는다."""
+    (ref,) = ttgu.parse_list(_list_html(_row(badges=_badge("file"))), source)
+
+    assert ref.list_meta["has_attachment"] is True
+
+
+def test_a_new_badge_beside_a_file_badge_still_counts(source: SourceConfig) -> None:
+    """당일 올라온 **첨부 있는** 글 — 배지가 둘 다 붙는다."""
+    (ref,) = ttgu.parse_list(_list_html(_row(badges=_badge("new") + _badge("file"))), source)
+
+    assert ref.list_meta["has_attachment"] is True

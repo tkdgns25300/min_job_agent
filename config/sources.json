@@ -366,7 +366,7 @@
       "encoding": "utf-8",
       "list_url": "https://www.ttgu.ac.kr/index.php?mid=ttgu_board_03",
       "detail_pattern": "/index.php?mid=ttgu_board_03&document_srl={id}",
-      "fetch_note": "XpressEngine(mid=). document_srl=글번호. pagination page(~113p). www 호스트. ⚠️2026-08-04 재실측: 본문은 `div.rd_body`다(`div.xe_content`는 댓글과 공유). 2페이지 href의 파라미터 순서가 뒤바뀌어 id는 `document_srl` 이름으로 뽑는다."
+      "fetch_note": "XpressEngine(mid=). document_srl=글번호. pagination page(~113p). www 호스트. ⚠️2026-08-04 재실측: 본문은 `div.rd_body`다(`div.xe_content`는 댓글과 공유). 2페이지 href의 파라미터 순서가 뒤바뀌어 id는 `document_srl` 이름으로 뽑는다. ⚠️2026-08-25 실측 — **첨부 아이콘은 `alt=\"file\"`로 좁혀야 한다.** `span.extraimages`는 첨부 전용이 아니라 XE 문서모듈의 배지 자리이고 `file`·`new`·`update`·`secret` 넷이 같이 들어온다(`modules/document/tpl/icons/`에 넷 다 있는 것을 확인). 아무 `img`나 세면 **당일 올라온 글**이 `new.gif` 때문에 첨부 있음이 되고, 첨부가 없으면 교차 확인이 터져 **게시판이 통째로 실패**한다. 백필은 대부분 하루 지난 글이라 안 걸렸고 **데일리가 당일 글을 잡으면서** 드러났다(연속 2회 실패)."
     },
     {
       "key": "ACTS",

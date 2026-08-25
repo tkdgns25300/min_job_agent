@@ -57,8 +57,15 @@ _NOTICE_CLASS: Final = "notice"
 _NUM_CELL: Final = "td.no"
 _DETAIL_LINK: Final = "td.title a[href]"
 _DATE_CELL: Final = "td.time"
-#: 첨부 아이콘 자리. 상세에서 첨부 셀렉터가 빗나갔는지 교차 확인하는 **독립 신호**다.
-_ATTACHMENT_ICON: Final = "span.extraimages img"
+#: 첨부 아이콘. 상세에서 첨부 셀렉터가 빗나갔는지 교차 확인하는 **독립 신호**다.
+#:
+#: ⚠️⚠️ **`alt`로 좁힌다**(2026-08-25 실측으로 고쳤다). `span.extraimages`는 첨부 전용이 아니라
+#: XE 문서모듈의 **배지 자리**이고 `file`·`new`·`update`·`secret` 넷이 같이 들어온다(그 스킨의
+#: `modules/document/tpl/icons/`에 넷 다 있는 것을 확인했다). 아무 `img`나 세면 **당일 올라온 글**이
+#: `new.gif` 때문에 "첨부 있음"이 되고, 첨부가 없으면 교차 확인이 터져 **그 게시판이 통째로
+#: 실패**한다.
+#: 백필에서는 대부분 하루 지난 글이라 안 걸렸고, **데일리가 당일 글을 잡으면서** 드러났다.
+_ATTACHMENT_ICON: Final = 'span.extraimages img[alt="file"]'
 #: 목록 href에서 글번호만. 파라미터 순서에 의존하지 않는다(위 docstring 참조).
 _DOCUMENT_SRL: Final = re.compile(r"document_srl=(\d+)")
 _PAGE_PARAM: Final = "page"

@@ -6,6 +6,7 @@ import argparse
 import inspect
 import json
 import logging
+import signal
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from pathlib import Path
@@ -413,13 +414,16 @@ def test_an_unexpected_crash_still_closes_the_run(
 def test_a_keyboard_interrupt_still_closes_the_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """운영자가 Ctrl-C로 멈추는 일은 백필에서 흔하다 — `Exception`만 잡으면 여기서 새어 나간다."""
-    with pytest.raises(KeyboardInterrupt):
-        _run_collect_with(monkeypatch, tmp_path, outcome=KeyboardInterrupt(), dry_run=False)
+    """운영자가 Ctrl-C로 멈추는 일은 백필에서 흔하다 — `Exception`만 잡으면 여기서 새어 나간다.
+
+    ⚠️ 2026-08-25부터 `main`이 이걸 **메시지로** 바꾼다(추적을 쏟아내지 않는다). 지켜야 하는
+    것은 그대로다 — **실행 기록이 닫혀야** 한다.
+    """
+    _run_collect_with(monkeypatch, tmp_path, outcome=KeyboardInterrupt(), dry_run=False)
     runs = _runs(tmp_path)
     assert len(runs) == 1
     assert runs[0]["finished_at"] is not None
-    capsys.readouterr()
+    assert "중단됨" in capsys.readouterr().err
 
 
 def test_the_abort_marker_is_not_counted_as_a_failed_source(
@@ -1575,3 +1579,50 @@ def test_elapsed_time_reads_without_arithmetic(elapsed: timedelta, expected: str
     """⚠️ 죽은 실행은 정의상 3시간 이상이라 **분으로만 쓰면 `240분 0초`**가 된다 — 그게
     운영자가 가장 먼저 보는 줄이다."""
     assert cli._duration(elapsed) == expected
+
+
+# ── 종료 신호 (2026-08-25) ─────────────────────────────────────────
+
+
+def test_sigterm_closes_the_run_instead_of_leaving_a_corpse(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 프로세스가 그냥 죽으면 `crawl_run.finished_at`이 NULL로 남아, 다음 사람이 "돌고
+    있나 죽었나"를 시각으로만 추측하게 된다. GitHub Actions의 취소·타임아웃이 `SIGTERM`이라
+    무인 실행에서 매번 그렇게 된다.
+
+    ⚠️ `SIGTERM`은 파이썬이 예외로 바꿔 주지 않는다 — 우리가 바꿔야 **이미 있는 정리
+    경로**(`_collect_all`의 `except BaseException`)를 탄다.
+    """
+    store = _status_store(monkeypatch, tmp_path)
+
+    def die(*_args: object, **_kwargs: object) -> CollectReport:
+        raise cli.Terminated("SIGTERM(15)을 받아 중단했습니다")
+
+    monkeypatch.setattr(cli, "SourceClient", _NoClient)
+    monkeypatch.setattr(cli, "find_adapter", lambda _key: object())
+    monkeypatch.setattr(cli, "collect_source", die)
+
+    assert main(["collect", "--source", "YTUS", "--days", "1"]) == 1
+
+    (run,) = store.recent_runs(5)
+    assert run.finished_at is not None, "실행 기록이 열린 채 남으면 안 된다"
+    assert cli._ABORTED in run.error_detail
+    assert "중단됨" in capsys.readouterr().err
+
+
+def test_the_termination_signal_is_not_swallowed_by_ordinary_handlers() -> None:
+    """⚠️ 보통 예외로 두면 게시판·공고 단위 `except Exception`이 삼켜서 **종료 요청이
+    무시된다** — `KeyboardInterrupt`·`SystemExit`가 같은 이유로 `BaseException`이다."""
+    assert issubclass(cli.Terminated, BaseException)
+    assert not issubclass(cli.Terminated, Exception)
+
+
+def test_sigterm_is_registered_before_any_work_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⚠️ 늦게 걸면 수집이 도는 동안 온 신호를 놓친다 — 그때가 가장 오래 도는 구간이다."""
+    installed: list[int] = []
+    monkeypatch.setattr(signal, "signal", lambda number, _handler: installed.append(number))
+    monkeypatch.setattr(cli, "_dispatch", lambda _args: 0)
+
+    assert main(["status"]) == 0
+    assert signal.SIGTERM in installed
