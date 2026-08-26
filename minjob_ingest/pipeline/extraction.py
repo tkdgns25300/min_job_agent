@@ -133,10 +133,22 @@ MAX_LIST_ITEM_CHARS: Final = 300
 #: 줄 단위로 쏟아낸 것이다.
 MAX_LIST_ITEMS: Final = 20
 
-#: 사람이 쓰는 날짜 표기. `2026/08/31`·`2026.8.1`·`20260801`·`2026년 8월 31일`을 잡고,
-#: **뒤에 말이 붙어도**(`2026-08-31까지`·`2026-08-31(금)`·`2026년 8월 31일까지`) 잡는다.
-#: ⚠️ **버리지 않고 고쳐 쓴다** — 날짜인 게 분명한데 모양이 다르다고 버리면 마감일을 잃는다.
-_DATE_SHAPE: Final = re.compile(r"(\d{4})\D{0,3}(\d{1,2})\D{0,3}(\d{1,2})(?!\d)")
+#: 구분자가 있는 날짜(`2026-08-31`·`2026.8.1`·`2026년 8월 31일`). 뒤에 말이 붙어도 잡는다.
+#: ⚠️ **구분자를 반드시 하나 이상 요구한다.** 0개를 허용하면 `2026년 11월`의 `11`이
+#:    월=1·일=1로 쪼개져 **1월 1일**이 된다(실측 2026-08-26: `2026년 11월 말까지` → 2026-01-01).
+_DATE_SEPARATED: Final = re.compile(r"(\d{4})\D{1,3}(\d{1,2})\D{1,3}(\d{1,2})(?!\d)")
+
+#: 붙여 쓴 8자리(`20260801`). 위가 구분자를 요구하므로 이쪽을 따로 둔다.
+_DATE_COMPACT: Final = re.compile(r"(?<!\d)(\d{4})(\d{2})(\d{2})(?!\d)")
+
+#: 기간 표기의 구분자. 뒷 날짜에 연도가 없는 한국식 표기(`8월 12일 - 9월10일`)를 위해 둔다.
+#: ⚠️ 물결·대시는 **모양이 여러 가지다** — 문자 이름으로 적어 눈으로 구분되지 않는 것을 막는다.
+_DATE_TAIL: Final = re.compile(
+    "[~\uff5e\u223c\u2013\u2014]\\s*|(?<=일)\\s*-\\s*"  # ~ 전각물결 물결연산자 엔대시 엠대시
+)
+
+#: 연도가 빠진 `M월 D일`. 연도는 앞 날짜에서 물려받는다.
+_MONTH_DAY: Final = re.compile(r"^(\d{1,2})\D{1,3}(\d{1,2})(?!\d)")
 
 #: 마감일로 인정할 연도 범위. 밖이면 날짜꼴이어도 다른 뜻이다(전화번호·금액이 걸릴 수 있다).
 _PLAUSIBLE_YEARS: Final = range(2000, 2101)
@@ -729,10 +741,13 @@ def _optional_bool(decoded: Mapping[str, object], key: str) -> bool | None:
 
 
 def _optional_date(decoded: Mapping[str, object], key: str) -> date | None:
-    """`YYYY-MM-DD`만 받는다. 형식이 아니면 **버린다**(`충원시까지` 같은 표현이 온다).
+    """날짜꼴만 받는다. 아니면 **버린다**(`충원시까지` 같은 표현이 온다).
 
     ⚠️ **모양이 다르면 고쳐 쓴다.** `2026/08/31`·`2026.8.1`·`20260801`·`2026년 8월 31일`은
     전부 날짜다 — 버리면 있는 마감일을 잃는다. 연·월·일 세 수를 뽑아 우리가 조립한다.
+
+    ⚠️ **기간으로 오면 끝을 취한다**(실측 2026-08-26). `제출 기간: 8월 12일 - 9월 10일`에서
+    시작일을 마감으로 넣으면, 열려 있는 공고가 min_job 목록에서 **사라진다**(이원교회).
 
     ⚠️ **파서에 통째로 맡기지는 않는다.** 파이썬 날짜 파서는 ISO 8601 문법을 넓게 받아
     `2026-W32-1`(주차 표기)을 `2026-08-03`으로 조용히 바꾼다 — 우리가 요구한 적 없는 표기라
@@ -743,14 +758,40 @@ def _optional_date(decoded: Mapping[str, object], key: str) -> date | None:
     value = _optional_text(decoded, key)
     if value is None:
         return None
-    shape = _DATE_SHAPE.search(value)
-    if shape is None:
-        return None  # `충원시까지` 같은 표현 — 날짜가 아니다
-    year, month, day = (int(part) for part in shape.groups())
-    if year not in _PLAUSIBLE_YEARS:
+    found = _dates_in(value)
+    return found[-1] if found else None  # 기간이면 끝이 마감이다
+
+
+def _dates_in(value: str) -> tuple[date, ...]:
+    """글자 안의 날짜를 **나온 순서대로**. 없으면 빈 튜플."""
+    found = [
+        made
+        for pattern in (_DATE_SEPARATED, _DATE_COMPACT)
+        for match in pattern.finditer(value)
+        if (made := _date_or_none(*match.groups())) is not None
+    ]
+    found.sort()
+    tail = _range_tail(value, year=found[-1].year if found else None)
+    return (*found, tail) if tail is not None and (not found or tail > found[-1]) else tuple(found)
+
+
+def _range_tail(value: str, *, year: int | None) -> date | None:
+    """`8월 12일 - 9월 10일`의 뒷 날짜. 연도가 없으니 앞 날짜의 연도를 물려받는다."""
+    if year is None:
+        return None
+    split = _DATE_TAIL.search(value)
+    if split is None:
+        return None
+    month_day = _MONTH_DAY.match(value[split.end() :].lstrip())
+    return None if month_day is None else _date_or_none(str(year), *month_day.groups())
+
+
+def _date_or_none(year: str, month: str, day: str) -> date | None:
+    """세 수를 날짜로. 연도가 범위 밖이거나 없는 날이면 `None`."""
+    if int(year) not in _PLAUSIBLE_YEARS:
         return None
     try:
-        return date(year, month, day)
+        return date(int(year), int(month), int(day))
     except ValueError:
         return None  # 2026-02-31 처럼 없는 날
 

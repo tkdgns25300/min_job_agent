@@ -774,6 +774,47 @@ def test_what_is_not_a_date_stays_empty(given: str) -> None:
     assert parse_extraction(_answer(deadline=given)).deadline is None
 
 
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("2026년 8월 12일 - 9월10일(목)", date(2026, 9, 10)),
+        ("2026년 8월 1일~8월 21일까지", date(2026, 8, 21)),
+        ("2026-08-01 ~ 2026-08-21", date(2026, 8, 21)),
+        ("2026년 6월 22일 ~ 7월 15일", date(2026, 7, 15)),
+    ],
+    ids=["이원교회", "세포교회", "ISO 기간", "주사랑교회"],
+)
+def test_a_span_gives_its_end_not_its_start(given: str, expected: date) -> None:
+    """⚠️ 실측(2026-08-26): 시작일을 마감으로 넣어 **열려 있는 공고가 목록에서 사라졌다**.
+
+    이원교회는 9월 10일까지 받는데 8월 12일이 들어가 min_job의 마감 필터에 걸렸다.
+    """
+    assert parse_extraction(_answer(deadline=given)).deadline == expected
+
+
+def test_a_span_over_new_year_keeps_the_head_not_a_borrowed_year() -> None:
+    """⚠️ 뒷 날짜에 연도가 없으면 앞에서 물려받는데, 연말을 넘으면 그 값이 **앞보다 이르다**.
+
+    `12월 20일 ~ 1월 15일`의 1월은 이듬해다 — 물려받은 연도로 만든 값을 그대로 쓰면
+    마감일이 4개월 앞으로 당겨진다. 앞 날짜보다 이르면 버리고 앞 날짜를 남긴다.
+    """
+    given = "2026년 12월 20일 ~ 1월 15일"
+    assert parse_extraction(_answer(deadline=given)).deadline == date(2026, 12, 20)
+
+
+@pytest.mark.parametrize(
+    "given",
+    ["2026년 11월 말까지", "2026년 11월", "2026-11", "2026.11."],
+    ids=["말까지", "월만", "ISO 월만", "점 월만"],
+)
+def test_a_month_without_a_day_is_dropped_not_split(given: str) -> None:
+    """⚠️ 실측: 구분자를 0개까지 허용해 `11`이 월=1·일=1로 쪼개져 **1월 1일**이 됐다.
+
+    틀린 날짜보다 빈 칸이 낫다 — 마감일이 없으면 min_job이 게시일 기준으로 보여준다.
+    """
+    assert parse_extraction(_answer(deadline=given)).deadline is None
+
+
 def test_the_model_is_never_asked_whether_the_posting_closed() -> None:
     """⚠️ 마감 여부는 `청빙완료` 같은 **표시를 보는 일**이라 맥락이 필요 없다.
 

@@ -154,6 +154,15 @@ _TITLE_BARE_PREFIX: Final = re.compile(
     r"^\s*([^\s()\[\]<>]{1,16})\s*[" + _TITLE_DELIMITERS + r"]\s*"
 )
 
+#: 괄호 **없이** 뒤에 붙는 꼬리표 — `[…모십니다] 끌어올림`. 실측 2,270건 중 1건(2026-08-26,
+#: 운영자가 검수 화면에서 발견). 머리표 쪽과 같은 이유로 둔다: 드물지만 그대로 두면 공개 목록
+#: 제목 끝에 남는다.
+#: ⚠️ **앞에 공백이나 구분기호를 요구한다** — 없으면 `청빙끌어올림`처럼 낱말 중간을 자른다.
+#: ⚠️ 화이트리스트를 지나므로 `부목사 청빙`의 `청빙`은 건드리지 않는다.
+_TITLE_BARE_SUFFIX: Final = re.compile(
+    r"[" + _TITLE_DELIMITERS + r"\s]\s*([^\s()\[\]<>]{1,16})\s*$"
+)
+
 #: 제목에서 **뗄** 표시. ⚠️ **화이트리스트다** — 괄호를 만나면 무조건 벗기는 것이 아니라
 #: 안의 낱말이 이 목록에 있을 때만 뗀다.
 #:
@@ -385,7 +394,7 @@ def clean_title(title: str) -> str:
 
 def _without_marker(title: str) -> str | None:
     """앞이나 뒤의 표시를 하나 뗀 제목. 뗄 것이 없으면 `None`."""
-    for pattern in (_TITLE_PREFIX, _TITLE_SUFFIX, _TITLE_BARE_PREFIX):
+    for pattern in (_TITLE_PREFIX, _TITLE_SUFFIX, _TITLE_BARE_PREFIX, _TITLE_BARE_SUFFIX):
         found = pattern.search(title)
         if found is not None and _marker(found.group(1)) in _LIFT_MARKERS:
             return (title[: found.start()] + title[found.end() :]).strip()

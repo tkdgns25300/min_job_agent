@@ -352,6 +352,44 @@ def test_a_lift_marker_without_brackets_is_also_removed(given: str, want: str) -
 
 
 @pytest.mark.parametrize(
+    ("given", "want"),
+    [
+        (
+            "[이천은광교회에서 사역자를 정중히 모십니다] 끌어올림",
+            "[이천은광교회에서 사역자를 정중히 모십니다]",
+        ),
+        ("부목사 청빙 끌어올림", "부목사 청빙"),
+        ("부목사 청빙 끌올", "부목사 청빙"),
+        ("부목사 청빙 - 다시올림", "부목사 청빙"),
+    ],
+    ids=["실측(CSU/1118587)", "공백만", "축약", "구분기호"],
+)
+def test_a_lift_marker_trailing_without_brackets_is_also_removed(given: str, want: str) -> None:
+    """꼬리표가 괄호도 구분기호도 없이 붙는 꼴(실측 2026-08-26 · 운영자가 검수 화면에서 봤다).
+
+    ⚠️ 앞 괄호는 남는다 — 안이 제목 자체라 화이트리스트에 없고, 정보성 괄호는 벗기지 않는다.
+    """
+    assert clean_title(given) == want
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        "부목사 청빙",
+        "예천교회 담임목사 청빙 공고",
+        "청빙끌어올림",
+    ],
+    ids=["끝이 청빙", "끝이 공고", "표시가 낱말에 붙음"],
+)
+def test_a_trailing_word_outside_the_list_is_left_alone(given: str) -> None:
+    """⚠️ 꼬리표 규칙도 화이트리스트를 지난다 — 아니면 제목의 마지막 낱말이 잘려 나간다.
+
+    `청빙끌어올림`처럼 붙어 있는 것도 건드리지 않는다(앞에 공백·구분기호를 요구한다).
+    """
+    assert clean_title(given) == given
+
+
+@pytest.mark.parametrize(
     "given",
     [
         "대구성북교회- 부목사 청빙",
