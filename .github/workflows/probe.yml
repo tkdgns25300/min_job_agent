@@ -1,0 +1,37 @@
+# 일회성 진단 — DAESHIN이 포트 80으로는 해외에서 열려 있나. 답이 나오면 지운다.
+name: 접속 진단
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 러너 주소
+        run: echo "공인 IP: $(curl -sS --max-time 10 https://api.ipify.org || echo 실패)"
+
+      - name: 포트별로 열려 있나 (이름 해석 없이 IP로)
+        run: |
+          ip=222.103.156.201
+          for port in 80 443 8080; do
+            timeout 12 bash -c "cat < /dev/null > /dev/tcp/$ip/$port" 2>/dev/null \
+              && echo "  TCP $port → 열림" || echo "  TCP $port → 막힘/무응답"
+          done
+
+      - name: 포트 80으로 목록이 실제로 오나
+        run: |
+          # 한국에서는 45,855바이트에 b_id 링크 17개가 온다.
+          out=$(curl -sS --max-time 25 -o /tmp/list.html \
+                -w '%{http_code} %{size_download}바이트 %{time_total}s' \
+                --resolve 'daeshin.ac.kr:80:222.103.156.201' \
+                -A 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36' \
+                'http://daeshin.ac.kr/html/05_community/03.php' 2>&1) \
+            && echo "  응답: $out" || echo "  실패: $out"
+          if [ -s /tmp/list.html ]; then
+            echo "  b_id 링크: $(grep -o 'b_id=' /tmp/list.html | wc -l)개"
+          fi
