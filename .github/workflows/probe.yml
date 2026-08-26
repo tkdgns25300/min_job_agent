@@ -1,0 +1,52 @@
+# 일회성 진단 — 러너에서 막히는 게 DNS인지 IP인지 가른다. 답이 나오면 이 파일은 지운다.
+name: 접속 진단
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 러너가 어디서 나가나
+        run: |
+          echo "공인 IP: $(curl -sS --max-time 10 https://api.ipify.org || echo 실패)"
+          echo "기본 리졸버:"; grep -E '^nameserver' /etc/resolv.conf || true
+
+      - name: DNS — 기본 리졸버 vs 공용 리졸버
+        run: |
+          sudo apt-get install -y -qq dnsutils > /dev/null 2>&1
+          for h in daeshin.ac.kr www.kwangshin.ac.kr mokwon.ac.kr; do
+            echo "── $h"
+            for r in "" "@1.1.1.1" "@8.8.8.8"; do
+              # shellcheck disable=SC2086
+              out=$(dig +short +time=5 +tries=1 $r "$h" A 2>&1 | head -1)
+              echo "   ${r:-기본}  → ${out:-답 없음}"
+            done
+          done
+
+      - name: TCP·HTTP — 이름이 풀린 곳에 실제로 붙나
+        run: |
+          for h in daeshin.ac.kr www.kwangshin.ac.kr mokwon.ac.kr; do
+            ip=$(dig +short +time=5 +tries=1 @1.1.1.1 "$h" A | tail -1)
+            if [ -z "$ip" ]; then
+              echo "$h  → 공용 리졸버도 못 푼다 (DNS 단계에서 막힘)"
+              continue
+            fi
+            # ⚠️ 이름이 안 풀려도 IP로 직접 붙여 본다 — DNS 문제와 IP 차단을 가르는 핵심.
+            code=$(curl -sS -o /dev/null -w '%{http_code} %{time_total}s' --max-time 20 -k \
+                   --resolve "$h:443:$ip" "https://$h" 2>&1 || echo "연결 실패")
+            echo "$h ($ip)  → $code"
+          done
+
+      - name: 대조 — 잘 되는 게시판도 같은 방식으로
+        run: |
+          for h in www.pck.or.kr puts.ac.kr; do
+            code=$(curl -sS -o /dev/null -w '%{http_code} %{time_total}s' --max-time 20 -k \
+                   "https://$h" 2>&1 || echo "연결 실패")
+            echo "$h  → $code"
+          done
