@@ -352,7 +352,7 @@ minjob-ingest status --runs 10    최근 실행을 10개까지
 ── 최근 실행
   08/24 07:00     DAILY  3분 12초  게시판 29곳 성공 · 1곳 실패  신규 18건
     SJS  LedgerConflict: 같은 번호가 다른 글을 가리킴 1건
-── 게시판 30곳
+── 게시판 27곳
   ⚠ SJS  3회 연속 실패 — HTTP 500
 ── 남은 일
   미구조화        0건
@@ -403,7 +403,15 @@ gh secret set HERESY_REF --repo tkdgns25300/min_job_agent < config/heresy-ref.js
 
 **2. 수동으로 한 번** — Actions 탭 → `하루치 수집` → `Run workflow`. 확인만 하려면 `dry_run`을 켠다(유료 호출 0회).
 
-**3. 막힌 게시판이 있나 본다** — 로그와 `status` 출력을 본다. ⚠️ **여기가 이 단계의 목적이다**: 지금까지 수집은 전부 운영자 PC의 **한국 IP**에서 했고 러너는 **GitHub의 해외 데이터센터 IP**다. 해외 IP를 막는 게시판이 있으면 그곳만 403이 되고 UA를 맞춰도 IP는 바꿀 수 없다. 막힌 곳이 나오면 선택지는 둘이다 — 그 게시판만 `config/sources.json`에서 `enabled: false`로 빼거나, cron을 포기하고 계속 로컬에서 `daily`를 돌린다.
+**3. 막힌 게시판이 있나 본다** — 로그와 `status` 출력을 본다. ✅ 2026-08-26 첫 실행에서 **27곳 정상 · 3곳 실패**(`DAESHIN`·`KWANGSHIN`·`MOKWON`)였고, 그 3곳은 **서버가 해외 IP를 거부**해서 config로 우회할 수 없어 제외했다(사유는 `config/sources.json`의 `disabled_reason`).
+
+⚠️ **그 3곳이 필요하면 로컬에서** — 게시판 자체는 살아 있고 한국 IP에서는 정상이다.
+
+```bash
+minjob-ingest collect --days 30 --source DAESHIN   # 비활성 소스도 --source면 돈다
+```
+
+수집만 하면 다음 `daily`의 구조화·공개가 알아서 이어받는다(`structure`는 `enabled`를 보지 않는다).
 
 **4. 이상 없으면 cron을 켠다** — `crawl.yml`의 `schedule` 두 줄 주석을 푼다.
 

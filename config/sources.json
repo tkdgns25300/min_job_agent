@@ -4,7 +4,7 @@
       "key": "DAESHIN",
       "board_name": "대신대 취업정보",
       "denomination_hint": "HAPDONG",
-      "enabled": true,
+      "enabled": false,
       "fetch_tier": "static",
       "encoding": "utf-8",
       "list_url": "https://daeshin.ac.kr/html/05_community/03.php",
@@ -12,7 +12,8 @@
       "fetch_note": "취업+사역 혼합(청빙 필터 필요). 목록/상세 동일 .php의 AT param. pagination b_page. 인증서 정상(-k 불요). ⚠️2026-08-04 재실측: 서버가 중간 인증서를 안 보내 Python에서 CERTIFICATE_VERIFY_FAILED(curl은 macOS 키체인 덕에 성공) → insecure_tls 필요. 이전 메모의 '인증서 정상'은 curl 기준이라 틀렸다.",
       "flags": {
         "insecure_tls": true
-      }
+      },
+      "disabled_reason": "2026-08-26 제외(GitHub Actions 전환). ⚠️ **게시판은 정상이고 한국에서는 문제없다** — 서버가 러너의 해외 IP를 거부한다(실측: IP 직접 지정·공용 DNS로도 80·443·8080 전부 TCP 타임아웃 · 같은 러너에서 다른 게시판은 200). 2개월 실측 손실: 이 게시판에만 있던 공고 34건(공개 28·검수 6). 재활성에는 한국 IP가 필요하다. 그때까지는 운영자 로컬에서 `collect --days N --source DAESHIN`으로 수집하면 되고, `structure`는 `enabled`를 보지 않아 그대로 이어진다."
     },
     {
       "key": "CALVIN",
@@ -34,7 +35,7 @@
       "key": "KWANGSHIN",
       "board_name": "광신대 구인게시판",
       "denomination_hint": "HAPDONG",
-      "enabled": true,
+      "enabled": false,
       "fetch_tier": "static",
       "encoding": "utf-8",
       "list_url": "https://www.kwangshin.ac.kr/front/boardList.do?brd_mgrno=184&menu_no=467",
@@ -42,7 +43,8 @@
         "www_required": true
       },
       "detail_pattern": "/front/boardView.do?brd_mgrno=184&menu_no=467&brd_no={id}",
-      "fetch_note": "eGov(calvin 계열). apex 인증서 불일치→www 필수. onclick fView('{id}')→brd_no."
+      "fetch_note": "eGov(calvin 계열). apex 인증서 불일치→www 필수. onclick fView('{id}')→brd_no.",
+      "disabled_reason": "2026-08-26 제외(GitHub Actions 전환). ⚠️ **게시판은 정상이고 한국에서는 문제없다** — 서버가 러너의 해외 IP를 거부한다(실측: IP 직접 지정·공용 DNS로도 80·443·8080 전부 TCP 타임아웃 · 같은 러너에서 다른 게시판은 200). 2개월 실측 손실: 이 게시판에만 있던 공고 12건. 재활성에는 한국 IP가 필요하다. 그때까지는 운영자 로컬에서 `collect --days N --source KWANGSHIN`으로 수집하면 되고, `structure`는 `enabled`를 보지 않아 그대로 이어진다."
     },
     {
       "key": "CSU",
@@ -256,12 +258,13 @@
       "key": "MOKWON",
       "board_name": "목원대 신학과 사역지정보",
       "denomination_hint": "GAMLI",
-      "enabled": true,
+      "enabled": false,
       "fetch_tier": "static",
       "encoding": "utf-8",
       "list_url": "https://mokwon.ac.kr/mt1954/html/sub06/0602.html",
       "detail_pattern": "/mt1954/html/sub06/0602.html?mode=V&no={id}",
-      "fetch_note": "⚠️문서의 headless 의심 오류 → 실제 완전 static(tbody 서버렌더, AJAX 없음). PCMS. no=32자리 hex. 공지 class=bbs_notice."
+      "fetch_note": "⚠️문서의 headless 의심 오류 → 실제 완전 static(tbody 서버렌더, AJAX 없음). PCMS. no=32자리 hex. 공지 class=bbs_notice.",
+      "disabled_reason": "2026-08-26 제외(GitHub Actions 전환). ⚠️ **게시판은 정상이고 한국에서는 문제없다** — 서버가 러너의 해외 IP를 거부한다(실측: IP 직접 지정·공용 DNS로도 80·443·8080 전부 TCP 타임아웃 · 같은 러너에서 다른 게시판은 200). 2개월 실측 손실: 이 게시판에만 있던 공고 3건. 러너 IP에 따라 되기도 해 판정이 흔들린다. 재활성에는 한국 IP가 필요하다. 그때까지는 운영자 로컬에서 `collect --days N --source MOKWON`으로 수집하면 되고, `structure`는 `enabled`를 보지 않아 그대로 이어진다."
     },
     {
       "key": "HANSEI",

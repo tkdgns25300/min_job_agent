@@ -4,15 +4,13 @@
 #    하므로 `MINJOB_STORE=supabase`가 필수다. JsonStore로 돌리면 원장이 매 실행 사라져
 #    31곳 전량 재크롤 + 전량 재구조화(과금)가 된다.
 #
-# ⚠️ **cron은 주석 처리해 두었다.** 지금까지 수집은 전부 운영자 PC의 한국 IP에서 했고, 러너는
-#    GitHub의 해외 데이터센터 IP다 — 해외 IP를 막는 게시판이 있으면 그곳만 403이 되고 우리는
-#    UA를 맞춰도 IP는 바꿀 수 없다. 그래서 **먼저 수동(Run workflow)으로 한 번 돌려**
-#    `status`와 로그로 막힌 게시판을 확인하고, 이상 없을 때 아래 `schedule` 두 줄의 주석을 푼다.
+# ⚠️ 러너는 GitHub의 해외 IP에서 나간다. 그 주소를 거부하는 게시판 3곳은 제외했다
+#    (근거는 `config/sources.json`의 `disabled_reason`).
 name: 하루치 수집
 
 on:
-  # schedule:
-  #   - cron: "0 22 * * *" # UTC 22:00 = KST 07:00 (전날 올라온 공고를 아침에 집는다)
+  schedule:
+    - cron: "0 22 * * *" # UTC 22:00 = KST 07:00 (전날 올라온 공고를 아침에 집는다)
   workflow_dispatch:
     inputs:
       limit:
@@ -90,7 +88,7 @@ jobs:
         run: minjob-ingest list-sources
 
       - name: Vertex 인증 확인 (💰 호출 1회)
-        # ⚠️ 게시판 30곳을 훑기 **전에** 본다. 뒤로 미루면 인증 실수 하나로 수십 분의 게시판
+        # ⚠️ 게시판을 훑기 **전에** 본다. 뒤로 미루면 인증 실수 하나로 수십 분의 게시판
         #    요청을 헛되게 쓰고 나서 실패한다.
         # ⚠️ `dry_run`에서는 건너뛴다 — 미리보기는 **유료 호출 0회**라고 약속한 경로다.
         if: inputs.dry_run != true

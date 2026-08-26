@@ -354,10 +354,15 @@
   - ⚠️ **`cache-dependency-path: pyproject.toml`** — `setup-python`의 pip 캐시 기본값이 `**/requirements.txt`인데 우리는 그 파일이 없어 지정하지 않으면 실패한다
 - [x] ⚠️ **이단 목록을 러너에 넣는 단계** ✅ 2026-08-25 — `config/heresy-ref.json`은 **커밋하지 않는데**(실명 자료) `load_ref`는 파일이 없으면 **실행을 멈춘다**(조용히 넘어가지 않게 일부러 그렇게 했다). GH Secret에서 **`$RUNNER_TEMP`에** 쓰고 **`MINJOB_HERESY_REF`**로 가리킨다(체크아웃 안에 두지 않는다 — 공개 리포다). 빈 시크릿은 유료 호출 전에 `::error::`로 멈춘다. 왕복 검증: 22,723바이트 → `load_ref` 122항목
 - [x] GH Secrets ✅ 2026-08-25 — 8개(Vertex 5 · Supabase 2 · `HERESY_REF`). 워크플로가 참조하는 이름과 **8/8 정확히 일치**(빠짐·남음 0). `MINJOB_STORE=supabase`는 비밀이 아니라 워크플로에 평문
-- [ ] **첫 수동 실행 검증** — ⚠️ **여기서 볼 것은 러너 IP다.** 지금까지 수집은 전부 운영자 PC의 **한국 IP**였고 러너는 **GitHub의 해외 데이터센터 IP**다. 해외 IP를 막는 게시판이 있으면 그곳만 403이 되고 UA를 맞춰도 IP는 바꿀 수 없다 — **돌려보기 전엔 알 수 없다**. 막힌 곳이 나오면 그 게시판만 `enabled: false`로 빼거나, cron을 포기하고 로컬 `daily`를 유지한다
-- [ ] 이상 없으면 **cron 주석 해제**(`0 22 * * *` = 07:00 KST) + crawl_run/source_health 확인
+- [x] **첫 수동 실행 검증** ✅ 2026-08-26 — `dry_run` 1회(7분 9초 · 성공). 시크릿 8개·이단 목록 22,723바이트·창 계산 정상, `check-gemini`는 `dry_run`이라 건너뛰었다. **게시판 30곳 중 27곳 정상, 3곳 실패**(`DAESHIN`·`KWANGSHIN`·`MOKWON`).
+  - ⚠️ **원인은 해외 IP 거부다**(진단으로 확정). 이름 해석을 빼고 IP를 직접 줘도 **80·443·8080 전부 TCP 타임아웃**이고, 같은 러너에서 다른 게시판은 200을 준다. 공용 DNS·`http_only`·다른 호스트명·IPv6 모두 막다른 길이었다 → **config로 우회할 수 없다.**
+  - ⚠️ 차단이 러너 IP마다 다르다 — `MOKWON`은 어떤 IP에서는 되고 어떤 IP에서는 안 됐다. 자동화가 기댈 수 없는 성질이다.
+- [x] **3곳 제외** ✅ 2026-08-26 — `enabled: false`(사유·재활성 경로는 `config/sources.json`). 손실은 2개월 51건(월 26건 · 공개의 3.3%)이고 **교단·지역 어디에도 구멍을 내지 않는다**(실측: 어떤 교단도 이 3곳이 유일한 창구가 아니고, 의존도 최대는 대구 27%). 되살리려면 한국 IP가 필요하다 — 그때까지는 로컬 `collect --days N --source KEY`로 메운다(`structure`는 `enabled`를 보지 않는다).
+  - 검토했다가 접은 것: 서울 VPS 프록시(서버가 늘고, 한국 데이터센터 IP가 통할지도 미검증) · Vercel 릴레이(CONNECT 불가 · 응답 4.5MB 한도에 6.7MB 포스터가 걸림 · Hobby는 비상업 한정) · 서버리스 릴레이(무과금이지만 fetch 층에 코드가 들어가고 IP 통과 여부는 여전히 미검증)
+- [x] **cron 켬** ✅ 2026-08-26 (`0 22 * * *` = 07:00 KST)
+- [ ] 첫 자동 실행의 crawl_run·source_health 확인
 
-> **Phase 1 완료 기준**: GitHub Actions가 매일 31곳을 긁어 구조화·중복 판정까지 하고, **확인할 것이 없는 공고는 `jobs`에 공개**되며 나머지는 `PENDING`으로 남는다. 실행은 `crawl_run`·`source_health`로 관측된다.
+> **Phase 1 완료 기준**: GitHub Actions가 매일 활성 게시판(27곳)을 긁어 구조화·중복 판정까지 하고, **확인할 것이 없는 공고는 `jobs`에 공개**되며 나머지는 `PENDING`으로 남는다. 실행은 `crawl_run`·`source_health`로 관측된다.
 
 ## Phase 2: min_job 게재 연동 + 소스 확장 (게이트)
 

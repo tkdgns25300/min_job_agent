@@ -1471,7 +1471,7 @@ def _run_status(*, runs: int) -> int:
         console.heading("현황", note="게시판에 요청하지 않음")
         console.field("저장소", session.label)
         recent = store.recent_runs(runs)
-        health = store.all_health()
+        health = _still_crawled(store.all_health())
         work = store.pending_work()
 
     dead = tuple(run for run in recent if is_dead(run, now=now))
@@ -1539,6 +1539,16 @@ def _duration(elapsed: timedelta) -> str:
     if hours:
         return f"{hours}시간 {minutes}분"
     return f"{minutes}분 {seconds}초" if minutes else f"{seconds}초"
+
+
+def _still_crawled(health: Sequence[SourceHealth]) -> tuple[SourceHealth, ...]:
+    """config에서 뺀 게시판의 상태 기록은 화면에서 뺀다.
+
+    안 그러면 제외한 게시판이 "N일째 새 글 없음"으로 영영 남아 고장처럼 보인다.
+    ⚠️ **등록에 없는 키는 남긴다** — 그건 진짜 이상 신호다(키가 바뀌었거나 config가 어긋났다).
+    """
+    excluded = {source.key for source in load_sources(None) if not source.enabled}
+    return tuple(item for item in health if item.source_key not in excluded)
 
 
 def _print_boards(

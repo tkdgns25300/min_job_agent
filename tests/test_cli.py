@@ -68,6 +68,7 @@ from minjob_ingest.settings import (
     ENV_VERTEX_PROJECT,
     Settings,
 )
+from minjob_ingest.sources.registry import enabled_sources, load_sources
 from minjob_ingest.store.base import StoreError
 from minjob_ingest.store.json_store import JsonStore
 
@@ -115,10 +116,17 @@ def _write_config(tmp_path: Path, *, enabled: bool = True) -> Path:
 
 
 def test_lists_real_config(capsys: pytest.CaptureFixture[str]) -> None:
+    """실제 config가 읽히고, **세는 수가 config와 일치**해야 한다.
+
+    ⚠️ 숫자를 글자로 박지 않는다 — 소스를 하나 빼고 넣을 때마다 깨지는 테스트는 결함이 아니라
+    변경을 잡는다. 여기서 지키는 것은 "비활성을 활성으로 세지 않는가"다.
+    """
+    sources = load_sources(None)
+    active = len(enabled_sources(sources))
+    assert active < len(sources)  # 비활성이 하나도 없으면 위 대조가 아무것도 지키지 못한다
     assert main(["list-sources"]) == 0
     out = capsys.readouterr().out
-    # HANSEI는 2026-08-04에 게시판이 소멸해 비활성이다(config `disabled_reason` 참조).
-    assert "등록 소스 31곳 (활성 30)" in out
+    assert f"등록 소스 {len(sources)}곳 (활성 {active})" in out
     assert "YTUS" in out
 
 
@@ -1548,6 +1556,35 @@ def test_status_keeps_the_failure_list_to_one_screen(
     assert out.count("타임아웃") == cli._STATUS_ERRORS
     assert f"그 밖 {30 - cli._STATUS_ERRORS}곳" in out
     assert "남은 일" in out, "요약이 화면에서 밀려나지 않는다"
+
+
+def test_status_hides_boards_we_no_longer_crawl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """제외한 게시판은 화면에서 뺀다 — 남겨두면 "새 글 없음"으로 영영 떠서 고장처럼 보인다."""
+    store = _status_store(monkeypatch, tmp_path)
+    빠진곳 = next(s.key for s in load_sources(None) if not s.enabled)
+    오래전 = kst_now().date() - timedelta(days=QUIET_DAYS_NOTICE + 10)
+    for key in (빠진곳, "YTUS"):
+        store.upsert_health(_ok_health(key, last_posted_on=오래전))
+
+    main(["status"])
+    out = capsys.readouterr().out
+
+    assert 빠진곳 not in out
+    assert "YTUS" in out, "도는 게시판의 조용함은 그대로 보여야 한다"
+
+
+def test_status_still_shows_a_board_missing_from_the_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """⚠️ 등록에 없는 키는 숨기지 않는다 — 키가 바뀐 것이라 사람이 봐야 한다."""
+    store = _status_store(monkeypatch, tmp_path)
+    오래전 = kst_now().date() - timedelta(days=QUIET_DAYS_NOTICE + 10)
+    store.upsert_health(_ok_health("GONE", last_posted_on=오래전))
+
+    main(["status"])
+    assert "GONE" in capsys.readouterr().out
 
 
 def test_status_says_stopped_not_maybe_for_a_dead_run(
