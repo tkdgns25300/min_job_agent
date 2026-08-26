@@ -29,19 +29,26 @@ jobs:
             done
           done
 
-      - name: TCP·HTTP — 이름이 풀린 곳에 실제로 붙나
+      - name: TCP·HTTP — **IP를 직접 줘서** 붙나 (DNS 문제와 IP 차단을 가른다)
         run: |
-          for h in daeshin.ac.kr www.kwangshin.ac.kr mokwon.ac.kr; do
-            ip=$(dig +short +time=5 +tries=1 @1.1.1.1 "$h" A | tail -1)
-            if [ -z "$ip" ]; then
-              echo "$h  → 공용 리졸버도 못 푼다 (DNS 단계에서 막힘)"
-              continue
-            fi
-            # ⚠️ 이름이 안 풀려도 IP로 직접 붙여 본다 — DNS 문제와 IP 차단을 가르는 핵심.
+          # 한국에서 실측한 주소를 그대로 준다 — 이름이 안 풀리는 것과 붙지 못하는 것은 다르다.
+          probe() {
+            host=$1; ip=$2
             code=$(curl -sS -o /dev/null -w '%{http_code} %{time_total}s' --max-time 20 -k \
-                   --resolve "$h:443:$ip" "https://$h" 2>&1 || echo "연결 실패")
-            echo "$h ($ip)  → $code"
-          done
+                   --resolve "$host:443:$ip" "https://$host" 2>&1 || echo "연결 실패")
+            echo "  $host ($ip) → $code"
+          }
+          probe daeshin.ac.kr 222.103.156.201
+          probe www.kwangshin.ac.kr 123.140.92.18
+          probe mokwon.ac.kr 203.230.137.118
+          echo "── 포트만 열려 있나 (TCP 443)"
+          port_open() {
+            timeout 12 bash -c "cat < /dev/null > /dev/tcp/$1/443" 2>/dev/null \
+              && echo "  $2 ($1) → TCP 443 열림" || echo "  $2 ($1) → TCP 443 막힘/무응답"
+          }
+          port_open 222.103.156.201 daeshin
+          port_open 123.140.92.18 kwangshin
+          port_open 203.230.137.118 mokwon
 
       - name: 대조 — 잘 되는 게시판도 같은 방식으로
         run: |
