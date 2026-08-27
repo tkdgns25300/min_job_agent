@@ -407,11 +407,21 @@ def _judge_one_seat(
             # 주소를 못 견줬다 — 지금까지처럼 사람이 정한다(운영자 결정 2026-08-19).
             return _hold_for_review(seat, number, members)
         if not verdict:
-            # 주소가 다르다 = **애초에 다른 교회다**. 각자 제 자리로 둔다.
-            return _split(key, members)
+            # 주소가 다르다 = **여러 교회가 한 자리로 묶였다.** 주소로 나눠 각각 판정한다.
+            return _split_by_place(seat, number, key, members)
+    return _settle(seat, number, key, members)
+
+
+def _settle(seat: Seat, number: int, key: str, members: Sequence[_Member]) -> list[DedupUpdate]:
+    """한 자리로 확정된 무리를 판정한다 — 혼자면 `ALONE`, 아니면 대표를 뽑아 병합.
+
+    ⚠️ 사람이 이미 본 자리가 둘 이상이면 정리도 사람이 한다 — 어느 쪽을 내릴지 우리가 고를 수
+    없고(둘 다 승인·게재됐을 수 있다) 판정을 쓸 권한도 없다.
+    """
+    if len(members) == 1:
+        one = _restore(members[0], key, DedupState.ALONE)
+        return [] if one is None else [one]
     if _owned(members) > 1:
-        # ⚠️ 사람이 이미 본 자리가 둘 이상이면 정리도 사람이 한다 — 어느 쪽을 내릴지 우리가
-        #    고를 수 없고(둘 다 승인·게재됐을 수 있다) 판정을 쓸 권한도 없다.
         return _hold_for_review(seat, number, members)
     return _merge(members, key)
 
@@ -449,17 +459,50 @@ def _merge(members: Sequence[_Member], key: str) -> list[DedupUpdate]:
     return [update for update in planned if update is not None]
 
 
-def _split(key: str, members: Sequence[_Member]) -> list[DedupUpdate]:
-    """같은 자리가 아니었다 — **각자 혼자**로 되돌린다.
+def _split_by_place(
+    seat: Seat, number: int, key: str, members: Sequence[_Member]
+) -> list[DedupUpdate]:
+    """여러 교회가 한 자리로 묶였다 — **주소로 나눠 각각 판정**한다.
 
-    ⚠️ 키는 부르는 쪽이 이미 만든 것을 그대로 쓴다(§4.2가 이 키로 앵커를 찾는다). 상태만
-    `ALONE`이라 둘 다 살아남는다.
+    ⚠️⚠️ **나눈 뒤에도 무리 안에서는 병합해야 한다.** 전부 `ALONE`으로 흩으면 같은 교회가
+    올린 재게시가 **각각 공개된다** — 실측 2026-08-27: `함께하는교회`가 성남 3건(주소·메일
+    완전 동일)과 의정부 1건으로 묶여 있었는데, 흩는 순간 성남 3건이 전부 승인됐다. 중복을
+    막으려고 만든 판정이 중복을 만드는 셈이다.
 
-    ⚠️ **셋 이상이면 하나만 어긋나도 전부 갈라 둔다** — 맞는 둘만 골라 합치지 않는다. 중복이
-    남는 것보다 다른 교회를 합치는 것이 훨씬 나쁘다(자물쇠가 비면 병합하지 않는 것과 같은 판단).
+    ⚠️ 주소를 모르는 멤버(앵커)는 어느 무리인지 알 수 없어 **사람이 본다.**
+    ⚠️ 키는 무리마다 같다 — 자물쇠(교회명·지역·직분)가 같으니 당연하고, §4.2의 앵커 조회도
+    그 자물쇠로 한다. 주소는 이 판정 안에서만 쓰는 값이다.
     """
-    planned = [_restore(member, key, DedupState.ALONE) for member in members]
-    return [update for update in planned if update is not None]
+    무리, 모름 = _grouped_by_place(members)
+    updates = [update for group in 무리 for update in _settle(seat, number, key, group)]
+    if 모름:
+        updates.extend(_hold_for_review(seat, number, 모름))
+    return updates
+
+
+def _grouped_by_place(
+    members: Sequence[_Member],
+) -> tuple[list[list[_Member]], list[_Member]]:
+    """주소가 같은 것끼리 묶는다. 주소를 모르는 멤버는 따로 돌려준다.
+
+    ⚠️ 먼저 온 무리에 붙인다 — `_fits`는 이행적이지 않아서(A⊂B, B⊂C인데 A⊄C) 무리가
+    순서에 따라 갈릴 수 있다. 후보 순서가 고정돼 있으므로(`identity`) 결과는 멱등하다.
+    """
+    무리: list[list[_Member]] = []
+    모름: list[_Member] = []
+    for member in members:
+        if not all(member.place):
+            모름.append(member)
+            continue
+        같은곳 = next(
+            (group for group in 무리 if _same_place([group[0], member])),
+            None,
+        )
+        if 같은곳 is None:
+            무리.append([member])
+        else:
+            같은곳.append(member)
+    return 무리, 모름
 
 
 def _hold_for_review(seat: Seat, number: int, members: Sequence[_Member]) -> list[DedupUpdate]:

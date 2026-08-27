@@ -494,10 +494,12 @@ def test_an_administrative_prefix_or_suffix_is_the_same_address(left: str, right
     assert sorted(_states(updates), key=str) == [DedupState.DUPLICATE, DedupState.MASTER]
 
 
-def test_one_odd_address_among_three_splits_them_all() -> None:
-    """⚠️ 맞는 둘만 골라 합치지 않는다 — **중복이 남는 것보다 다른 교회를 합치는 것이 나쁘다**.
+def test_the_odd_one_leaves_and_the_rest_still_merge() -> None:
+    """⚠️⚠️ **나눈 뒤에도 무리 안에서는 병합한다.**
 
-    자물쇠가 비면 병합하지 않는 것과 같은 판단이다(SPEC §4.1).
+    실측 2026-08-27: `함께하는교회`가 성남 3건(주소·메일 완전 동일)과 의정부 1건으로 한 자리에
+    묶여 있었는데, 어긋난다고 전부 흩었더니 **성남 3건이 각각 승인돼 중복 공개**가 됐다.
+    중복을 막으려고 만든 판정이 중복을 만든 셈이라 곧바로 고쳤다.
     """
     updates = plan(
         [
@@ -507,7 +509,30 @@ def test_one_odd_address_among_three_splits_them_all() -> None:
         ]
     )
 
-    assert _states(updates) == [DedupState.ALONE] * 3
+    from collections import Counter
+
+    assert Counter(str(s.value) for s in _states(updates)) == Counter(
+        {"MASTER": 1, "DUPLICATE": 1, "ALONE": 1}
+    ), "같은 주소 둘은 합치고, 다른 주소 하나만 떨어져 나온다"
+
+
+def test_a_member_without_an_address_is_not_dropped_when_the_rest_split() -> None:
+    """⚠️ 주소를 모르는 초안을 **버리면 그 공고가 조용히 사라진다** — 어느 교회인지 모를 뿐이다.
+
+    나뉜 무리 어디에도 넣을 수 없으니 사람이 본다.
+    """
+    updates = plan(
+        [
+            _candidate(contact_email="a@example.kr", city="강서구", address="강서로 412"),
+            _candidate(contact_email="b@example.kr", city="금천구", address="금하로 793"),
+            _candidate(contact_email="c@example.kr"),
+        ]
+    )
+
+    assert len(updates) == 3, "주소를 모르는 것도 판정을 받는다"
+    from collections import Counter
+
+    assert Counter(str(s.value) for s in _states(updates)) == Counter({"ALONE": 2, "UNCERTAIN": 1})
 
 
 def test_an_anchor_without_an_address_does_not_kill_the_rule() -> None:
