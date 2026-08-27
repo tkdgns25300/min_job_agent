@@ -658,8 +658,8 @@ def _same_place(members: Sequence[_Member]) -> bool | None:
     실측 2026-08-26: 영광교회·신광교회가 정확히 그 모양이라, 규칙을 넣고도 둘 다 `UNCERTAIN`에
     그대로 남았다(그 둘을 가르려고 만든 규칙인데).
 
-    ⚠️ 아는 것 중 하나라도 어긋나면 **전부** 갈라 둔다(`_split`) — 모르는 쪽이 어디에 속하는지
-    알 수 없으므로, 맞는 것끼리만 합치면 다른 교회를 합칠 위험이 남는다.
+    ⚠️ 여기서는 **"전부 같은가"만** 답한다. 어긋났을 때 어떻게 나눌지는 `_split_by_place`가
+    정한다 — 흩어 놓지 않고 주소로 묶어 각각 판정한다(그 함수의 ⚠️⚠️ 참조).
     """
     places = [member.place for member in members if all(member.place)]
     if len(places) < _PLACES_TO_JUDGE:
