@@ -73,6 +73,10 @@ _NO_HERESY: Final = HeresyRef.of(())
 _NOW: Final = datetime(2026, 8, 10, 9, 0, tzinfo=KST)
 
 
+#: 테스트 헬퍼의 `today` 기본값. 마감 판정에 걸리지 않을 만큼 먼 날.
+_FAR_FUTURE: Final = date(2099, 1, 1)
+
+
 def build_draft(
     record: SourceData,
     extraction: Extraction,
@@ -80,15 +84,24 @@ def build_draft(
     heresy: HeresyMatch | None = None,
     media_sent: bool = False,
     media_missed: bool = False,
+    today: date = _FAR_FUTURE,
 ) -> ReviewData:
-    """그림 신호를 채워 부르는 테스트용 얇은 껍데기.
+    """그림 신호와 오늘을 채워 부르는 테스트용 얇은 껍데기.
 
-    운영 시그니처에서는 두 값이 **필수**다 — 빠뜨린 쪽이 자동 승인이라 기본값을 두지 않았다.
-    여기서만 기본값을 준다: 대부분의 검사는 그림과 무관하고, 매 호출에 두 줄을 붙이면
+    운영 시그니처에서는 셋 다 **필수**다 — 빠뜨린 쪽이 자동 승인이라 기본값을 두지 않았다.
+    여기서만 기본값을 준다: 대부분의 검사는 그림·마감과 무관하고, 매 호출에 세 줄을 붙이면
     정작 무엇을 검사하는지가 묻힌다.
+
+    ⚠️ `today`의 기본값은 **먼 미래**다. 오늘로 두면 마감일이 있는 fixture가 시간이 지나면서
+    저절로 거절되어, 어느 날 갑자기 관계없는 테스트가 깨진다.
     """
     return _build_draft(
-        record, extraction, heresy=heresy, media_sent=media_sent, media_missed=media_missed
+        record,
+        extraction,
+        heresy=heresy,
+        media_sent=media_sent,
+        media_missed=media_missed,
+        today=today,
     )
 
 
@@ -1088,6 +1101,39 @@ def test_a_closed_posting_is_rejected_on_creation(store: JsonStore, data_dir: Pa
     draft = _drafts(data_dir)[0]
     assert draft.review_status is ReviewStatus.REJECTED
     assert draft.reject_reason is RejectReason.CLOSED
+
+
+@pytest.mark.parametrize(
+    ("deadline", "rejected"),
+    [
+        (date(2026, 8, 25), True),
+        (date(2026, 8, 26), False),
+        (date(2026, 9, 10), False),
+        (None, False),
+    ],
+    ids=["어제 마감", "오늘 마감", "미래", "마감일 없음"],
+)
+def test_a_deadline_already_past_closes_the_posting(deadline: date | None, rejected: bool) -> None:
+    """⚠️ 실측(2026-08-26): 검수 큐 248건 중 36건이 마감 지난 공고였고 **35건은 긁는 시점에
+    이미 지나 있었다**(평균 52일). 사람이 봐도 결론이 하나인데 큐에 남아 시야를 가린다.
+
+    ⚠️ **오늘은 아직 유효하다** — 마감 당일 지원자가 있고, min_job의 노출 판정도
+    `deadline >= today`라 여기서 하루 먼저 닫으면 둘이 어긋난다.
+    """
+    draft = build_draft(
+        _source_data(),
+        Extraction(
+            is_church_recruitment=IsChurchRecruitment.YES,
+            job_kind=(JobKind.MINISTRY,),
+            position=(Position.EVANGELIST,),
+            description="부교역자를 청빙합니다.",
+            deadline=deadline,
+        ),
+        today=date(2026, 8, 26),
+    )
+
+    assert (draft.reject_reason is RejectReason.CLOSED) is rejected
+    assert (draft.review_status is ReviewStatus.REJECTED) is rejected
 
 
 def test_a_body_that_merely_mentions_completion_is_not_closed(

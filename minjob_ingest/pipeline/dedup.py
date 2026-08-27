@@ -98,6 +98,12 @@ _ROLE_PREFIX: Final = "ROLE:"
 #: (실측 `apply@x.org, office@x.org`). 그래서 조각으로 쪼개 **겹치는지**를 본다.
 _MAIL_TOKEN: Final = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
+#: 주소 판정에 필요한 **아는 주소**의 최소 개수. 하나로는 견줄 상대가 없다.
+_PLACES_TO_JUDGE: Final = 2
+
+#: 주소를 견줄 때 지우는 것 — 공백·구두점. 게시판마다 띄어쓰기가 다르다.
+_PLACE_NOISE: Final = re.compile(r"[\s,.()\[\]-]+")
+
 #: 이 이유로 거절된 행은 판정에서 뺀다 — 이미 결론이 난 행이다.
 #: ⚠️ `DUPLICATE`는 여기 **없다**: 지난 실행이 내린 우리 판정이라 매번 처음부터 다시 본다.
 #: 그래야 규칙을 고쳐 다시 돌렸을 때 잘못 거절한 행이 되살아난다(멱등 + 자기 수정).
@@ -134,6 +140,9 @@ class _Member:
     department: Department | None
     #: 접수 이메일 조각. 자리를 가르는 유일한 연락처다(SPEC §4.1 4단계).
     mailboxes: frozenset[str]
+    #: 교회가 어디인가 — (도시, 주소)를 견줄 꼴로. **메일함이 갈렸을 때만** 쓴다(§4.1 4단계).
+    #: 앵커(`jobs`)는 주소를 읽지 않아 비어 있고, 그때는 판정하지 않는다.
+    place: tuple[str, str]
     #: 크롤러가 판정을 덮어선 안 되는 자리인가 — **대표 순위 1번**.
     #: 초안은 `ReviewData.is_operator_owned`, **앵커는 항상 True**(이미 공개돼 있다).
     is_owned: bool
@@ -151,6 +160,7 @@ def _member_of(candidate: DedupCandidate) -> _Member:
         posted_on=candidate.posted_on,
         department=draft.department,
         mailboxes=_tokens(draft.contact_email, _MAIL_TOKEN),
+        place=_place(draft.city, draft.address),
         is_owned=draft.is_operator_owned,
         completeness=_completeness(draft),
         identity=str(draft.id),
@@ -164,6 +174,7 @@ def _member_of_anchor(anchor: JobAnchor) -> _Member:
         posted_on=anchor.posted_at,
         department=anchor.department,
         mailboxes=_tokens(anchor.contact_email, _MAIL_TOKEN),
+        place=("", ""),  # `jobs`에서 주소를 읽지 않는다(§8: 앵커로만 본다)
         is_owned=True,
         completeness=0,
         identity=str(anchor.job_id),
@@ -389,10 +400,15 @@ def _judge_one_seat(
         alone = _restore(members[0], key, DedupState.ALONE)
         return [] if alone is None else [alone]
     if _mailboxes_differ(members):
-        # ⚠️ 접수 메일함이 다르면 **다른 자리일 수 있다** — 그런데 확정할 수는 없다(한 담당자가
-        #    메일을 바꿔 올렸을 수도 있다). 자동으로 가르면 중복이 남고 자동으로 합치면 자리가
-        #    사라지므로 **사람이 정한다**(운영자 결정 2026-08-19).
-        return _hold_for_review(seat, number, members)
+        # ⚠️ 접수 메일함이 다르면 **다른 자리일 수 있다** — 그런데 메일만으로는 확정할 수 없다
+        #    (한 담당자가 메일을 바꿔 올렸을 수도 있다). 그때 **주소가 답을 준다**.
+        verdict = _same_place(members)
+        if verdict is None:
+            # 주소를 못 견줬다 — 지금까지처럼 사람이 정한다(운영자 결정 2026-08-19).
+            return _hold_for_review(seat, number, members)
+        if not verdict:
+            # 주소가 다르다 = **애초에 다른 교회다**. 각자 제 자리로 둔다.
+            return _split(key, members)
     if _owned(members) > 1:
         # ⚠️ 사람이 이미 본 자리가 둘 이상이면 정리도 사람이 한다 — 어느 쪽을 내릴지 우리가
         #    고를 수 없고(둘 다 승인·게재됐을 수 있다) 판정을 쓸 권한도 없다.
@@ -430,6 +446,19 @@ def _merge(members: Sequence[_Member], key: str) -> list[DedupUpdate]:
         for member in members
         if member is not master
     )
+    return [update for update in planned if update is not None]
+
+
+def _split(key: str, members: Sequence[_Member]) -> list[DedupUpdate]:
+    """같은 자리가 아니었다 — **각자 혼자**로 되돌린다.
+
+    ⚠️ 키는 부르는 쪽이 이미 만든 것을 그대로 쓴다(§4.2가 이 키로 앵커를 찾는다). 상태만
+    `ALONE`이라 둘 다 살아남는다.
+
+    ⚠️ **셋 이상이면 하나만 어긋나도 전부 갈라 둔다** — 맞는 둘만 골라 합치지 않는다. 중복이
+    남는 것보다 다른 교회를 합치는 것이 훨씬 나쁘다(자물쇠가 비면 병합하지 않는 것과 같은 판단).
+    """
+    planned = [_restore(member, key, DedupState.ALONE) for member in members]
     return [update for update in planned if update is not None]
 
 
@@ -555,6 +584,64 @@ def _completeness(draft: ReviewData) -> int:
     """채워진 칸 수. 어느 칸을 셀지 손으로 적지 않는다 — 칸이 늘면 자동으로 따라온다."""
     return sum(
         1 for info in fields(draft) if info.name not in _NOT_CONTENT and getattr(draft, info.name)
+    )
+
+
+def _place(city: str | None, address: str | None) -> tuple[str, str]:
+    """(도시, 주소)를 견줄 꼴로. 한쪽이라도 비면 그 자리는 빈 문자열이다.
+
+    ⚠️ **붙이지 않고 따로 둔다.** 이어 붙이면 단위 차이가 **문자열 중간**에 들어가 부분 포함이
+    깨진다(`고성군|중앙로…` vs `고성군|고성읍|중앙로…` — 실측).
+    ⚠️ 공백·기호를 지운다 — `자양로45길 62`와 `자양로 45길62`는 같은 곳이다.
+    """
+    return (_PLACE_NOISE.sub("", city or ""), _PLACE_NOISE.sub("", address or ""))
+
+
+def _same_place(members: Sequence[_Member]) -> bool | None:
+    """주소가 같은 교회인가. **못 견주면 `None`**(한 곳이라도 주소가 비었다).
+
+    ⚠️ **메일함이 갈렸을 때만 부른다.** 자물쇠(교회명·지역·직분)는 지역을 **광역**까지만 보므로
+    같은 광역 안의 동명이교회를 못 가른다 — 실측 2026-08-26: `신광교회`가 관악구와 중구에,
+    `영광교회`가 강서구와 금천구에 각각 있었고 둘 다 검수 큐에서만 드러났다.
+
+    ⚠️ **"같다"를 근거로 합치는 데도 쓴다** — 같은 교회가 담당자를 바꿔 올리면 메일이 갈리는데
+    (실측 101건 중 87건), 주소가 하나면 그건 같은 자리다.
+
+    ⚠️ **한쪽이 다른 쪽의 부분이면 같은 곳이다** — 게시판마다 적는 단위가 다르다
+    (`청주시 오송읍 연제길 26` vs `연제길 26` · `고성군` vs `고성군 고성읍`).
+
+    ⚠️⚠️ **주소를 아는 것끼리만 견준다.** 앵커(`jobs`)는 주소를 읽지 않아 늘 비어 있는데,
+    전원이 알아야 판정한다고 하면 **이미 공개된 자리가 낀 묶음에서 규칙이 통째로 죽는다** —
+    실측 2026-08-26: 영광교회·신광교회가 정확히 그 모양이라, 규칙을 넣고도 둘 다 `UNCERTAIN`에
+    그대로 남았다(그 둘을 가르려고 만든 규칙인데).
+
+    ⚠️ 아는 것 중 하나라도 어긋나면 **전부** 갈라 둔다(`_split`) — 모르는 쪽이 어디에 속하는지
+    알 수 없으므로, 맞는 것끼리만 합치면 다른 교회를 합칠 위험이 남는다.
+    """
+    places = [member.place for member in members if all(member.place)]
+    if len(places) < _PLACES_TO_JUDGE:
+        return None  # 견줄 주소가 둘도 안 된다 — 판정하지 않는다
+    return all(
+        _fits(left_city, right_city) and _fits(left_road, right_road)
+        for (left_city, left_road), (right_city, right_road) in combinations(places, 2)
+    )
+
+
+def _fits(left: str, right: str) -> bool:
+    """한쪽이 다른 쪽의 부분이면 같은 것으로 본다 — **숫자를 자르지 않을 때만**.
+
+    실측(2026-08-26 · 같은 자리 안의 주소 쌍 26개 중 21개): 표기 차이는 거의 다 읍·면·동이
+    붙고 빠지는 것이다(`향교길29` ⊂ `의성읍향교길29` · `지정로125` ⊂ `지정로125지축동911`).
+
+    ⚠️ **그런데 그냥 부분 포함으로 두면 번지가 잘려도 통과한다** — `강서로41`이 `강서로412`의
+    부분이라 **다른 주소 두 곳이 한 자리로 합쳐진다**. 잘린 자리의 글자가 숫자면 거절한다.
+    """
+    short, long = sorted((left, right), key=len)
+    at = long.find(short)
+    if at < 0:
+        return False
+    return not (
+        long[at - 1 : at].isdigit() or long[at + len(short) : at + len(short) + 1].isdigit()
     )
 
 

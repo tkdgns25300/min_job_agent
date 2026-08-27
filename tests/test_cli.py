@@ -10,7 +10,7 @@ import signal
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Final, Protocol
 
 import pytest
 
@@ -77,6 +77,10 @@ from minjob_ingest.store.json_store import JsonStore
 _FAKE_HERESY = HeresyRef.of((HeresyEntry("아무개", ("○○교회",), ("합신",)),))
 
 
+#: 테스트 헬퍼의 `today` 기본값. 마감 판정에 걸리지 않을 만큼 먼 날.
+_FAR_FUTURE: Final = date(2099, 1, 1)
+
+
 def build_draft(
     record: SourceData,
     extraction: Extraction,
@@ -84,15 +88,24 @@ def build_draft(
     heresy: HeresyMatch | None = None,
     media_sent: bool = False,
     media_missed: bool = False,
+    today: date = _FAR_FUTURE,
 ) -> ReviewData:
-    """그림 신호를 채워 부르는 테스트용 얇은 껍데기.
+    """그림 신호와 오늘을 채워 부르는 테스트용 얇은 껍데기.
 
-    운영 시그니처에서는 두 값이 **필수**다 — 빠뜨린 쪽이 자동 승인이라 기본값을 두지 않았다.
-    여기서만 기본값을 준다: 대부분의 검사는 그림과 무관하고, 매 호출에 두 줄을 붙이면
+    운영 시그니처에서는 셋 다 **필수**다 — 빠뜨린 쪽이 자동 승인이라 기본값을 두지 않았다.
+    여기서만 기본값을 준다: 대부분의 검사는 그림·마감과 무관하고, 매 호출에 세 줄을 붙이면
     정작 무엇을 검사하는지가 묻힌다.
+
+    ⚠️ `today`의 기본값은 **먼 미래**다. 오늘로 두면 마감일이 있는 fixture가 시간이 지나면서
+    저절로 거절되어, 어느 날 갑자기 관계없는 테스트가 깨진다.
     """
     return _build_draft(
-        record, extraction, heresy=heresy, media_sent=media_sent, media_missed=media_missed
+        record,
+        extraction,
+        heresy=heresy,
+        media_sent=media_sent,
+        media_missed=media_missed,
+        today=today,
     )
 
 

@@ -360,6 +360,205 @@ def test_an_uncertain_group_can_be_found_by_the_shared_prefix() -> None:
 # ── 연락처 ────────────────────────────────────────────────────────
 
 
+def test_a_different_address_means_a_different_church() -> None:
+    """⚠️ 실측 2026-08-26: **같은 광역 안의 동명이교회**를 자물쇠가 못 가른다.
+
+    `영광교회`가 강서구와 금천구에, `신광교회`가 관악구와 중구에 각각 있었다. 자물쇠는 지역을
+    **광역(SEOUL)** 까지만 보므로 둘이 한 자리로 묶였고, 메일이 갈려 검수로 갔다 — 사람이 안
+    보면 **한쪽 교회의 공고가 영영 묻힌다.** 주소가 다르면 애초에 다른 교회다.
+    """
+    updates = plan(
+        [
+            _candidate(contact_email="hji2027@naver.com", city="강서구", address="강서로 412"),
+            _candidate(contact_email="vogus2640@naver.com", city="금천구", address="금하로 793"),
+        ]
+    )
+
+    assert _states(updates) == [DedupState.ALONE, DedupState.ALONE], "둘 다 제 자리로 남는다"
+    assert all(u.verdict is None or u.verdict.reject_reason is None for u in updates), (
+        "어느 쪽도 거절되지 않는다"
+    )
+
+
+def test_the_same_address_settles_a_mailbox_that_changed_hands() -> None:
+    """⚠️ 실측 2026-08-26: 검수 큐의 `UNCERTAIN` 101건 중 **87건이 주소가 하나**였다.
+
+    같은 교회가 담당자를 바꿔 올리면 메일이 갈리는데, 그때 주소가 "같은 자리"라고 답한다.
+    """
+    updates = plan(
+        [
+            _candidate(contact_email="acts0928@naver.com", city="진천군", address="진광로 100"),
+            _candidate(contact_email="ysilj@naver.com", city="진천군", address="진광로 100"),
+        ]
+    )
+
+    assert sorted(_states(updates), key=str) == [DedupState.DUPLICATE, DedupState.MASTER]
+
+
+def test_an_address_written_at_another_scale_is_the_same_place() -> None:
+    """⚠️ 게시판마다 적는 단위가 다르다 — `고성군` vs `고성군 고성읍`(실측).
+
+    한쪽이 다른 쪽의 부분이면 같은 곳으로 본다. 아니면 표기 차이로 한 자리가 갈라진다.
+    """
+    updates = plan(
+        [
+            _candidate(contact_email="a@example.kr", city="고성군", address="중앙로 25번길 12"),
+            _candidate(
+                contact_email="b@example.kr", city="고성군 고성읍", address="중앙로25번길 12"
+            ),
+        ]
+    )
+
+    assert sorted(_states(updates), key=str) == [DedupState.DUPLICATE, DedupState.MASTER]
+
+
+def test_the_same_road_in_a_different_city_is_a_different_church() -> None:
+    """⚠️ 도시와 주소를 **둘 다** 본다 — 길 이름만 견주면 다른 도시의 같은 길이 합쳐진다.
+
+    `중앙로`·`대학로`처럼 흔한 길 이름은 도시마다 있다.
+    """
+    updates = plan(
+        [
+            _candidate(contact_email="a@example.kr", city="진천군", address="중앙로 100"),
+            _candidate(contact_email="b@example.kr", city="음성군", address="중앙로 100"),
+        ]
+    )
+
+    assert _states(updates) == [DedupState.ALONE, DedupState.ALONE]
+
+
+def test_a_different_road_in_the_same_city_is_a_different_church() -> None:
+    """⚠️ 반대쪽도 본다 — 도시만 견주면 같은 구의 다른 교회가 합쳐진다.
+
+    실측 `영광교회`가 그랬다면 강서구 두 곳이 한 자리가 됐을 것이다.
+    """
+    updates = plan(
+        [
+            _candidate(contact_email="a@example.kr", city="강서구", address="강서로 412"),
+            _candidate(contact_email="b@example.kr", city="강서구", address="화곡로 55"),
+        ]
+    )
+
+    assert _states(updates) == [DedupState.ALONE, DedupState.ALONE]
+
+
+def test_a_house_number_cut_in_half_is_not_the_same_address() -> None:
+    """⚠️ **부분 포함만으로는 부족하다** — `강서로 41`이 `강서로 412`의 부분이라 다른 두 곳이
+    합쳐진다. 잘린 자리가 숫자면 다른 주소다.
+
+    검수 중에 코드를 다시 읽다 잡았다 — 실측에는 아직 없었지만 번지는 한 자리씩 흔한 값이다.
+    """
+    updates = plan(
+        [
+            _candidate(contact_email="a@example.kr", city="강서구", address="강서로 41"),
+            _candidate(contact_email="b@example.kr", city="강서구", address="강서로 412"),
+        ]
+    )
+
+    assert _states(updates) == [DedupState.ALONE, DedupState.ALONE]
+
+
+def test_a_house_number_cut_at_its_front_is_not_the_same_address() -> None:
+    """⚠️ 잘리는 자리는 **앞뒤 둘 다** 본다 — `5번길 12`가 `25번길 12`의 부분이다."""
+    updates = plan(
+        [
+            _candidate(contact_email="a@example.kr", city="고성군", address="5번길 12"),
+            _candidate(contact_email="b@example.kr", city="고성군", address="25번길 12"),
+        ]
+    )
+
+    assert _states(updates) == [DedupState.ALONE, DedupState.ALONE]
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("향교길 29", "의성읍 향교길 29"),
+        ("지정로 125", "지정로 125 지축동 911"),
+        ("상신로 31", "상신로 31번길"),
+    ],
+    ids=["앞에 읍", "뒤에 동", "번길이 더 붙음"],
+)
+def test_an_administrative_prefix_or_suffix_is_the_same_address(left: str, right: str) -> None:
+    """⚠️ 실측(같은 자리 안의 주소 쌍 26개 중 21개): 표기 차이는 거의 다 읍·면·동이다.
+
+    그래서 부분 포함을 버릴 수는 없다 — 숫자만 지키면 된다.
+    """
+    updates = plan(
+        [
+            _candidate(contact_email="a@example.kr", city="의성군", address=left),
+            _candidate(contact_email="b@example.kr", city="의성군", address=right),
+        ]
+    )
+
+    assert sorted(_states(updates), key=str) == [DedupState.DUPLICATE, DedupState.MASTER]
+
+
+def test_one_odd_address_among_three_splits_them_all() -> None:
+    """⚠️ 맞는 둘만 골라 합치지 않는다 — **중복이 남는 것보다 다른 교회를 합치는 것이 나쁘다**.
+
+    자물쇠가 비면 병합하지 않는 것과 같은 판단이다(SPEC §4.1).
+    """
+    updates = plan(
+        [
+            _candidate(contact_email="a@example.kr", city="강서구", address="강서로 412"),
+            _candidate(contact_email="b@example.kr", city="강서구", address="강서로 412"),
+            _candidate(contact_email="c@example.kr", city="금천구", address="금하로 793"),
+        ]
+    )
+
+    assert _states(updates) == [DedupState.ALONE] * 3
+
+
+def test_an_anchor_without_an_address_does_not_kill_the_rule() -> None:
+    """⚠️⚠️ **검수에서 잡은 결함이다.** 앵커(`jobs`)는 주소를 읽지 않아 늘 비어 있는데,
+    전원이 주소를 알아야 판정한다고 두면 **이미 공개된 자리가 낀 묶음에서 규칙이 죽는다**.
+
+    실측 2026-08-26: 영광교회·신광교회가 정확히 그 모양이었고, 규칙을 넣고도 둘 다
+    `UNCERTAIN`에 남아 있었다 — 그 둘을 가르려고 만든 규칙인데 정작 안 먹었다.
+    """
+    updates = plan(
+        [
+            _candidate(contact_email="a@example.kr", city="강서구", address="강서로 412"),
+            _candidate(contact_email="b@example.kr", city="금천구", address="금하로 793"),
+        ],
+        anchors=[_anchor(contact_email="c@example.kr")],
+    )
+
+    assert _states(updates) == [DedupState.ALONE, DedupState.ALONE]
+
+
+def test_an_address_only_one_side_wrote_still_goes_to_a_person() -> None:
+    """⚠️ 견줄 수 없으면 판정하지 않는다 — 지금까지처럼 사람이 본다.
+
+    앵커(`jobs`)는 주소를 아예 읽지 않으므로 이 길로 온다(§8: `jobs`는 앵커로만 본다).
+    """
+    updates = plan(
+        [
+            _candidate(contact_email="a@example.kr", city="강서구", address="강서로 412"),
+            _candidate(contact_email="b@example.kr"),
+        ]
+    )
+
+    assert _states(updates) == [DedupState.UNCERTAIN, DedupState.UNCERTAIN]
+
+
+def test_the_address_is_not_consulted_when_mailboxes_agree() -> None:
+    """⚠️ 주소는 **메일이 갈렸을 때만** 본다.
+
+    메일이 같으면 자물쇠가 이미 같은 교회라고 말한 것이라, 주소 표기가 흔들려도 합친다
+    (SPEC §4.1: 전화·링크·우편을 어느 방향으로도 쓰지 않는 것과 같은 이유).
+    """
+    updates = plan(
+        [
+            _candidate(contact_email="same@example.kr", address="강서로 412"),
+            _candidate(contact_email="same@example.kr", address="금하로 793"),
+        ]
+    )
+
+    assert sorted(_states(updates), key=str) == [DedupState.DUPLICATE, DedupState.MASTER]
+
+
 def test_two_different_mailboxes_go_to_a_person() -> None:
     """⚠️ 실측 `광림교회`: 한 게시판에 같은 날 두 건이 올라왔는데 청장년부와 교회학교였고
     **접수 이메일이 달랐다**(`klmchwang93` / `yoon4970`). 부서가 둘 다 비어 있어 3단계는 못 잡는다.

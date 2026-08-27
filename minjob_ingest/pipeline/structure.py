@@ -32,9 +32,11 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from datetime import date
 from enum import StrEnum
 from typing import Final, Protocol, assert_never
 
+from minjob_ingest.clock import today_kst
 from minjob_ingest.domain import (
     Confidence,
     IsChurchRecruitment,
@@ -454,6 +456,7 @@ def build_draft(
     media_sent: bool,
     media_missed: bool,
     poster_paths: tuple[str, ...] = (),
+    today: date,
 ) -> ReviewData:
     """검수 초안 조립.
 
@@ -487,9 +490,14 @@ def build_draft(
     #    `jobs.status` 기본값이 `OPEN`이라 **이미 채워진 자리가 공개된다**(실측 110건).
     #    레코드와 근거는 남으므로 오판을 되짚을 수 있다.
     #
-    # ⚠️ **모델에게 묻지 않는다** — 게시판 상태 필드와 제목의 `청빙완료`·`마감` 표시를 보는
-    #    일이라 글자만 보면 되고, 유료 호출과 실행별 흔들림 없이 코드가 판정한다.
-    closed = closed_by_board(record.title, record.raw_meta)
+    # ⚠️ **마감 '여부'는 모델에게 묻지 않는다** — 게시판 상태 필드와 제목의 `청빙완료`·`마감`
+    #    표시를 보는 일이라 글자만 보면 되고, 유료 호출과 실행별 흔들림 없이 코드가 판정한다.
+    # ⚠️ **마감 '날짜'는 다르다** — 긴 본문에서 어느 날짜가 마감인지 고르는 것은 맥락이 필요해
+    #    모델이 하고(원문 표기 그대로), 날짜로 바꾸는 것만 코드가 한다. 그 날짜가 이미 지났으면
+    #    게시판이 표시를 안 붙였어도 끝난 공고다(§5.4b).
+    closed = closed_by_board(record.title, record.raw_meta) or _deadline_passed(
+        extraction.deadline, today=today
+    )
     # ⚠️ **이단이 마감보다 우선한다.** `reject_reason`은 한 칸뿐인데, 마감은 그 공고에 관한
     #    사실이고 이단은 그 교회에 관한 사실이라 뒤에 올 공고에도 그대로 적용된다.
     reject_reason = _reject_reason(heresy, closed)
@@ -563,6 +571,19 @@ def build_draft(
         confidence=confidence,
         review_status=review_status_for(confidence, reject_reason),
     )
+
+
+def _deadline_passed(deadline: date | None, *, today: date) -> bool:
+    """마감일이 이미 지났나 — **긁을 때 이미 죽어 있던 공고**를 거절한다.
+
+    ⚠️ 실측(2026-08-26): 검수 큐 248건 중 36건이 마감 지난 공고였고, 그중 **35건은 우리가
+    긁는 시점에 이미 지나 있었다**(평균 52일). 사람이 봐도 결론이 하나인데 큐에 영원히 남아
+    진짜 봐야 할 것을 가린다.
+
+    ⚠️ **오늘은 아직 유효하다**(`<` 이지 `<=` 가 아니다). 마감 당일에 지원하는 사람이 있고,
+    min_job의 노출 판정도 `deadline >= today`다 — 여기서 하루 먼저 닫으면 그 둘이 어긋난다.
+    """
+    return deadline is not None and deadline < today
 
 
 def _reject_reason(heresy: HeresyMatch | None, closed: bool) -> RejectReason | None:
@@ -685,6 +706,7 @@ def _judge(
             media_sent=bool(gathered.items),
             media_missed=note is not None,
             poster_paths=poster_paths,
+            today=today_kst(),
         )
     except ValueError as err:
         # 모델 값이 레코드 불변식과 어긋났다(SPEC §5.1·§6). 저장할 수 없는 초안이므로 실패다.
