@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
@@ -127,6 +128,65 @@ _CLOSED_TITLE_MARKERS: Final = (
 #: 같은 안내 문구가 본문에 흔해서(실측 370건) 본문까지 보면 대부분을 잘못 거절한다.
 _STATUS_KEYS: Final = ("status", "category", "classification")
 
+#: 담임목사를 담는 게시판 필드. 실측(2,391건)에서 이 칸이 있는 게시판은 `CSU` 한 곳(646건)이고
+#: 값의 61%가 이름만, 나머지는 `○○○ 목사`·`○○○담임목사님`처럼 직함이 붙거나 `본문 참조`다.
+_PASTOR_KEYS: Final = ("senior_pastor",)
+
+#: 이름 뒤에 붙는 직함. 앞에 `담임`·`위임`이 오기도 하고(`○○○ 담임목사`) 공백 없이 붙기도
+#: 한다(`○○○목사`). ⚠️ `님`까지 뗀다 — `○○○ 목사님`이 실측에 있다.
+#: ⚠️ **실측에서 본 것만** 넣는다(`_TITLE_OPEN`과 같은 규율) — `협동`을 넣었다가 뺐다(담임 자리 0건).
+_PASTOR_TITLE: Final = r"(?:담임|위임|원로|군종)?\s*목사님?"
+_PASTOR_TITLE_TAIL: Final = re.compile(_PASTOR_TITLE + r"$")
+
+#: 이름 하나의 최종 모양 — 공백을 지운 뒤 한글 2~4자.
+_PASTOR_PLAIN_NAME: Final = re.compile(r"[가-힣]{2,4}")
+
+#: 이름으로 볼 글자 — 한글 2~4자. `조 상 용`처럼 **한 글자씩 띄어 쓴** 꼴(실측 9건)도 받는다.
+#: ⚠️ `청빙 공고`(2+2)는 두 번째 꼴에 걸리지 않는다 — 한 글자씩 띈 셋만 받기 때문이다.
+_PASTOR_NAME: Final = r"(?P<name>[가-힣]{2,4}|[가-힣] [가-힣] [가-힣])"
+
+#: 본문에서 담임목사를 말하는 자리(실측 2,569조각의 생김새에서 뽑았다):
+#:   `담임목사 : ○○○`(443) · `담임목사 : ○○○ 목사`(312) · `담임목사 ○○○`(274 · 구분자 없음)
+#:   `담임목회자 : ○○○위임목사`(8 · 직함이 붙어 있음) · `담임목사: 위임목사 ○○○`(직함이 앞)
+#: ⚠️ **공백은 가로만**(`[ \t]`) — `\s`를 쓰면 줄을 넘어 **다음 칸의 값**을 이름으로 읽는다
+#:    (실측: `담임목사 :⏎김녕교회`의 교회명 · `담임목사⏎⏎모집인원`의 다음 머리말).
+#: ⚠️ **직함은 소유 한정자(`?+`)로 먹는다** — 되돌아가면 `담임목사님과`에서 `님과`가 이름이 된다.
+#: ⚠️ 뒤 경계에 `/`가 있다 — `담임목사 ○○○ / 원로목사 ○○○`(실측).
+#: ⚠️ **구분자가 없는 꼴은 이 정규식만으로 부족하다** — `#담임목사 소개`·`2. 담임목사 처우`·
+#:    `샘물교회 담임목사 청빙공고`가 줄끝 조건을 통과한다. `senior_pastor_of`가 **줄 첫머리나
+#:    여는 괄호 뒤**에서 시작한 것만, **3자 이상**만, **존칭 `님`이 없을 때만** 받는다(실측: 이름은
+#:    `담임목사 ○○○`처럼 제 줄에 홀로 오고 머리말은 앞에 번호·교회명이 붙으며, `담임목사님` 뒤에는
+#:    이름이 아니라 조사·낱말이 온다 — `담임목사님과`·`(담임목사님 이메일)`).
+_PASTOR_IN_TEXT: Final = re.compile(
+    r"담임[ \t]*(?P<title>목사님|목사|목회자)?+[ \t]*(?:명)?+[ \t]*"
+    r"(?:(?P<sep>[:\uff1a\-\u2013\u2014])[ \t]*(?:"
+    + _PASTOR_TITLE
+    + r"[ \t]*)?+)?"
+    + _PASTOR_NAME
+    + r"(?=[ \t]*(?:"
+    + _PASTOR_TITLE
+    + r"|[)\uff09(\uff08,/]|$))",
+    re.MULTILINE,
+)
+
+#: 구분자 없는 꼴이 **필드로 시작했다**고 볼 바로 앞 글자. 줄 첫머리(82건) 말고 실측에 있는 것은
+#: 여는 괄호 `(○○○교회, 담임목사 ○○○)`(24) · 쉼표 `(…, 노회, 담임목사 ○○○)`(30) · 닫는 괄호
+#: `○○교회(어느지방) 담임목사 ○○○`(4)다. 마침표(`2. 담임목사 처우`)·붙임표(`-담임목사 이메일`)
+#: 뒤는 머리말이라 넣지 않는다. ⚠️ `/`·`:`는 실측 0건이라 넣지 않는다.
+_PASTOR_FIELD_OPENERS: Final = frozenset("(\uff08)\uff09,")
+
+#: 구분자 없는 꼴이 받는 최소 글자 수. 2자 머리말(`소개`·`처우`)을 막는다 — 2자 이름은 구분자가
+#: 있을 때만 받는다(실측: `담임목사 : 허웅`은 있고 `담임목사 허웅`은 없다).
+_PASTOR_BARE_MIN_LEN: Final = 3
+
+#: 이름 자리에 왔지만 이름이 아닌 값. **실측에서 걸린 것만** 둔다 — 구분자 뒤라 구조로는
+#: 못 막는다(`담임목사 : 없음`·`담임목사 : 공석(안계심)`·`담임목사 : 아래`·
+#: `담임목사 :청빙(임시당회장 ○○○목사)` — 자리가 비어 뽑는 중이라는 뜻이다).
+_PASTOR_STOPWORDS: Final = frozenset({"없음", "공석", "아래", "청빙"})
+
+#: 값이 아닌 값 — `본문 참조`·`아래 내용 참조`·`하단 참조`·`-`. 이름이 아니라 "다른 데 보라"다.
+_PASTOR_PLACEHOLDER: Final = re.compile(r"참조|^-$")
+
 #: 제목 앞뒤에 붙는 묶음. `[]` 434건 · `()` 298건 · `<>` 11건이 실측이고, 2026-08-22에
 #: **별표(`★끌올★`)** 가 더해졌다(1주치 449건 중 1건) — 같은 글자가 양쪽에 오는 꼴이라
 #: 여닫이 목록에 함께 넣는다.
@@ -178,6 +238,13 @@ _TITLE_BARE_SUFFIX: Final = re.compile(
 _LIFT_MARKERS: Final = frozenset(
     {"끌어올림", "끌올", "다시올림", "답글", "수정끌어올림", "끌어올림및수정"}
 )
+
+#: 이름에서 떼는 것 — 괄호 안(지역·교단 표기)과 공백·기호.
+#: `[군산] 개복교회(전북 군산)` → `개복교회` · `세상의 빛 이레교회` → `세상의빛이레교회`
+#: ⚠️ `dedup`(자물쇠 키)과 `heresy`(목록 대조)가 **같은 정규식**을 쓴다 — 한쪽만 고치면 같은
+#:    교회가 한 곳에서는 같고 다른 곳에서는 다른 이름이 된다.
+NAME_BRACKETS: Final = re.compile(r"[\uff08(\[\u3010][^)\uff09\]\u3011]*[)\uff09\]\u3011]")
+NAME_NOISE: Final = re.compile(r"""[\s\u00b7\u30fb.,'"!?~\-\u2013\u2014_/]""")
 
 
 @dataclass(frozen=True, slots=True)
@@ -418,10 +485,92 @@ def closed_by_board(title: str, raw_meta: Mapping[str, JsonValue]) -> bool:
     return any(marker in squeeze(title) for marker in _CLOSED_TITLE_MARKERS)
 
 
+def senior_pastor_of(raw_text: str, raw_meta: Mapping[str, JsonValue]) -> str | None:
+    """담임목사 이름 — 게시판 폼에 있으면 그것, 없으면 본문에서. **모델에게 묻지 않는다.**
+
+    이단 대조(`heresy`)가 목록 항목(사람 이름)과 견주는 값이다. 글자만 보면 되는 변환이라
+    코드의 몫이고(모듈 docstring), 유료 호출 없이 검증된다.
+
+    ⚠️ **모양이 어긋나면 `None`이다** — 두 사람이 적혔거나(`공동담임`) 이름 자리에 다른 말이
+    왔으면 비운다. 이 값은 근거에 그대로 실리고 **확정 거절의 조건**이 되므로 빈 칸이 틀린
+    값보다 낫다.
+
+    ⚠️ **폼이 이긴다.** 본문의 `담임`은 절반이 다른 뜻이다(`담임목사 추천서`·`담임목사님과
+    함께` · 실측 2,569조각) — 폼은 그 칸의 뜻이 하나다. 폼이 `본문 참조`라고 하면 그 말대로
+    본문을 본다. 폼에 진짜 값이 있는데 모양이 어긋나면(두 사람) 본문으로 내려가지 않는다 —
+    본문도 같은 두 사람을 적었을 것이고, 폼이 정한 답(없음)을 본문이 뒤집을 이유가 없다.
+    """
+    for key in _PASTOR_KEYS:
+        value = raw_meta.get(key)
+        if isinstance(value, str) and value.strip() and not _PASTOR_PLACEHOLDER.search(value):
+            return _pastor_from_form(value)
+    for found in _PASTOR_IN_TEXT.finditer(raw_text):
+        name = _pastor_name(found.group("name"))
+        if name is None:
+            continue
+        if found.group("sep") is None and not _is_bare_pastor_field(raw_text, found, name):
+            continue
+        return name
+    return None
+
+
+def _is_bare_pastor_field(text: str, found: re.Match[str], name: str) -> bool:
+    """구분자 없는 `담임목사 ○○○`이 **필드**인가 — 줄 첫머리·여는 괄호 뒤에서 시작하고, 3자
+    이상이고, 존칭이 없다.
+
+    `#담임목사 소개`·`2. 담임목사 처우`·`샘물교회 담임목사 청빙공고`는 앞에 다른 글자가 있고,
+    `담임목사 ○○○`·`(담임목사 ○○○)`는 없다(실측). 2자는 받지 않는다 — `소개`·`처우`·`이멜`.
+    ⚠️ `담임목사님 ○○○`은 받지 않는다 — 존칭 뒤에는 이름이 아니라 낱말이 온다(실측:
+    `(담임목사님 이메일)`). 구분자가 있으면 상관없다(`담임목사님: ○○○`은 필드다).
+    """
+    if len(name) < _PASTOR_BARE_MIN_LEN or found.group("title") == "목사님":
+        return False
+    start = found.start()
+    before = text[:start].rstrip(" \t")
+    return not before or before[-1] in _PASTOR_FIELD_OPENERS or before.endswith("\n")
+
+
+def _pastor_from_form(value: str) -> str | None:
+    """폼 값 → 이름. 괄호 안(`(임시당회장)`)을 떼고 직함을 뗀다.
+
+    ⚠️ **쉼표·빗금이 있으면 두 사람이다**(`○○○(온누리), △△△(새순)` · 공동담임) — 한 사람을
+    골라 적으면 틀린 값이 근거에 실린다. 비운다.
+    """
+    bare = NAME_BRACKETS.sub("", value)
+    if any(mark in bare for mark in ",/·"):
+        return None
+    return _pastor_name(_PASTOR_TITLE_TAIL.sub("", squeeze(bare)))
+
+
+def _pastor_name(text: str) -> str | None:
+    """이름으로 볼 수 있으면 그 이름, 아니면 `None`. **한글 2~4자**만 이름이다."""
+    name = squeeze(text)
+    if not _PASTOR_PLAIN_NAME.fullmatch(name) or name in _PASTOR_STOPWORDS:
+        return None
+    return name
+
+
 def squeeze(text: str) -> str:
     """공백을 전부 없앤다. **원문과 답을 견줄 때 쓰는 단일 창구**(`verify`도 이걸 쓴다) —
     게시판이 넣는 공백은 줄바꿈·전각·연속이 뒤섞여 있어 그대로 비교하면 늘 어긋난다."""
     return "".join(text.split())
+
+
+def name_key(name: str) -> str:
+    """이름을 **같은 이름인지 견줄 열쇠**로 — 유니코드 정규화 + 괄호 제거 + 공백·기호 제거 + 소문자.
+
+    `heresy`가 목록과 대조할 때 쓴다. 게시판마다 같은 교회를 `서머나 교회`·`서머나교회(창원)`·
+    `서머나·교회`로 적고, 그대로 견주면 **이름을 조금만 다르게 적어도 목록을 통과한다.**
+
+    ⚠️ **NFKC를 거른다**(`verify`와 같은 기준). 분해형(NFD)이나 전각으로 오면 눈에 같아 보이는
+    이름이 다른 글자다 — 첨부 파일명에 NFD를 쓰는 게시판이 있어 본문에도 언제든 올 수 있다.
+
+    ⚠️ **`dedup`의 자물쇠 키는 이 함수를 쓰지 않는다**(`normalize_church_name`). 같은 정규식을
+    쓰되 NFKC·소문자는 하지 않는다 — 키를 바꾸면 이미 판정된 2,300여 건이 전부 다시 판정된다.
+    그 전환은 실측을 두고 따로 결정한다.
+    """
+    folded = unicodedata.normalize("NFKC", name)
+    return NAME_NOISE.sub("", NAME_BRACKETS.sub("", folded)).lower()
 
 
 def _amounts(text: str) -> list[_Money]:

@@ -16,6 +16,12 @@
 전부 걸리는데 서로 다른 교회다. 대신 놓치는 것이 있다: **앞에 지역을 붙여 쓴 같은 교회는
 걸리지 않는다**(실측 1건 — 같은 주소·같은 공고가 표기 하나로 갈렸다).
 
+⚠️ **담임목사는 대조 대상이 아니라 판별 근거다**(2026-08-28). 목록 122항목 중 84개가 **사람
+이름**이고 그 별칭이 교회명이다 — 즉 목록은 "누가 담임인 교회인가"로 판별하도록 되어 있는데
+코드는 교회명만 봤다. 교회명이 걸린 뒤 공고의 담임(`normalize.senior_pastor_of` · 게시판 폼
+또는 본문)이 그 사람이면 확정 거절하고, 다르거나 모르면 그 사실을 근거에 적어 사람이 본다.
+**다르다고 통과시키지 않는다** — 담임이 바뀌어도 그 교회는 그 교회다.
+
 ⚠️ **이 파일에 실제 교회·사람 이름을 적지 않는다.** 목록을 커밋하지 않는 이유(실명 자료)가
 주석으로 새면 그 조치가 무의미해지고, 무고한 실존 교회가 공개 리포에서 "이단 목록 항목"으로
 읽힌다. 아래 `안식교`류는 수십 년간 공개된 **단체명**이라 예외로 둔다.
@@ -49,14 +55,13 @@ from __future__ import annotations
 
 import json
 import re
-import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
 from minjob_ingest.domain import Region
-from minjob_ingest.pipeline.normalize import squeeze
+from minjob_ingest.pipeline.normalize import name_key, squeeze
 
 #: 항목 하나가 가질 수 있는 필드. 그 밖이 오면 오타이거나 계약이 바뀐 것이다.
 #: ⚠️ `city`·`note`는 **사람이 읽는 메모**다 — 받아만 두고 대조에는 쓰지 않는다(지역까지가
@@ -80,12 +85,18 @@ _FILE_VERSION: Final = 2
 #: 끝난다(실측 6개). 안 빼면 단체명까지 검수로 새고, 그건 이단을 봐주는 쪽으로 틀리는 것이다.
 _CHURCH_NAME: Final = re.compile(r"(?<!선)교회$")
 
-#: 지역을 못 보고 이름만으로 거절했다는 표시. **운영자가 되짚을 유일한 실마리다.**
+#: 지역을 못 보고 이름만 맞았다는 표시. **운영자가 되짚을 유일한 실마리다.**
 #: ⚠️ 못 본 이유가 둘이라 갈라 적는다 — 목록에 지역이 없는 것과 공고에 지역이 없는 것은
 #: 손쓸 방법이 다르다(앞은 목록을 채우면 되고, 뒤는 그 공고를 봐야 한다).
-NO_REGION_NOTE: Final = "지역 확인 불가"
-_NO_REGION_IN_LIST: Final = f"⚠️ {NO_REGION_NOTE}(목록에 지역 없음)"
-_NO_REGION_IN_POSTING: Final = f"⚠️ {NO_REGION_NOTE}(공고에 지역 없음)"
+#: ⚠️ **주어를 적는다**(2026-08-28 · 검수에서 잡혔다). `지역 확인 불가(목록에 지역 없음)`은
+#:    "우리가 지역을 못 긁었다"로 읽혔다 — 지역은 멀쩡히 있었고 없는 것은 **이단 목록 쪽**이었다.
+#:    min_job 검수 화면에 그대로 나가는 문장이라 무슨 목록인지까지 적는다.
+NO_REGION_NOTE: Final = "같은 교회인지 대조하지 못했다"
+_NO_REGION_IN_LIST: Final = f"⚠️ 이단 목록에 지역이 없어 {NO_REGION_NOTE}"
+_NO_REGION_IN_POSTING: Final = f"⚠️ 이 공고에 지역이 없어 {NO_REGION_NOTE}"
+
+#: 근거 첫머리에 쓰는 칸 이름. 컬럼명(`church_name`)은 운영자가 읽는 말이 아니다.
+_FIELD_LABELS: Final = {"church_name": "교회명", "raw_denomination": "교단 표기"}
 
 
 class HeresyRefError(Exception):
@@ -132,34 +143,69 @@ class HeresyMatch:
     field: str
     #: 공고의 지역. 목록에 지역이 있어도 이 값이 없으면 **확인한 것이 아니다**.
     posting_region: Region | None = None
+    #: 공고의 담임목사(`normalize.senior_pastor_of`). 목록 항목이 **사람 이름**일 때 그 사람인지
+    #: 가른다 — 목록 122항목 중 84개가 사람 이름이고 그 별칭이 교회명이다.
+    senior_pastor: str | None = None
 
     @property
     def is_conclusive(self) -> bool:
         """**거절까지 할 수 있나.** 아니면 사람이 본다(공개는 어느 쪽이든 안 된다).
 
-        거절은 둘 중 하나일 때만 한다:
+        거절은 셋 중 하나일 때만 한다:
         ① **지역까지 맞았다** — 목록과 공고 양쪽에 지역이 있고 같다(`_applies`가 그런 항목만
            고른다). 목록에만 있고 공고에 없으면 **확인한 것이 아니다.**
         ② **동명이 생길 수 없는 이름이다** — 단체·사람 이름(지역 없는 항목의 이름 228개 중 176개).
+        ③ **담임목사가 목록의 그 사람이다**(2026-08-28) — 교회명은 같은데 지역을 못 본 경우에도
+           담임이 목록 항목(또는 그 별칭)과 같은 이름이면 그 교회다.
+
+        ⚠️ **③의 반대는 성립하지 않는다** — 담임이 다르다고 통과시키지 않는다. 담임이 바뀌어도
+        그 교회는 그 교회다. 다른 이름은 근거에 적어 사람이 3초에 보게 할 뿐이다.
 
         ⚠️ 지역을 못 본 교회명으로 거절하면 무고한 교회가 **검수 큐에도 안 뜨고** 사라진다
         (2026-08-19 실측: 예장합동 교회가 이름만 같아서 걸렸다).
         """
         if self.entry.region is not None and self.posting_region is not None:
             return True
+        if self.names_the_senior_pastor:
+            return True
         return _CHURCH_NAME.search(squeeze(self.matched)) is None
 
     @property
+    def names_the_senior_pastor(self) -> bool:
+        """공고의 담임목사가 목록 항목의 이름(또는 별칭) 중 하나인가.
+
+        ⚠️ 별칭까지 본다 — 단체 항목은 별칭에 **대표자 이름**을 갖는다. 별칭의 교회명은 사람
+        이름과 같을 수 없어 오탐이 나지 않는다.
+        """
+        if self.senior_pastor is None:
+            return False
+        wanted = name_key(self.senior_pastor)
+        return any(name_key(name) == wanted for name in (self.entry.name, *self.entry.aliases))
+
+    @property
     def evidence(self) -> str:
-        """운영자가 3초에 확인할 수 있는 한 줄.
+        """운영자가 3초에 확인할 수 있는 한 줄 — 무엇이 어디와 같았고, 담임은 누구고, 지역은 봤나.
 
         ⚠️ 지역을 못 본 건은 그렇다고 **적어 둔다** — 이 표시가 없으면 무고한 교회가
         걸렸을 때 되짚을 방법이 없다.
+        ⚠️ **담임목사를 적는다**(2026-08-28). 목록 항목이 사람 이름이라 검수의 갈림길은 "이
+        공고의 담임이 그 사람인가"인데, 그 값이 근거에 없어 운영자가 매번 찾아봐야 했다.
         """
         ruled = ",".join(self.entry.ruled_by) or "규정 기관 미상"
-        parts = [f"{self.field}={self.matched}", f"목록: {self.entry.name}", f"규정: {ruled}"]
-        parts.append(self._region_note())
+        parts = [
+            f"{_FIELD_LABELS[self.field]} '{self.matched}'가 "
+            f"이단 목록의 「{self.entry.name}」와 일치",
+            f"규정: {ruled}",
+            self._pastor_note(),
+            self._region_note(),
+        ]
         return " · ".join(parts)
+
+    def _pastor_note(self) -> str:
+        if self.senior_pastor is None:
+            return "이 공고 담임목사: 미상"
+        verdict = "같은 이름" if self.names_the_senior_pastor else "다른 이름"
+        return f"이 공고 담임목사: {self.senior_pastor} (이단 목록 항목과 {verdict})"
 
     def _region_note(self) -> str:
         if self.entry.region is None:
@@ -174,11 +220,17 @@ def screen(
     raw_denomination: str | None,
     region: Region | None,
     ref: HeresyRef,
+    *,
+    senior_pastor: str | None = None,
 ) -> HeresyMatch | None:
     """목록에 걸리면 `HeresyMatch`, 아니면 `None`.
 
     `region`은 공고의 지역이다. 목록 항목에 지역이 있는데 **다르면 다른 교회이므로**
     거절하지 않는다 — 이단을 봐주는 것이 아니라 애초에 그 교회가 아니다.
+
+    `senior_pastor`는 공고의 담임목사(`normalize.senior_pastor_of`)다. **대조 대상이 아니다** —
+    걸린 뒤 그 사람인지 가르는 데만 쓴다(`HeresyMatch.is_conclusive` ③). 본문에서 사람 이름을
+    찾아 걸면 동명이인이 무더기로 걸린다(모듈 docstring).
     """
     for field, value in (("church_name", church_name), ("raw_denomination", raw_denomination)):
         if value is None:
@@ -186,7 +238,13 @@ def screen(
         entry = _applies(ref.by_name.get(_key(value), ()), region)
         if entry is None:
             continue
-        return HeresyMatch(entry=entry, matched=value.strip(), field=field, posting_region=region)
+        return HeresyMatch(
+            entry=entry,
+            matched=value.strip(),
+            field=field,
+            posting_region=region,
+            senior_pastor=senior_pastor,
+        )
     return None
 
 
@@ -284,10 +342,12 @@ def _as_object(value: object, what: str) -> dict[str, object]:
 
 
 def _key(name: str) -> str:
-    """대조용 열쇠 — 유니코드 정규화 + 공백 제거 + 소문자.
+    """대조용 열쇠 — `normalize.name_key`(유니코드 정규화 + 괄호 제거 + 공백·기호 제거 + 소문자).
 
-    ⚠️ **NFKC를 거른다**(`verify`와 같은 기준). 분해형(NFD)이나 전각으로 오면 눈에 같아 보이는
-    이름이 목록을 그냥 통과한다. 원장 3,188건의 교회명·교단 칸에서는 아직 관측되지 않았지만
-    (전부 NFC), 첨부 파일명에 NFD를 쓰는 게시판이 있어 본문에도 언제든 올 수 있다.
+    ⚠️ **괄호·기호까지 뗀다**(2026-08-28 · 운영자 결정). `○○교회(창원)`·`○○·교회`·`○○-교회`가
+    글자만 다르게 적힌 같은 이름인데 그대로 견주면 목록을 통과한다. 실측 2,402건에서는 새로
+    걸리는 것이 0건이었지만, 같은 이름을 다르게 적은 것뿐이라 넣어도 잃는 것이 없다.
+    ⚠️ `dedup`의 자물쇠 키와 **같은 정규식**을 쓴다(`NAME_BRACKETS`·`NAME_NOISE`) — 한쪽만
+    고치면 같은 교회가 한 곳에서는 같고 다른 곳에서는 다른 이름이 된다.
     """
-    return squeeze(unicodedata.normalize("NFKC", name)).lower()
+    return name_key(name)

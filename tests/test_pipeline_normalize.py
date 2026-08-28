@@ -19,6 +19,7 @@ from minjob_ingest.pipeline.normalize import (
     pay_note_of,
     pay_of,
     period_of,
+    senior_pastor_of,
 )
 
 # ── 사례비 ───────────────────────────────────────────────────────
@@ -728,3 +729,134 @@ def test_nothing_to_strip_is_left_alone() -> None:
     assert city_without_region(None, Region.SEOUL) is None
     assert city_without_region("송파구", None) == "송파구"
     assert city_without_region("송파구", Region.SEOUL) == "송파구"
+
+
+# ── 담임목사 ──────────────────────────────────────────────────────
+#
+# ⚠️ 실명을 쓰지 않는다 — `아무개`류 합성 이름만. 모양은 실측(2,478건)에서 그대로 가져왔다.
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        "아무개",
+        "아무개 목사",
+        "아무개목사",
+        "아무개 담임목사",
+        "아무개담임목사",
+        "아무개 목사님",
+        "아무개 담임 목사",
+        "아무개 군종목사",
+        "아 무개 목사",
+        "아무개(임시당회장)",
+    ],
+)
+def test_a_form_value_is_the_name_without_its_title(given: str) -> None:
+    """게시판 폼의 담임목사 칸 — 직함·존칭·괄호·공백이 붙어도 이름만 남는다(실측 114가지 꼴)."""
+    assert senior_pastor_of("", _meta(senior_pastor=given)) == "아무개"
+
+
+@pytest.mark.parametrize(
+    "given",
+    ["아무개(어디), 나아무개(저기)", "아무개, 나아무개, 다아무개 공동담임목사"],
+)
+def test_two_people_in_the_form_is_no_answer(given: str) -> None:
+    """⚠️ 한 사람을 골라 적으면 **틀린 값이 근거에 실린다** — 비운다(빈 칸 > 틀린 값)."""
+    assert senior_pastor_of("담임목사 : 다아무개", _meta(senior_pastor=given)) is None
+
+
+@pytest.mark.parametrize("given", ["본문 참조", "아래 내용 참조", "하단 참조", "-"])
+def test_a_form_that_points_elsewhere_yields_to_the_body(given: str) -> None:
+    """`본문 참조`는 값이 아니라 "다른 데 보라"다 — 그 말대로 본문을 본다."""
+    assert senior_pastor_of("담임목사 : 아무개", _meta(senior_pastor=given)) == "아무개"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "담임목사 : 아무개",
+        "담임목사 : 아무개 목사",
+        "담임목사: 아무개목사",
+        "담임목회자 : 아무개위임목사",
+        "담임목사: 위임목사 아무개",
+        "3. 담임 목회자명 \u2013 아무개",
+        "담임목사: 아무개(위임)",
+        "서울연회 어느지방 어느교회 (담임목사: 아무개)에서",
+        "담임목회자: 담임목사 아무개 / 원로목사 나아무개",
+        "담임목사 아무개",
+        "(담임목사 아무개)에서 함께 사역할",
+        "담임목사 아 무 개",
+        "어느교회(어느지방) 담임목사 아무개",
+        "(어느교회, 노회, 담임목사 아무개)에서",
+        "담임목사님: 아무개",
+    ],
+)
+def test_the_body_names_the_senior_pastor(text: str) -> None:
+    """본문의 여러 표기 — 구분자 유무·직함 앞뒤·붙여쓰기·괄호·한 글자씩 띄어쓰기(실측 상위 꼴)."""
+    assert senior_pastor_of(text, {}) == "아무개"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "담임목사님과 함께 동역할",
+        "후임담임목사님을 재 청빙합니다.",
+        "담임목사를 청빙합니다.",
+        "담임목사 및 동역자들과",
+        "담임목사 청빙위원회",
+        "담임목사 청빙 공고",
+        "샘물교회 담임목사 청빙공고",
+        "#담임목사 소개",
+        "2. 담임목사 처우",
+        "(현 시무교회 담임목사 기재)",
+        "담임목사 추천서 1부",
+        "제출처(담임목사 이멜)/ x@example.com",
+        "담임목사(010-0000-0000)",
+        "아무개 담임목사",
+        "담임, 부목사로서 목회 경력",
+        "접수 : 이메일 x@example.kr (담임목사님 이메일)",
+    ],
+)
+def test_words_after_the_word_senior_pastor_are_not_a_name(text: str) -> None:
+    """⚠️ 본문의 `담임`은 절반이 다른 뜻이다 — 조사·머리말·직함 뒤 이름은 이름이 아니다.
+
+    실측에서 실제로 걸렸던 것들이다: `님과`·`님을`(존칭으로 되돌아감) · `청빙공고`·`소개`·`처우`
+    (구분자 없는 머리말) · `기재`·`이멜`(닫는 괄호 앞 2자) · `목사`(직함이 뒤에 온 꼴).
+    """
+    assert senior_pastor_of(text, {}) is None
+
+
+def test_the_body_does_not_read_the_next_line_as_the_name() -> None:
+    """⚠️ 공백은 **가로만** — 줄을 넘으면 다음 칸의 값(교회명·다음 머리말)이 이름이 된다(실측)."""
+    assert senior_pastor_of("담임목사 :\n김녕교회\n", {}) is None
+    assert senior_pastor_of("모집부서\n담임목사\n\n모집인원\n1명", {}) is None
+    assert senior_pastor_of("문의처 및 담당자\n\n아무개 담임목사\n\n기타사항", {}) is None
+
+
+@pytest.mark.parametrize(
+    "text", ["담임목사 : 없음", "담임목사 : 공석(안계심)", "담임목사 :청빙(임시당회장 아무개목사)"]
+)
+def test_a_vacant_seat_is_not_a_name(text: str) -> None:
+    """`없음`·`공석`·`청빙`은 자리가 비었다는 말이다(실측)."""
+    assert senior_pastor_of(text, {}) is None
+
+
+def test_a_two_syllable_name_needs_a_separator() -> None:
+    """2자 이름은 구분자가 있을 때만 — 구분자 없는 2자는 `소개`·`처우` 같은 머리말이었다(실측)."""
+    assert senior_pastor_of("담임목사 : 아무", {}) == "아무"
+    assert senior_pastor_of("담임목사 아무", {}) is None
+
+
+def test_a_false_hit_is_skipped_for_a_later_real_one() -> None:
+    """앞의 `담임`이 다른 뜻이어도 뒤의 진짜 표기를 찾는다."""
+    text = "담임목사 추천서 1부\n\n담임목사 : 아무개"
+    assert senior_pastor_of(text, {}) == "아무개"
+
+
+def test_the_form_wins_over_the_body() -> None:
+    assert senior_pastor_of("담임목사 : 나아무개", _meta(senior_pastor="아무개 목사")) == "아무개"
+
+
+def test_no_senior_pastor_anywhere_is_none() -> None:
+    assert senior_pastor_of("부목사 청빙 공고입니다.", {}) is None
+    assert senior_pastor_of("", {}) is None

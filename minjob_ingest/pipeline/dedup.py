@@ -69,6 +69,7 @@ from minjob_ingest.domain import (
 )
 from minjob_ingest.models import REVIEW_STATE_FIELDS, ReviewData
 from minjob_ingest.pipeline.confidence import review_status_for
+from minjob_ingest.pipeline.normalize import NAME_BRACKETS, NAME_NOISE
 from minjob_ingest.store.base import (
     DedupCandidate,
     DedupUpdate,
@@ -82,11 +83,6 @@ from minjob_ingest.store.base import (
 #: ⚠️ 짧게 잡는 쪽이 안전하다 — 안 묶이면 중복이 남을 뿐이고, 길게 잡으면 다시 열린 자리가
 #: 옛 묶음에 삼켜져 **진짜 공고가 사라진다**.
 ROUND_MONTHS: Final = 3
-
-#: 교회명에서 떼는 것 — 괄호 안(지역·교단 표기)과 공백·기호.
-#: `[군산] 개복교회(전북 군산)` → `개복교회` · `세상의 빛 이레교회` → `세상의빛이레교회`
-_BRACKETS: Final = re.compile(r"[\uff08(\[\u3010][^)\uff09\]\u3011]*[)\uff09\]\u3011]")
-_NOISE: Final = re.compile(r"""[\s\u00b7\u30fb.,'"!?~\-\u2013\u2014_/]""")
 
 #: 부서를 말하지 않은 공고의 키 조각. **값이 없다는 사실 자체가 값**이다(위 docstring).
 NO_DEPARTMENT: Final = "-"
@@ -253,7 +249,7 @@ def normalize_church_name(name: str | None) -> str | None:
     """교회명을 견줄 꼴로. **정규화는 이 칸 하나뿐이다** — 나머지 셋은 enum이라 안 흔들린다."""
     if name is None:
         return None
-    return _NOISE.sub("", _BRACKETS.sub("", name)) or None
+    return NAME_NOISE.sub("", NAME_BRACKETS.sub("", name)) or None
 
 
 def plan(
@@ -320,7 +316,7 @@ def seat_of(draft: SeatSource) -> Seat | None:
     if draft.position:
         role = "+".join(member.value for member in draft.position)
     elif draft.role:
-        role = _ROLE_PREFIX + _NOISE.sub("", draft.role)
+        role = _ROLE_PREFIX + NAME_NOISE.sub("", draft.role)
     else:
         return None
     return (church, draft.region.value, role)

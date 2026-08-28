@@ -48,8 +48,9 @@ def _screen(
     church_name: str | None = None,
     raw: str | None = None,
     region: Region | None = None,
+    senior_pastor: str | None = None,
 ) -> HeresyMatch | None:
-    return screen(church_name, raw, region, _ref())
+    return screen(church_name, raw, region, _ref(), senior_pastor=senior_pastor)
 
 
 # ── 목록에 있으면 거절한다 ───────────────────────────────────────
@@ -115,6 +116,9 @@ def test_the_body_text_is_never_screened() -> None:
     """⚠️ 사람 이름을 본문에서 찾으면 세 글자 동명이인이 무더기로 걸린다.
 
     `screen`은 본문을 **받지 않는다** — 받을 수 없으므로 그런 실수가 불가능하다.
+    ⚠️ `senior_pastor`는 본문이 아니라 **이미 뽑힌 이름 하나**다(`normalize.senior_pastor_of`).
+    그것으로 걸지 않고 걸린 뒤 가르는 데만 쓴다
+    (`test_the_senior_pastor_never_triggers_a_match_by_itself`).
     """
     import inspect
 
@@ -123,6 +127,7 @@ def test_the_body_text_is_never_screened() -> None:
         "raw_denomination",
         "region",
         "ref",
+        "senior_pastor",
     }
 
 
@@ -268,10 +273,91 @@ def test_the_evidence_says_why_the_region_could_not_be_checked() -> None:
     no_region_in_posting = _screen("△△교회", region=None)
     checked = _screen("△△교회", region=Region.GANGWON)
 
-    assert no_region_in_list is not None and "목록에 지역 없음" in no_region_in_list.evidence
-    assert no_region_in_posting is not None and "공고에 지역 없음" in no_region_in_posting.evidence
+    assert no_region_in_list is not None
+    assert "이단 목록에 지역이 없어" in no_region_in_list.evidence
+    assert no_region_in_posting is not None
+    assert "이 공고에 지역이 없어" in no_region_in_posting.evidence
     assert checked is not None and NO_REGION_NOTE not in checked.evidence
     assert "지역 일치: GANGWON" in checked.evidence
+
+
+def test_the_evidence_names_the_list_and_the_field_in_plain_words() -> None:
+    """⚠️ 근거는 min_job 검수 화면에 그대로 나간다. `church_name=…` 같은 컬럼명이나 주어 없는
+    `목록`은 운영자가 읽는 말이 아니다 — 실제로 `지역 확인 불가`가 "지역을 못 긁었다"로 읽혔다."""
+    match = _screen("○○교회", region=Region.SEOUL)
+
+    assert match is not None
+    assert "교회명 '○○교회'가 이단 목록의 「나아무개」와 일치" in match.evidence
+    assert "church_name" not in match.evidence
+
+
+# ── 담임목사 — 대조 대상이 아니라 판별 근거 ────────────────────────
+
+
+def test_a_senior_pastor_who_is_the_listed_person_settles_it() -> None:
+    """③ 교회명이 걸렸고 지역은 못 봤지만 **담임이 목록의 그 사람**이면 그 교회다 — 확정 거절."""
+    match = _screen("○○교회", senior_pastor="나아무개")
+
+    assert match is not None
+    assert match.names_the_senior_pastor is True
+    assert match.is_conclusive is True
+    assert "이 공고 담임목사: 나아무개 (이단 목록 항목과 같은 이름)" in match.evidence
+
+
+def test_the_senior_pastor_is_compared_after_normalizing_both_sides() -> None:
+    """`나아무개 목사`처럼 직함이 붙어도, 띄어쓰기가 달라도 같은 사람이다."""
+    match = _screen("○○교회", senior_pastor="나 아무개")
+
+    assert match is not None and match.names_the_senior_pastor is True
+
+
+def test_a_senior_pastor_named_in_an_alias_also_settles_it() -> None:
+    """단체 항목은 별칭에 **대표자 이름**을 갖는다 — 담임이 그 사람이면 그 단체의 교회다."""
+    ref = HeresyRef.of((HeresyEntry("◇◇선교회", ("라아무개", "□□교회"), ("합동",)),))
+
+    match = screen("□□교회", None, None, ref, senior_pastor="라아무개")
+
+    assert match is not None and match.is_conclusive is True
+
+
+def test_a_different_senior_pastor_does_not_clear_the_church() -> None:
+    """⚠️ **③의 반대는 성립하지 않는다.** 담임이 바뀌어도 그 교회는 그 교회다 — 여전히 사람이
+    보되, 근거에 다른 이름이라고 적어 3초에 판단하게 한다."""
+    match = _screen("○○교회", senior_pastor="마아무개")
+
+    assert match is not None
+    assert match.names_the_senior_pastor is False
+    assert match.is_conclusive is False, "다르다고 통과시키지 않는다"
+    assert "이 공고 담임목사: 마아무개 (이단 목록 항목과 다른 이름)" in match.evidence
+
+
+def test_an_unknown_senior_pastor_is_said_so() -> None:
+    match = _screen("○○교회")
+
+    assert match is not None
+    assert match.is_conclusive is False
+    assert "이 공고 담임목사: 미상" in match.evidence
+
+
+def test_the_senior_pastor_never_triggers_a_match_by_itself() -> None:
+    """⚠️ 담임 이름으로 **걸지는 않는다** — 본문의 사람 이름으로 걸면 동명이인이 무더기로 걸린다.
+    교회명·교단이 목록에 없으면 담임이 목록 사람이어도 `None`이다."""
+    assert _screen("평범한교회", senior_pastor="나아무개") is None
+
+
+# ── 같은 이름을 다르게 적은 것 ────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "church_name",
+    ["○○교회(어딘가)", "○○·교회", "○○-교회", "[어딘가] ○○교회", "○○교회."],
+    ids=["괄호 꼬리", "중점", "붙임표", "괄호 머리", "마침표"],
+)
+def test_the_same_name_with_brackets_or_marks_is_still_matched(church_name: str) -> None:
+    """괄호 안 지역·기호는 표기 차이다 — `dedup`의 자물쇠 키와 같은 정규식으로 뗀다(2026-08-28)."""
+    match = _screen(church_name)
+
+    assert match is not None and match.entry.name == "나아무개"
 
 
 # ── 목록 파일은 경계에서 검증한다 ────────────────────────────────

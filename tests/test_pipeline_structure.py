@@ -1599,6 +1599,24 @@ def test_heresy_outranks_a_closed_posting() -> None:
     assert draft.reject_reason is RejectReason.HERESY
 
 
+def test_a_listed_church_whose_senior_pastor_is_the_listed_person_is_rejected() -> None:
+    """③ 지역을 못 봤어도 **담임목사가 목록의 그 사람**이면 그 교회다(SPEC §5.4 · 2026-08-28).
+
+    목록 항목의 이름(`아무개`)이 사람이고 별칭이 교회명이다 — 공고의 담임이 `아무개`면
+    동명이교회가 아니라 그 교회다. 다른 사람이면 여전히 사람이 본다(`heresy` 테스트).
+    """
+    draft = build_draft(
+        _source_data(),
+        _extraction(),
+        heresy=screen(_LISTED_NAME, None, None, _listed(), senior_pastor="아무개"),
+    )
+
+    assert draft.review_status is ReviewStatus.REJECTED
+    assert draft.reject_reason is RejectReason.HERESY
+    assert draft.heresy_evidence is not None
+    assert "이 공고 담임목사: 아무개 (이단 목록 항목과 같은 이름)" in draft.heresy_evidence
+
+
 def test_a_posting_that_is_not_listed_keeps_its_clean_record() -> None:
     draft = build_draft(_source_data(), _extraction(), heresy=None)
 

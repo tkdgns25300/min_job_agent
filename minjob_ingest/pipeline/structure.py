@@ -53,7 +53,12 @@ from minjob_ingest.pipeline.denomination import confirm
 from minjob_ingest.pipeline.extraction import Extraction, ExtractionError, has_prompt_evidence
 from minjob_ingest.pipeline.heresy import HeresyMatch, HeresyRef, screen
 from minjob_ingest.pipeline.media import Media, MediaSet, MediaSource, failure_note, wanted_urls
-from minjob_ingest.pipeline.normalize import city_without_region, clean_title, closed_by_board
+from minjob_ingest.pipeline.normalize import (
+    city_without_region,
+    clean_title,
+    closed_by_board,
+    senior_pastor_of,
+)
 from minjob_ingest.pipeline.verify import VerifyReport, verify
 from minjob_ingest.store.base import Poster, PosterStore, Store, StoreError
 from minjob_ingest.store.serde import SerdeError
@@ -695,11 +700,17 @@ def _judge(
         # 터진다 — 미리보기의 목적이 "이대로 저장해도 되는가"를 보는 것이라 무의미해진다.
         # ⚠️ **검산이 끝난 값으로 대조한다** — `verify`가 지어낸 교회명을 이미 비웠으므로,
         #    없는 교회 이름 때문에 거절되는 일이 없다.
+        # ⚠️ 담임목사는 **모델이 아니라 원문**에서 뽑는다(`senior_pastor_of` · 게시판 폼 → 본문).
+        #    걸린 교회명이 목록의 그 사람 교회인지 가르는 값이라, 모델 답을 쓰면 근거가 흔들린다.
         draft = build_draft(
             record,
             extraction,
             heresy=screen(
-                extraction.church_name, extraction.raw_denomination, extraction.region, heresy
+                extraction.church_name,
+                extraction.raw_denomination,
+                extraction.region,
+                heresy,
+                senior_pastor=senior_pastor_of(record.raw_text, record.raw_meta),
             ),
             # ⚠️ 그림을 **보냈나**와 **못 받았나**는 뜻이 다르다(SPEC §5.7): 보낸 공고는
             #    어느 칸도 원문 대조가 안 됐고, 못 받은 공고는 내용 자체가 없을 수 있다.
