@@ -802,6 +802,62 @@ def test_a_span_over_new_year_keeps_the_head_not_a_borrowed_year() -> None:
     assert parse_extraction(_answer(deadline=given)).deadline == date(2026, 12, 20)
 
 
+# ── 연도를 안 적은 마감일 — 게시일에서 물려받는다(2026-08-29) ──────
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("8월 8일(토)까지", date(2026, 8, 8)),
+        ("서류마감 9월 12일", date(2026, 9, 12)),
+        ("8월 12일 ~ 9월 10일", date(2026, 9, 10)),
+        ("08월 08일(토) 오후 6:00", date(2026, 8, 8)),
+    ],
+    ids=["요일+까지", "앞에 말", "기간(끝을 취함)", "0 채운 달"],
+)
+def test_a_deadline_without_a_year_borrows_it_from_the_posting(given: str, expected: date) -> None:
+    """⚠️ 실측 2,429건 중 **100건**이 연도를 안 적어 마감 칸이 비어 있었다.
+
+    `posted_on`이 그 공고의 게시일이다 — 그 해의 그 날짜로 읽는다.
+    """
+    parsed = parse_extraction(_answer(deadline=given), posted_on=date(2026, 8, 1))
+
+    assert parsed.deadline == expected
+
+
+def test_a_deadline_earlier_than_the_posting_is_dropped() -> None:
+    """⚠️⚠️ 교회가 **낡은 글을 그대로 다시 올린다**(실측 4건 — 8월 18일 글에 `서류마감 8월 8일`).
+
+    게시일의 연도를 그대로 붙이면 **아직 뽑고 있는 공고가 자동으로 마감**된다. 다음 해로
+    넘기면 1년짜리 유령 공고가 된다 — 비워서 사람이 보게 한다.
+    """
+    parsed = parse_extraction(_answer(deadline="8월 8일(토)까지"), posted_on=date(2026, 8, 18))
+
+    assert parsed.deadline is None
+
+
+def test_without_a_posting_date_the_bare_deadline_stays_empty() -> None:
+    """게시일을 안 주면 연도를 물려줄 데가 없다 — **틀리지 않고 비어 있을 뿐**이다."""
+    assert parse_extraction(_answer(deadline="8월 8일(토)까지")).deadline is None
+
+
+@pytest.mark.parametrize(
+    "given",
+    ["010-8787-1878", "9-12", "월 250만원", "1부 2부"],
+    ids=["전화번호", "숫자 구분자", "금액", "예배 순서"],
+)
+def test_numbers_that_are_not_a_month_and_a_day_are_not_dated(given: str) -> None:
+    """⚠️ `월`·`일` 글자를 요구한다 — 아무 구분자나 받으면 마감 칸의 다른 숫자가 날짜가 된다."""
+    assert parse_extraction(_answer(deadline=given), posted_on=date(2026, 8, 1)).deadline is None
+
+
+def test_a_year_written_out_still_wins_over_the_posting_date() -> None:
+    """연도가 적혀 있으면 그것이 답이다 — 게시일 보정은 **연도가 없을 때만** 한다."""
+    parsed = parse_extraction(_answer(deadline="2025년 9월 10일"), posted_on=date(2026, 8, 1))
+
+    assert parsed.deadline == date(2025, 9, 10)
+
+
 @pytest.mark.parametrize(
     "given",
     ["2026년 11월 말까지", "2026년 11월", "2026-11", "2026.11."],

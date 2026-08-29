@@ -150,6 +150,12 @@ _DATE_TAIL: Final = re.compile(
 #: 연도가 빠진 `M월 D일`. 연도는 앞 날짜에서 물려받는다.
 _MONTH_DAY: Final = re.compile(r"^(\d{1,2})\D{1,3}(\d{1,2})(?!\d)")
 
+#: 연도가 **아예 없는** 날짜(`8월 8일(토)까지`). 연도는 그 공고의 **게시일**에서 물려받는다.
+#: ⚠️ `월`·`일` 글자를 요구한다 — `_MONTH_DAY`처럼 아무 구분자나 받으면 마감 칸에 온
+#:    `9-12`(9월12일인지 9~12인지)·전화번호 조각이 날짜가 된다. 이쪽은 앞 날짜가 없어
+#:    물려받을 근거도 없으므로 더 좁게 본다.
+_BARE_MONTH_DAY: Final = re.compile(r"(?<!\d)(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+
 #: 마감일로 인정할 연도 범위. 밖이면 날짜꼴이어도 다른 뜻이다(전화번호·금액이 걸릴 수 있다).
 _PLAUSIBLE_YEARS: Final = range(2000, 2101)
 
@@ -480,7 +486,8 @@ class GeminiExtractor:
                 build_prompt(record, has_images=bool(images)),
                 schema=RESPONSE_SCHEMA,
                 images=images,
-            )
+            ),
+            posted_on=record.posted_on,
         )
 
 
@@ -495,8 +502,12 @@ def build_prompt(record: SourceData, *, has_images: bool = False) -> str:
     )
 
 
-def parse_extraction(payload: str) -> Extraction:
-    """모델 응답(JSON 텍스트) → `Extraction`. 계약과 다르면 `ExtractionError`."""
+def parse_extraction(payload: str, *, posted_on: date | None = None) -> Extraction:
+    """모델 응답(JSON 텍스트) → `Extraction`. 계약과 다르면 `ExtractionError`.
+
+    `posted_on`은 그 공고의 **게시일**이다 — 연도를 안 적은 마감일(`8월 8일까지`)에 연도를
+    물려주는 데만 쓴다(`_optional_date`). 없으면 그 마감일을 비운다.
+    """
     try:
         decoded = json.loads(payload)
     except json.JSONDecodeError as err:
@@ -534,7 +545,7 @@ def parse_extraction(payload: str) -> Extraction:
         optional_docs=_text_tuple(decoded, "optional_docs"),
         process_steps=_text_tuple(decoded, "process_steps"),
         description=_summary(decoded),
-        deadline=_optional_date(decoded, "deadline"),
+        deadline=_optional_date(decoded, "deadline", posted_on=posted_on),
         church_name=_short_text(decoded, "church_name"),
         region=region,
         city=_short_text(decoded, "city"),
@@ -740,7 +751,9 @@ def _optional_bool(decoded: Mapping[str, object], key: str) -> bool | None:
     return value
 
 
-def _optional_date(decoded: Mapping[str, object], key: str) -> date | None:
+def _optional_date(
+    decoded: Mapping[str, object], key: str, *, posted_on: date | None = None
+) -> date | None:
     """날짜꼴만 받는다. 아니면 **버린다**(`충원시까지` 같은 표현이 온다).
 
     ⚠️ **모양이 다르면 고쳐 쓴다.** `2026/08/31`·`2026.8.1`·`20260801`·`2026년 8월 31일`은
@@ -754,12 +767,42 @@ def _optional_date(decoded: Mapping[str, object], key: str) -> date | None:
     모델이 그걸로 답했다면 다른 뜻일 가능성이 크다. 그건 버린다.
 
     ⚠️ **연도 범위도 본다.** 날짜꼴이지만 `1899`·`0001` 같은 값은 마감일이 아니다.
+
+    ⚠️ **연도가 아예 없으면 게시일의 연도를 쓴다**(`posted_on` · 2026-08-29 운영자 결정).
+    실측 2,429건 중 **103건**이 `서류마감 8월 8일(토)까지`처럼 연도를 안 적어 마감 칸이
+    비어 있었고, 그중 **56건이 이미 끝난 공고**였다(공개 중이던 17건 포함).
+    `posted_on`이 없으면 이 보정을 하지 않는다 — 값이 틀리는 것이 아니라 **지금처럼 비어
+    있을 뿐**이다.
     """
     value = _optional_text(decoded, key)
     if value is None:
         return None
     found = _dates_in(value)
-    return found[-1] if found else None  # 기간이면 끝이 마감이다
+    if found:
+        return found[-1]  # 기간이면 끝이 마감이다
+    return _dated_by_posting(value, posted_on)
+
+
+def _dated_by_posting(value: str, posted_on: date | None) -> date | None:
+    """연도 없는 `M월 D일` → 게시일의 연도를 붙인 날짜. 못 붙이면 `None`.
+
+    ⚠️⚠️ **게시일보다 앞서면 버린다.** 교회가 낡은 글을 그대로 다시 올리는 일이 있어
+    (실측 2건 — 8월 18일에 올린 글에 `서류마감 8월 8일`), 그대로 두면 **아직 뽑고 있는
+    공고를 자동으로 마감 처리한다.** 다음 해로 넘기는 것도 답이 아니다 — 1년짜리 유령
+    공고가 된다. 비워서 사람이 보게 하는 것이 지금까지의 기준이다(빈 칸 > 틀린 값).
+
+    ⚠️ 그 대가로 **연말에 걸친 마감을 놓친다**(12월 게시 · `1월 5일` 마감). 실측 0건이라
+    지금은 두고, 실제로 오면 그때 좁혀서 넣는다.
+    """
+    if posted_on is None:
+        return None
+    dates = [
+        made
+        for match in _BARE_MONTH_DAY.finditer(value)
+        if (made := _date_or_none(str(posted_on.year), *match.groups())) is not None
+    ]
+    latest = max(dates, default=None)
+    return latest if latest is not None and latest >= posted_on else None
 
 
 def _dates_in(value: str) -> tuple[date, ...]:

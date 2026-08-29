@@ -1599,6 +1599,37 @@ def test_heresy_outranks_a_closed_posting() -> None:
     assert draft.reject_reason is RejectReason.HERESY
 
 
+def test_a_listed_church_whose_senior_pastor_differs_is_let_through() -> None:
+    """⚠️ 담임이 목록 항목과 다르면 **표시를 세우지 않고 통과**시킨다(운영자 결정 2026-08-29).
+
+    표시(`heresy_flag`)를 세우면 min_job이 이단 배지를 띄우고 `confidence`가 등급을 내려
+    **통과가 통과가 아니게 된다.** 근거는 그래도 남긴다 — 왜 공개됐는지 되짚을 수 있어야 한다.
+    """
+    draft = build_draft(
+        _source_data(),
+        _complete(),
+        heresy=screen(_LISTED_NAME, None, None, _listed(), senior_pastor="다른사람"),
+    )
+
+    assert draft.heresy_flag is False, "표시를 세우지 않는다"
+    assert draft.reject_reason is None
+    assert draft.review_status is ReviewStatus.APPROVED, "검수를 거치지 않는다"
+    assert draft.confidence is Confidence.HIGH, "등급이 내려가면 공개되지 않는다"
+    assert draft.heresy_evidence is not None
+    assert "이름만 같은 다른 교회로 보고 통과시켰다" in draft.heresy_evidence
+
+
+def test_a_listed_church_with_an_unknown_senior_pastor_still_waits() -> None:
+    """모르는 것과 다른 것은 다르다 — 담임을 못 찾으면 지금까지처럼 사람이 본다."""
+    draft = build_draft(
+        _source_data(), _complete(), heresy=screen(_LISTED_NAME, None, None, _listed())
+    )
+
+    assert draft.heresy_flag is True
+    assert draft.review_status is ReviewStatus.PENDING
+    assert draft.confidence is Confidence.MEDIUM
+
+
 def test_a_listed_church_whose_senior_pastor_is_the_listed_person_is_rejected() -> None:
     """③ 지역을 못 봤어도 **담임목사가 목록의 그 사람**이면 그 교회다(SPEC §5.4 · 2026-08-28).
 

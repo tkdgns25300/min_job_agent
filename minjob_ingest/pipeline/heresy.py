@@ -19,8 +19,20 @@
 ⚠️ **담임목사는 대조 대상이 아니라 판별 근거다**(2026-08-28). 목록 122항목 중 84개가 **사람
 이름**이고 그 별칭이 교회명이다 — 즉 목록은 "누가 담임인 교회인가"로 판별하도록 되어 있는데
 코드는 교회명만 봤다. 교회명이 걸린 뒤 공고의 담임(`normalize.senior_pastor_of` · 게시판 폼
-또는 본문)이 그 사람이면 확정 거절하고, 다르거나 모르면 그 사실을 근거에 적어 사람이 본다.
-**다르다고 통과시키지 않는다** — 담임이 바뀌어도 그 교회는 그 교회다.
+또는 본문)을 함께 본다:
+
+    담임 == 목록 항목(또는 별칭)  → 확정 거절
+    담임 != 목록 항목             → **통과**(표시를 세우지 않는다)
+    담임을 모른다                 → 사람이 본다
+
+⚠️⚠️ **담임이 다르면 통과시킨다**(운영자 결정 2026-08-29 · 앞선 "그래도 사람이 본다"에서
+변경). 무고한 같은 이름 교회가 반복해서 검수 큐에 올라오는 비용이 이득보다 컸다 — 실측:
+두 달간 이 경로로 자동 거절된 것은 **0건**이고, 걸린 4교회 17건이 전부 이름만 같은 다른
+교회였다. **알고 지는 위험**: 목록에 오른 교회가 담임을 갈면 이 규칙을 그대로 지나간다
+(ROADMAP 고도화 · 목록에 `region`을 채우면 닫힌다).
+
+⚠️ **통과시켜도 근거는 남긴다** — `heresy_flag`는 세우지 않고(min_job에 배지가 뜨면 안 된다)
+`heresy_evidence`에만 적는다. 없으면 "왜 이 교회가 공개됐지?"에 답할 수 없다(SPEC §5.4).
 
 ⚠️ **이 파일에 실제 교회·사람 이름을 적지 않는다.** 목록을 커밋하지 않는 이유(실명 자료)가
 주석으로 새면 그 조치가 무의미해지고, 무고한 실존 교회가 공개 리포에서 "이단 목록 항목"으로
@@ -158,8 +170,9 @@ class HeresyMatch:
         ③ **담임목사가 목록의 그 사람이다**(2026-08-28) — 교회명은 같은데 지역을 못 본 경우에도
            담임이 목록 항목(또는 그 별칭)과 같은 이름이면 그 교회다.
 
-        ⚠️ **③의 반대는 성립하지 않는다** — 담임이 다르다고 통과시키지 않는다. 담임이 바뀌어도
-        그 교회는 그 교회다. 다른 이름은 근거에 적어 사람이 3초에 보게 할 뿐이다.
+        ⚠️ **③은 거절만 정한다.** 담임이 **다를 때** 통과시키는 것은 별개 판정이고
+        `clears_by_senior_pastor`가 답한다 — 거절과 통과가 한 성질에서 나오면, 담임을
+        모르는 건(통과도 거절도 아니다)이 어느 한쪽으로 쏠린다.
 
         ⚠️ 지역을 못 본 교회명으로 거절하면 무고한 교회가 **검수 큐에도 안 뜨고** 사라진다
         (2026-08-19 실측: 예장합동 교회가 이름만 같아서 걸렸다).
@@ -169,6 +182,14 @@ class HeresyMatch:
         if self.names_the_senior_pastor:
             return True
         return _CHURCH_NAME.search(squeeze(self.matched)) is None
+
+    @property
+    def clears_by_senior_pastor(self) -> bool:
+        """공고의 담임이 목록 항목과 **다른 사람**이라 통과시킬 수 있나(운영자 결정 2026-08-29).
+
+        ⚠️ **담임을 모르면 통과가 아니다** — 모르는 것과 다른 것은 다르다.
+        """
+        return self.senior_pastor is not None and not self.names_the_senior_pastor
 
     @property
     def names_the_senior_pastor(self) -> bool:
@@ -204,8 +225,12 @@ class HeresyMatch:
     def _pastor_note(self) -> str:
         if self.senior_pastor is None:
             return "이 공고 담임목사: 미상"
-        verdict = "같은 이름" if self.names_the_senior_pastor else "다른 이름"
-        return f"이 공고 담임목사: {self.senior_pastor} (이단 목록 항목과 {verdict})"
+        if self.names_the_senior_pastor:
+            return f"이 공고 담임목사: {self.senior_pastor} (이단 목록 항목과 같은 이름)"
+        return (
+            f"이 공고 담임목사: {self.senior_pastor} — 이단 목록 항목과 다른 이름이라"
+            " 이름만 같은 다른 교회로 보고 통과시켰다"
+        )
 
     def _region_note(self) -> str:
         if self.entry.region is None:

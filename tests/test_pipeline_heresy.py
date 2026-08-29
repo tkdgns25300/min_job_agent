@@ -320,23 +320,39 @@ def test_a_senior_pastor_named_in_an_alias_also_settles_it() -> None:
     assert match is not None and match.is_conclusive is True
 
 
-def test_a_different_senior_pastor_does_not_clear_the_church() -> None:
-    """⚠️ **③의 반대는 성립하지 않는다.** 담임이 바뀌어도 그 교회는 그 교회다 — 여전히 사람이
-    보되, 근거에 다른 이름이라고 적어 3초에 판단하게 한다."""
+def test_a_different_senior_pastor_clears_the_church() -> None:
+    """⚠️ **담임이 다르면 통과시킨다**(운영자 결정 2026-08-29 · 앞선 판단에서 뒤집었다).
+
+    무고한 같은 이름 교회가 반복해서 검수 큐에 오는 비용이 이득보다 컸다 — 두 달간 이
+    경로의 자동 거절은 0건이었고 걸린 4교회가 전부 다른 교회였다.
+    **알고 지는 위험**: 목록에 오른 교회가 담임을 갈면 이 규칙을 지나간다(ROADMAP 고도화).
+    """
     match = _screen("○○교회", senior_pastor="마아무개")
 
-    assert match is not None
+    assert match is not None, "표시는 여전히 만들어진다 — 근거를 남겨야 한다"
     assert match.names_the_senior_pastor is False
-    assert match.is_conclusive is False, "다르다고 통과시키지 않는다"
-    assert "이 공고 담임목사: 마아무개 (이단 목록 항목과 다른 이름)" in match.evidence
+    assert match.clears_by_senior_pastor is True, "통과시킨다"
+    assert match.is_conclusive is False, "통과이지 거절이 아니다"
+    assert "이름만 같은 다른 교회로 보고 통과시켰다" in match.evidence
 
 
-def test_an_unknown_senior_pastor_is_said_so() -> None:
+def test_an_unknown_senior_pastor_is_not_a_clearance() -> None:
+    """⚠️ **모르는 것과 다른 것은 다르다** — 담임을 못 찾으면 지금까지처럼 사람이 본다."""
     match = _screen("○○교회")
 
     assert match is not None
+    assert match.clears_by_senior_pastor is False
     assert match.is_conclusive is False
     assert "이 공고 담임목사: 미상" in match.evidence
+
+
+def test_a_matching_senior_pastor_is_not_a_clearance() -> None:
+    """같은 이름이면 통과가 아니라 거절이다 — 두 성질이 섞이지 않는지 못 박는다."""
+    match = _screen("○○교회", senior_pastor="나아무개")
+
+    assert match is not None
+    assert match.clears_by_senior_pastor is False
+    assert match.is_conclusive is True
 
 
 def test_the_senior_pastor_never_triggers_a_match_by_itself() -> None:

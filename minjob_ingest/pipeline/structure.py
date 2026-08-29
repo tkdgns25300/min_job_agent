@@ -554,7 +554,11 @@ def build_draft(
         contact_tel=extraction.contact_tel,
         contact_link=extraction.contact_link,
         contact_post=extraction.contact_post,
-        heresy_flag=heresy is not None,
+        # ⚠️ **표시와 근거는 따로 간다**(운영자 결정 2026-08-29). 담임이 목록 항목과 달라
+        #    통과시킨 건은 표시를 세우지 않는다 — min_job이 `heresy_flag`로 배지를 띄우고
+        #    `confidence`가 등급을 내리므로, 세우면 통과가 통과가 아니게 된다.
+        #    근거는 그래도 남긴다: 없으면 "왜 이 교회가 공개됐지?"에 답할 수 없다(SPEC §5.4).
+        heresy_flag=heresy is not None and not heresy.clears_by_senior_pastor,
         heresy_evidence=heresy.evidence if heresy else None,
         review_status=ReviewStatus.REJECTED if reject_reason else ReviewStatus.PENDING,
         reject_reason=reject_reason,
