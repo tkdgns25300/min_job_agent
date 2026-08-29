@@ -836,6 +836,19 @@ def test_a_deadline_earlier_than_the_posting_is_dropped() -> None:
     assert parsed.deadline is None
 
 
+def test_the_prompt_asks_for_a_bare_date_instead_of_dropping_it() -> None:
+    """⚠️⚠️ **코드만 고치면 효과가 0이다**(2026-08-29 실측으로 잡았다).
+
+    파서에 게시일 보정을 넣고 9건을 재구조화했는데 마감일이 하나도 안 채워졌다 — 프롬프트가
+    모델에게 `연도가 없으면 null`이라고 **시키고 있어서** 값이 아예 오지 않았다. 규칙을 코드에
+    두고 입력을 프롬프트가 막는 조합은 겉으로 드러나지 않으므로 여기서 못 박는다.
+    """
+    prompt = build_prompt(_source_data())
+
+    assert "8월 31일까지" in prompt, "연도 없는 예시를 보여준다"
+    assert "연도가 없으면" not in prompt, "연도가 없다고 버리라고 시키지 않는다"
+
+
 def test_without_a_posting_date_the_bare_deadline_stays_empty() -> None:
     """게시일을 안 주면 연도를 물려줄 데가 없다 — **틀리지 않고 비어 있을 뿐**이다."""
     assert parse_extraction(_answer(deadline="8월 8일(토)까지")).deadline is None
