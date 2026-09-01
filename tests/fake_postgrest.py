@@ -261,7 +261,10 @@ def _passes(stored: object, expression: str) -> bool:
         case "lte":
             return isinstance(stored, int) and stored <= int(argument)
         case "gte":
-            return isinstance(stored, int) and stored >= int(argument)
+            if isinstance(stored, int):
+                return stored >= int(argument)
+            # ISO 날짜 문자열 — 사전순 비교가 곧 날짜 비교다(`gone_targets`의 창 필터).
+            return isinstance(stored, str) and stored >= argument
         case "is":
             return stored is None if argument == "null" else _unknown(expression)
         case "not":

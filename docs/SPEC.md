@@ -317,6 +317,46 @@ KWANGSHIN 1). 그대로 승격하면 min_job 목록 절반이 중복이 된다.
   즉 이 컬럼은 **없는 job을 가리킬 수 있고 그것이 정상**이다 — 다음 실행이 정리한다. 마이그레이션에
   FK를 되살리지 말 것.
 
+### 4.4 소멸 감지 — 원문이 삭제된 공고 내리기 (✅ 구현 2026-09-01)
+
+게시판에서 원문이 삭제된 공고를 매일 알아채 `jobs.status='CLOSED'`로 내린다. 실측(2026-08-30 ·
+2회 독립 실행 동일): 공개 953건 중 원문이 사라진 것 35건, 그중 31건은 마감일이 없어 min_job의
+자동 내림에 걸리지 않았다 — 이 단계가 없으면 최대 2개월 "삭제된 게시물입니다"로 떠 있는다.
+
+```
+① 목록을 창(2개월)까지 훑는다  →  원장에 있는데 목록에 없는 글 = 후보  (아직 삭제가 아니다)
+② 대조군(방금 목록에서 본 살아있는 글 2건)을 찌른다
+     대조군이 실패  →  게시판 개편·장애  →  그 게시판은 오늘 판정하지 않는다
+③ 후보의 상세를 연다
+     못 열림 or (본문 0자 AND 그림·첨부 0)  →  삭제 확정
+     본문·그림이 나온다                     →  살아있음 — 내리지 않는다
+④ review_data.source_gone_at 기록  +  published_job_id 가 있으면 jobs.status='CLOSED'
+```
+
+- **왜 두 번 확인하나**: 목록 대조만 믿으면 오판한다 — 실측 후보 39건 중 4건이 살아 있었다
+  (부산장신·침신대는 오래된 글을 **목록에서만** 빼고 URL은 살려 둔다).
+- **판정 규칙은 게시판 공통이다**(25곳 실측: 살아있는 글 50건 전부 정상 판정). 예외는 CSU
+  하나 — 상세 HTML이 SPA 껍데기라 구분이 안 되고, 대신 API가 `code 42004 "삭제된
+  게시물입니다"`를 준다(어댑터의 `gone_request`·`parse_gone` 짝 · 게시판 1곳 = 파일 1개 유지).
+- **덜 훑고 "없다" 금지**: 끌어올림 게시판은 날짜 역순이 아니다 — 원장 건수로 **최소 페이지**를
+  검산하고(실측: 이것 없이 고신대 77건 중 63건 오판), 후보가 대상의 30%를 넘으면 게시판째
+  보류한다(소량 3건까지는 비율 방어를 걸지 않는다 — 작은 게시판의 진짜 삭제를 막지 않게).
+- **순서: collect → gone → structure(dedup) → publish.** 삭제 35건 중 27건이 다른 게시판에
+  살아있는 같은 자리를 갖고 있었다 — 먼저 내려서 앵커를 비워야 같은 실행의 중복 판정이
+  대기하던 공고를 새 대표로 올린다. 사라진 행은 §4.1 판정 대상에서 빠진다.
+- **`source_gone_at`은 판정이 아니라 관측 사실이다.** `review_status`는 건드리지 않고(공개된
+  행은 `APPROVED`인 채 남는다), 운영자 소유 가드도 지나지 않는다. 값이 있는 행은 다음날부터
+  판정 대상에서 빠진다 — 되살아나도 자동으로 다시 열지 않는다(운영자 몫 · ROADMAP).
+- **내리기는 DB 조건이 지킨다**: `UPDATE jobs SET status='CLOSED' WHERE id=? AND church_id IS
+  NULL AND status='OPEN'` — 교회가 claim한 공고·이미 닫힌 공고는 0행으로 끝난다(실패가 아니다).
+- **마감 정리를 겸한다**: 마감이 지났는데 `OPEN`인 우리 공고(실측 57건)도 같은 경로로 내린다.
+  후보는 `jobs.deadline`(운영자 교정이 정본)으로 고르고, **`published_job_ids`(우리 것 판별의
+  정본 · §8)와 교집합**을 낸 뒤에만 닫는다.
+- **판정할 수 없는 곳은 알고 뺀다**: HANIL(상세를 따로 받지 않아 2차 확인 불가 · 24건)과
+  비활성 게시판(대신·광신·목원 — 러너 IP 차단 · 50건). 실행 리포트에 이유가 남는다.
+- 실패는 소스 단위 격리(§3)이고 **누적 손실이 없다** — 삭제는 사라지지 않으므로 오늘 못 하면
+  내일 잡는다(collect의 gap 규칙과 다른 이유가 이것이다).
+
 ---
 
 ## 5. 판정 로직 (④ 구조화 = Gemini 2.5 Flash)
@@ -574,7 +614,7 @@ min_job `jobs` 미러(title·position·role·department·employment_type·qualif
 | 교단 | `denomination`(`UNKNOWN` 가능·임시) · `denomination_source`(stated/registry/ai_guess/unknown) · `denomination_evidence` · `raw_denomination`(원표기) |
 | 이단 | `heresy_flag`·`heresy_evidence` |
 | 검수 이력 **없음** | ⚠️ **검산이 무엇을 비웠는지는 저장하지 않는다**(§5.5b). admin에서 빈 칸을 보면 "원문에 없었다"와 "검산이 지웠다"를 구분할 수 없다 — 실측에서 비운 것이 42개 중 1개라 지금은 두지만, 검수가 답답해지면 `scrubbed_fields text[]`를 추가한다 |
-| 검수 메타 | `confidence`(high/medium/low) · **`dedup_key`·`dedup_state`**(§4.1 · ALONE/MASTER/DUPLICATE/UNCERTAIN) · `review_status`(PENDING/APPROVED/REJECTED) + **`reject_reason`**(DUPLICATE/HERESY/**CLOSED**/OPERATOR) · **`published_job_id`** FK→jobs(공개 결과 · §4.2가 앵커를 가리고 §4.2b가 이걸로 끌어올림 대상을 찾는다) · `reviewed_by` · `reviewed_at` · `created_at`(큐 정렬·감사) |
+| 검수 메타 | `confidence`(high/medium/low) · **`dedup_key`·`dedup_state`**(§4.1 · ALONE/MASTER/DUPLICATE/UNCERTAIN) · `review_status`(PENDING/APPROVED/REJECTED) + **`reject_reason`**(DUPLICATE/HERESY/**CLOSED**/OPERATOR) · **`published_job_id`** FK→jobs(공개 결과 · §4.2가 앵커를 가리고 §4.2b가 이걸로 끌어올림 대상을 찾는다) · `reviewed_by` · `reviewed_at` · **`source_gone_at`**(원문이 게시판에서 사라진 것을 확인한 시각 · §4 gone 단계 · 판정이 아니라 관측 사실이라 `review_status`를 건드리지 않는다) · `created_at`(큐 정렬·감사) |
 | 교회 연결 **없음** | ⚠️ ~~`matched_church_id`~~는 2026-08-20에 **컬럼째 삭제**했다(그전엔 "남겨 두되 항상 NULL"). **claim은 min_job이 `jobs.church_id`에 쓴다**(§8) — 우리가 저장할 것이 없다. 원래는 공개 **전에** 교회명으로 어느 교회 행일지 미리 추측해 이어두려던 칸이었고, (교회명+광역) 1,203묶음 중 67개가 연락처가 없어 동명이교회를 가릴 수 없어 폐기됐다(2026-08-06) |
 
 > 게이트1 `NO`(개교회 아님·비채용)는 review_data를 만들지 않는다(§1·§5.1) — 대신 `source_data.structured_at`이 기록돼 재구조화 대상에서 빠진다(§4). `UNCERTAIN`은 confidence=low로 여기 온다.

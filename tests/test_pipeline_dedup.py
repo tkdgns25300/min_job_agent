@@ -217,6 +217,22 @@ def test_the_master_carries_the_newest_posting_date() -> None:
     assert master.verdict.posted_at == date(2026, 7, 29)
 
 
+def test_a_gone_master_leaves_the_seat_to_the_survivor() -> None:
+    """원문이 사라진 행은 자리 다툼에서 빠진다(SPEC §4 gone 단계).
+
+    실측 2026-08-30: 삭제 35건 중 27건이 다른 게시판에 살아있는 같은 자리를 갖고 있었다 —
+    사라진 대표를 빼지 않으면 살아있는 쪽이 영영 중복으로 남아 그 자리가 비어 보인다.
+    """
+    gone = _candidate(source_gone_at=_NOW)
+    survivor = _candidate()
+
+    updates = plan([gone, survivor])
+
+    assert _by_id(updates).keys() == {str(survivor.draft.id)}
+    (update,) = updates
+    assert update.dedup_state is DedupState.ALONE  # 혼자 남았다 — 새 대표다
+
+
 # ── 라운드 ────────────────────────────────────────────────────────
 
 

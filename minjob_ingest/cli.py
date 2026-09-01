@@ -26,7 +26,13 @@ from uuid import UUID
 
 from minjob_ingest.clock import kst_now
 from minjob_ingest.console import Console, ProgressLine
-from minjob_ingest.domain import Confidence, CrawlMode, DedupState, ReviewStatus
+from minjob_ingest.domain import (
+    Confidence,
+    CrawlMode,
+    DedupState,
+    ReviewStatus,
+    normalize_source_key,
+)
 from minjob_ingest.fetch.client import FetchError, SourceClient
 from minjob_ingest.lib.gemini import GeminiClient, GeminiError
 from minjob_ingest.models import (
@@ -50,6 +56,7 @@ from minjob_ingest.pipeline.collect import (
 )
 from minjob_ingest.pipeline.dedup import DedupReport, dedup_all
 from minjob_ingest.pipeline.extraction import GeminiExtractor
+from minjob_ingest.pipeline.gone import GoneRunReport, run_gone
 from minjob_ingest.pipeline.health import (
     Alert,
     AlertKind,
@@ -105,6 +112,7 @@ _SNAPSHOT = "snapshot"
 _STRUCTURE = "structure"
 _DEDUP = "dedup"
 _PUBLISH = "publish"
+_GONE = "gone"
 _DAILY = "daily"
 _STATUS = "status"
 
@@ -249,6 +257,12 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _run_dedup(dry_run=bool(args.dry_run), verbose=bool(args.verbose))
     if command == _PUBLISH:
         return _run_publish(dry_run=bool(args.dry_run), verbose=bool(args.verbose))
+    if command == _GONE:
+        return _run_gone(
+            dry_run=bool(args.dry_run),
+            only=str(args.source) if args.source is not None else None,
+            verbose=bool(args.verbose),
+        )
     if command == _DAILY:
         # ⚠️ **일을 시작하기 전에 거른다.** 뒤에서 걸리면 게시판 30곳을 3분간 훑은 뒤에야
         #    멈춘다 — 외부 입력은 경계에서 검증한다(CLAUDE.md).
@@ -1236,9 +1250,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     publish.add_argument("--verbose", action="store_true", help="로그까지 표시")
 
+    gone = subcommands.add_parser(
+        _GONE,
+        help="원문이 삭제된 공고를 확인해 내림 (🌐 게시판 요청 · 무료)",
+    )
+    gone.add_argument("--source", metavar="KEY", help="게시판 하나만 (예: CSU)")
+    gone.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="확인까지 하고 내리지는 않음 — 오늘 무엇을 내릴지 본다 (유료 호출 0회)",
+    )
+    gone.add_argument("--verbose", action="store_true", help="로그까지 표시")
+
     daily = subcommands.add_parser(
         _DAILY,
-        help="하루치를 한 번에 — 수집→구조화(중복 판정 포함)→공개 (🌐 게시판 요청 · 💰 유료)",
+        help="하루치를 한 번에 — 수집→소멸 확인→구조화(dedup 포함)→공개 (🌐 게시판 요청 · 💰 유료)",
     )
     daily.add_argument(
         "--limit",
@@ -1262,6 +1288,63 @@ def _build_parser() -> argparse.ArgumentParser:
         "--runs", type=int, default=_STATUS_RUNS, help=f"보여줄 실행 수 (기본 {_STATUS_RUNS})"
     )
     return parser
+
+
+def _run_gone(*, dry_run: bool, only: str | None, verbose: bool) -> int:
+    """원문이 삭제된 공고를 확인해 내린다(SPEC §4 gone 단계).
+
+    ⚠️ **유료 호출은 없다.** 게시판 목록·상세를 요청하므로 무료지만 예의는 지킨다
+    (fetch 층의 간격·robots 그대로). `--dry-run`은 확인까지 하고 저장·내리기만 건너뛴다 —
+    운영 첫 며칠 동안 "오늘 무엇을 내릴 것인가"를 사람이 보는 창구다.
+    """
+    console = Console()
+    sources = [
+        source
+        for source in load_sources(None)
+        if only is None or source.key == normalize_source_key(only)
+    ]
+    if only is not None and not sources:
+        raise ConfigError(f"등록되지 않은 게시판입니다: {only}")
+    with opened_store(Settings.load()) as session:
+        console.heading(
+            "소멸 확인 미리보기" if dry_run else "소멸 확인",
+            note="게시판에 요청함 · 유료 호출 없음",
+        )
+        console.field("저장소", session.label)
+        with _console_logging(console, verbose=verbose):
+            report = run_gone(
+                session.store, session.jobs, sources, today=kst_now().date(), dry_run=dry_run
+            )
+        _print_gone_report(console, report, dry_run=dry_run)
+        # 게시판 일부 실패는 통과다(collect와 같은 급) — 삭제는 내일 또 잡힌다.
+        return 0
+
+
+def _print_gone_report(console: Console, report: GoneRunReport, *, dry_run: bool) -> None:
+    swept = [sweep for sweep in report.reports if sweep.skipped is None]
+    console.field("판정한 게시판", f"{len(swept)}곳", note="대상이 있고 확인이 가능한 곳만")
+    for sweep in report.reports:
+        if sweep.skipped is not None and sweep.targets:
+            console.field(sweep.source_key, console.paint("보류", "yellow"), note=sweep.skipped)
+    for sweep in swept:
+        if not (sweep.gone or sweep.alive or sweep.unknown):
+            continue
+        parts = [f"삭제 {len(sweep.gone)}건"]
+        if sweep.alive:
+            parts.append(f"목록에만 없음 {len(sweep.alive)}건(내리지 않음)")
+        if sweep.unknown:
+            parts.append(f"판정 불가 {len(sweep.unknown)}건")
+        console.field(sweep.source_key, " · ".join(parts))
+        for target in sweep.gone:
+            console.field("  내림" if not dry_run else "  내릴 것", target.title[:48])
+    for key, why in sorted(report.failures.items()):
+        console.warn(f"{key}: 확인하지 못했다", why)
+    if dry_run:
+        console.field("저장", "건너뜀", note="--dry-run — 기록도 내리기도 하지 않았다")
+        return
+    console.field("소멸 기록", f"{report.marked}건", note="review_data.source_gone_at")
+    console.field("내림", f"{report.closed}건", note="jobs.status=CLOSED · 교회 것은 건드리지 않음")
+    console.field("마감 정리", f"{report.expired_closed}건", note="마감일이 지난 우리 공고")
 
 
 def _run_dedup(*, dry_run: bool, verbose: bool) -> int:
@@ -1322,7 +1405,9 @@ def _print_dedup_report(console: Console, report: DedupReport, *, dry_run: bool)
         )
     if report.settled:
         console.field(
-            "이미 결론", f"{report.settled}건", note="이단·마감·운영자 거절 — 건드리지 않는다"
+            "이미 결론",
+            f"{report.settled}건",
+            note="이단·마감·운영자 거절·원문 소멸 — 건드리지 않는다",
         )
     console.field(
         "저장",
@@ -1357,7 +1442,7 @@ def _run_publish(*, dry_run: bool, verbose: bool) -> int:
 
 
 def _run_daily(*, limit: int, dry_run: bool, verbose: bool) -> int:
-    """하루치를 한 번에 — 수집 → 구조화(중복 판정 포함) → 공개.
+    """하루치를 한 번에 — 수집 → 소멸 확인 → 구조화(중복 판정 포함) → 공개.
 
     ⚠️ **cron이 부를 수 있는 창구가 이것 하나다.** 단계별 명령은 사람이 화면을 보며 판단하는
     용도이고, 무인 실행에는 단계 사이의 규칙이 코드에 있어야 한다.
@@ -1392,6 +1477,14 @@ def _run_daily(*, limit: int, dry_run: bool, verbose: bool) -> int:
     )
     if dry_run:
         return _previewed(console, limit=limit)
+    # ⚠️ **소멸 확인이 구조화보다 먼저다**(SPEC §4). 삭제 35건 중 27건이 다른 게시판에
+    #    살아있는 같은 자리를 갖고 있었다(실측 2026-08-30) — 먼저 내려서 앵커를 비워야
+    #    바로 아래 중복 판정이 대기하던 공고를 새 대표로 올리고 이번 공개에 내보낸다.
+    #    실패해도 통과한다: 삭제는 사라지지 않으니 내일 또 잡히고, 신규 수집 처리와 무관하다.
+    try:
+        _run_gone(dry_run=False, only=None, verbose=verbose)
+    except StoreError as err:
+        console.warn("소멸 확인을 건너뜁니다", str(err))
     try:
         _run_structure(
             limit=limit,

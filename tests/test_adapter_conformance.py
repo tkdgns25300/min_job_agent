@@ -23,7 +23,12 @@ from minjob_ingest.sources.adapters.base import (
     normalized_text,
     parse_html,
 )
-from minjob_ingest.sources.adapters.registry import Adapter, find_adapter, implemented_keys
+from minjob_ingest.sources.adapters.registry import (
+    Adapter,
+    GoneProber,
+    find_adapter,
+    implemented_keys,
+)
 from minjob_ingest.sources.registry import SourceConfig, find_source, load_sources
 
 FIXTURE_ROOT: Final = Path(__file__).parent / "fixtures"
@@ -92,6 +97,16 @@ def test_provides_the_whole_contract(key: str) -> None:
     adapter, _ = _adapter_and_source(key)
     for name in ("list_request", "parse_list", "parse_detail"):
         assert callable(getattr(adapter, name, None)), f"{key}: {name} 없음"
+
+
+@pytest.mark.parametrize("key", _KEYS)
+def test_a_gone_prober_is_declared_as_a_pair_or_not_at_all(key: str) -> None:
+    """`gone_request`·`parse_gone`은 짝이다(SPEC §4 gone 단계) — 반쪽 선언은 여기서 잡는다.
+
+    반쪽이면 `GoneProber.of`가 시끄럽게 죽는데, 그 죽음이 **매일 실행에서** 나면 늦다.
+    """
+    adapter, _ = _adapter_and_source(key)
+    GoneProber.of(adapter)  # 반쪽 선언이면 TypeError
 
 
 @pytest.mark.parametrize("key", _KEYS)

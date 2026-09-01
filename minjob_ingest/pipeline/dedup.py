@@ -230,7 +230,13 @@ def dedup_all(store: Store, jobs: PublishTarget | None, *, dry_run: bool) -> Ded
     updates = plan(candidates, anchors=anchors)
     judged = {update.review_data_id for update in updates}
     skipped = [candidate.draft for candidate in candidates if candidate.draft.id not in judged]
-    settled = sum(1 for draft in skipped if draft.reject_reason in _SETTLED_REASONS)
+    # 원문이 사라진 행(§4.4)도 "이미 결론"이다 — 사람 몫(unjudged)에 세면 삭제가 쌓일수록
+    # 리포트의 "판단 못 함"이 부풀어 검수자가 헛짚는다.
+    settled = sum(
+        1
+        for draft in skipped
+        if draft.reject_reason in _SETTLED_REASONS or draft.source_gone_at is not None
+    )
     return DedupReport(
         scanned=len(candidates),
         states=dict(Counter(update.dedup_state.value for update in updates)),
@@ -267,6 +273,11 @@ def plan(
     seats: dict[Seat, list[_Member]] = defaultdict(list)
     for candidate in candidates:
         if candidate.draft.reject_reason in _SETTLED_REASONS:
+            continue
+        if candidate.draft.source_gone_at is not None:
+            # 원문이 사라진 행은 자리 다툼에서 빠진다(SPEC §4 gone 단계) — 대표였다면 살아있는
+            # 중복이 대표를 물려받아 다음 공개에 나간다(실측 2026-08-30: 삭제 35건 중 27건이
+            # 다른 게시판에 살아있는 같은 자리를 갖고 있었다).
             continue
         seat = seat_of(candidate.draft)
         if seat is None:

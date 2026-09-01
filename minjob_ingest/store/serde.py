@@ -189,6 +189,7 @@ def row_to_review_data(row: Row) -> ReviewData:
             reviewed_at=_optional_timestamp(row, "reviewed_at"),
             review_note=_optional_str(row, "review_note"),
             poster_paths=_str_tuple(row, "poster_paths"),
+            source_gone_at=_optional_timestamp(row, "source_gone_at"),
             created_at=_timestamp(row, "created_at"),
         )
     except ValueError as err:

@@ -26,7 +26,14 @@ from minjob_ingest.clock import parse_iso_date
 from minjob_ingest.domain import Department, Position, Region
 from minjob_ingest.models import JsonValue, ReviewData
 from minjob_ingest.store.base import JobAnchor, StoreError
-from minjob_ingest.store.postgrest import PostgrestClient, chunked, eq, in_values, is_null
+from minjob_ingest.store.postgrest import (
+    PostgrestClient,
+    chunked,
+    eq,
+    in_values,
+    is_null,
+    lt_date,
+)
 from minjob_ingest.store.serde import to_row
 
 _LOG = logging.getLogger(__name__)
@@ -47,6 +54,9 @@ ALWAYS_OPEN_MAX_DAYS: Final = 90
 #: 깨진다**(그 자리의 재게시를 새 공고로 공개해 같은 자리 2건이 뜬다). 지금 남는 값은
 #: `OPEN`·`CLOSED` 둘뿐이라 "보이는 것 = OPEN"이 유일한 판정이다.
 _VISIBLE_STATUS: Final = "OPEN"
+
+#: 원문이 사라진 공고를 내릴 때 쓰는 상태(SPEC §4 gone 단계). min_job의 `status` CHECK 값이다.
+_CLOSED_STATUS: Final = "CLOSED"
 
 #: 크롤러가 넣는 공고의 출처. ⚠️ `jobs.source`로는 우리 것인지 알 수 없다(운영자 수동 등록도
 #: `OPERATOR`다) — 구분은 `review_data.published_job_id`로 한다(SPEC §8).
@@ -191,6 +201,35 @@ class SupabaseJobs:
             values={"posted_at": posted_at.isoformat()},
         )
         return bool(changed)
+
+    def close_job(self, job_id: UUID) -> bool:
+        # ⚠️ **`status` 하나만 보낸다**(`bump_posted_at`과 같은 규율). 조건 세 개를 전부 DB가
+        #    판정한다: 교회가 claim한 행(§8)·이미 닫힌 행은 0행으로 끝난다 — 실패가 아니다.
+        closed = self._client.patch(
+            _JOBS,
+            filters={
+                "id": eq(str(job_id)),
+                "church_id": is_null(),
+                "status": eq(_VISIBLE_STATUS),
+            },
+            values={"status": _CLOSED_STATUS},
+        )
+        return bool(closed)
+
+    def expired_job_ids(self, *, today: date) -> tuple[UUID, ...]:
+        # ⚠️ 후보일 뿐 아직 "우리 것"이 아니다 — 호출자가 `Store.published_job_ids`와
+        #    교집합을 낸 뒤에야 닫는다(SPEC §8: 우리 것 판별은 review_data 쪽 링크가 정본).
+        rows = self._client.select(
+            _JOBS,
+            columns="id",
+            order="id",
+            filters={
+                "status": eq(_VISIBLE_STATUS),
+                "church_id": is_null(),
+                "deadline": lt_date(today),
+            },
+        )
+        return tuple(_uuid(row, "id") for row in rows)
 
     def published_state(self, job_ids: Sequence[UUID]) -> Mapping[UUID, date]:
         if not job_ids:

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol
 
@@ -81,6 +83,37 @@ def find_adapter(source_key: str) -> Adapter:
             f" `sources/adapters/{source_key.lower()}.py`를 만들면 자동으로 등록된다"
         )
     return adapter
+
+
+@dataclass(frozen=True, slots=True)
+class GoneProber:
+    """게시판이 삭제를 **직접** 말해줄 때 그 신호를 쓰는 방법(SPEC §4 gone 단계).
+
+    상세를 파싱해 보는 일반 확인보다 정확하다 — CSU는 상세 HTML이 살아있는 글과 삭제된 글에
+    **똑같은 SPA 껍데기**라 구분이 안 되는데, API는 `삭제된 게시물입니다`라고 답한다(실측
+    2026-08-30). 네트워크는 여전히 fetch 층이 하고 어댑터는 **무엇을 보낼지·응답이 무슨
+    뜻인지만** 정한다(`ListRequest`와 같은 분업).
+    """
+
+    #: 이 글이 살아있는지 물어보는 요청.
+    request: Callable[[SourceConfig, str], ListRequest]
+    #: 응답 본문 → 삭제됐나. `None`은 모르겠다는 뜻이다 — 모르면 내리지 않는다.
+    parse: Callable[[str], bool | None]
+
+    @classmethod
+    def of(cls, adapter: Adapter) -> GoneProber | None:
+        """어댑터가 전용 신호를 선언했으면 그것을 쓴다(`needs_detail_request`와 같은 관례).
+
+        둘 중 하나만 선언한 어댑터는 버그이므로 시끄럽게 죽는다 — 조용히 일반 확인으로
+        넘어가면 전용 신호가 있는 게시판이 덜 정확한 판정을 받는다.
+        """
+        request = getattr(adapter, "gone_request", None)
+        parse = getattr(adapter, "parse_gone", None)
+        if request is None and parse is None:
+            return None
+        if request is None or parse is None:
+            raise TypeError(f"{adapter!r}: gone_request·parse_gone은 짝으로 선언해야 한다")
+        return cls(request=request, parse=parse)
 
 
 def needs_detail_request(adapter: Adapter) -> bool:

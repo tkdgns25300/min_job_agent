@@ -21,8 +21,11 @@ import logging
 import os
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
+from datetime import date, datetime
 from pathlib import Path
 from typing import Final
+from uuid import UUID
 
 from minjob_ingest.clock import kst_now
 from minjob_ingest.domain import CrawlMode, ReviewStatus, normalize_source_key
@@ -30,6 +33,7 @@ from minjob_ingest.models import CrawlRun, ReviewData, SourceData, SourceHealth
 from minjob_ingest.store.base import (
     DedupCandidate,
     DedupUpdate,
+    GoneTarget,
     LedgerEntry,
     PendingWork,
     RequeueResult,
@@ -278,6 +282,60 @@ class JsonStore:
             if changed:
                 self._write_rows(_REVIEW_DATA_FILE, rows)
             return changed
+
+    # ── 소멸 감지 ───────────────────────────────────────────────
+
+    def gone_targets(self, *, since: date) -> tuple[GoneTarget, ...]:
+        sources = {str(row.get("id")): row for row in self._read_rows(_SOURCE_DATA_FILE)}
+        targets: list[GoneTarget] = []
+        for row in self._read_rows(_REVIEW_DATA_FILE):
+            draft = row_to_review_data(row)
+            if draft.source_gone_at is not None:
+                continue
+            if draft.published_job_id is None and draft.review_status is not ReviewStatus.PENDING:
+                continue
+            origin = sources.get(str(draft.source_data_id))
+            if origin is None:
+                raise StoreError(f"초안의 원자료가 없다 (source_data_id={draft.source_data_id})")
+            posted_on = date.fromisoformat(str(origin.get("posted_on")))
+            if posted_on < since:
+                continue
+            targets.append(
+                GoneTarget(
+                    review_data_id=draft.id,
+                    published_job_id=draft.published_job_id,
+                    source_key=str(origin.get("source_key")),
+                    external_id=str(origin.get("external_id")),
+                    source_url=str(origin.get("source_url")),
+                    title=str(origin.get("title")),
+                    posted_on=posted_on,
+                )
+            )
+        return tuple(targets)
+
+    def published_job_ids(self) -> frozenset[UUID]:
+        return frozenset(
+            draft.published_job_id
+            for draft in (row_to_review_data(row) for row in self._read_rows(_REVIEW_DATA_FILE))
+            if draft.published_job_id is not None
+        )
+
+    def mark_gone(self, review_data_ids: Sequence[UUID], *, at: datetime) -> int:
+        wanted = {str(review_data_id) for review_data_id in review_data_ids}
+        with self._write_lock:
+            rows = self._read_rows(_REVIEW_DATA_FILE)
+            written = 0
+            for index, row in enumerate(rows):
+                if str(row.get("id")) not in wanted:
+                    continue
+                stored = row_to_review_data(row)
+                if stored.source_gone_at is not None:  # 이미 관측했다 — 멱등
+                    continue
+                rows[index] = to_row(replace(stored, source_gone_at=at))
+                written += 1
+            if written:
+                self._write_rows(_REVIEW_DATA_FILE, rows)
+            return written
 
     # ── 실행·상태 ───────────────────────────────────────────────
 

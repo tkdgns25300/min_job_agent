@@ -20,6 +20,7 @@ import logging
 import re
 import time
 from collections.abc import Iterator, Mapping, Sequence
+from datetime import date
 from typing import Final
 
 import httpx
@@ -345,6 +346,16 @@ def gte(value: int) -> str:
     """`col=gte.3` — `lt`의 여집합. 둘을 나란히 두면 "재시도 대상"과 "포기한 것"이
     **같은 경계**를 쓴다(`MAX_STRUCTURE_ATTEMPTS` 하나로 갈린다)."""
     return f"gte.{value}"
+
+
+def lt_date(value: date) -> str:
+    """`col=lt.2026-09-01` — 마감이 지난 행(`deadline < today`)을 서버가 고르게 한다."""
+    return f"lt.{value.isoformat()}"
+
+
+def gte_date(value: date) -> str:
+    """`col=gte.2026-07-01` — 날짜 창의 시작. 창 밖 수천 행을 받지 않으려는 서버 필터다."""
+    return f"gte.{value.isoformat()}"
 
 
 def lte(value: int) -> str:

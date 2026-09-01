@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Final
+from uuid import UUID
 
-from minjob_ingest.clock import kst_now, parse_iso_date
+from minjob_ingest.clock import kst_now, parse_iso_date, to_iso
 from minjob_ingest.domain import CrawlMode, ReviewStatus, normalize_source_key
 from minjob_ingest.models import (
     MAX_STRUCTURE_ATTEMPTS,
@@ -37,6 +39,7 @@ from minjob_ingest.models import (
 from minjob_ingest.store.base import (
     DedupCandidate,
     DedupUpdate,
+    GoneTarget,
     LedgerEntry,
     PendingWork,
     RequeueResult,
@@ -58,6 +61,7 @@ from minjob_ingest.store.postgrest import (
     chunked,
     eq,
     gte,
+    gte_date,
     in_values,
     is_null,
     lt,
@@ -94,6 +98,17 @@ type CorruptRowHandler = Callable[[str, SerdeError], None]
 
 def _log_corrupt_row(source: str, error: SerdeError) -> None:
     _LOG.warning("손상된 행을 건너뜀 (%s): %s", source, error)
+
+
+@dataclass(frozen=True, slots=True)
+class _GoneOrigin:
+    """창 안 원자료의 신원 — `gone_targets`가 초안과 짝지을 재료."""
+
+    source_key: str
+    external_id: str
+    source_url: str
+    title: str
+    posted_on: date
 
 
 class SupabaseStore:
@@ -297,6 +312,85 @@ class SupabaseStore:
                 raise StoreError(f"초안의 원자료가 없다 (source_data_id={draft.source_data_id})")
             candidates.append(DedupCandidate(draft=draft, posted_on=source_posted_on))
         return tuple(candidates)
+
+    # ── 소멸 감지 (SPEC §4 gone 단계) ────────────────────────────
+
+    def gone_targets(self, *, since: date) -> tuple[GoneTarget, ...]:
+        origins = self._gone_origins(since=since)
+        targets: list[GoneTarget] = []
+        rows = self._client.select(
+            _REVIEW_DATA,
+            columns="id,source_data_id,review_status,published_job_id,source_gone_at",
+            order="id",
+            filters={"source_gone_at": is_null()},
+        )
+        for row in rows:
+            published_job_id = row.get("published_job_id")
+            if published_job_id is None and row.get("review_status") != ReviewStatus.PENDING:
+                continue
+            origin = origins.get(str(row.get("source_data_id")))
+            if origin is None:  # 창 밖 원자료 — 서버 필터가 걸렀다
+                continue
+            targets.append(
+                GoneTarget(
+                    review_data_id=UUID(str(row.get("id"))),
+                    published_job_id=(
+                        UUID(str(published_job_id)) if isinstance(published_job_id, str) else None
+                    ),
+                    source_key=origin.source_key,
+                    external_id=origin.external_id,
+                    source_url=origin.source_url,
+                    title=origin.title,
+                    posted_on=origin.posted_on,
+                )
+            )
+        return tuple(targets)
+
+    def _gone_origins(self, *, since: date) -> Mapping[str, _GoneOrigin]:
+        """창 안 원자료의 신원. 창 필터를 **서버에** 건다 — 창 밖 수천 행을 받지 않는다."""
+        origins: dict[str, _GoneOrigin] = {}
+        rows = self._client.select(
+            _SOURCE_DATA,
+            columns="id,source_key,external_id,source_url,title,posted_on",
+            order="id",
+            filters={"posted_on": gte_date(since)},
+        )
+        for row in rows:
+            raw_id = row.get("id")
+            if not isinstance(raw_id, str):
+                raise StoreError(f"source_data 행이 이상하다 (id={raw_id!r})")
+            origins[raw_id] = _GoneOrigin(
+                source_key=str(row.get("source_key")),
+                external_id=str(row.get("external_id")),
+                source_url=str(row.get("source_url")),
+                title=str(row.get("title")),
+                posted_on=parse_iso_date(str(row.get("posted_on"))),
+            )
+        return origins
+
+    def published_job_ids(self) -> frozenset[UUID]:
+        rows = self._client.select(
+            _REVIEW_DATA,
+            columns="published_job_id",
+            order="id",
+            filters={"published_job_id": is_null(negated=True)},
+        )
+        return frozenset(UUID(str(row["published_job_id"])) for row in rows)
+
+    def mark_gone(self, review_data_ids: Sequence[UUID], *, at: datetime) -> int:
+        if not review_data_ids:
+            return 0
+        # ⚠️ `source_gone_at IS NULL`이 멱등을 만든다 — 이미 관측한 행은 조건에서 빠져
+        #    갱신되지도 세지지도 않는다(JsonStore와 같은 계약).
+        written = self._client.patch(
+            _REVIEW_DATA,
+            filters={
+                "id": in_values([str(review_data_id) for review_data_id in review_data_ids]),
+                "source_gone_at": is_null(),
+            },
+            values={"source_gone_at": to_iso(at)},
+        )
+        return len(written)
 
     def _posted_on_by_source_id(self) -> Mapping[str, date]:
         """라운드 경계용 게시일. **원자료에서 가져온다**(`DedupCandidate` docstring).

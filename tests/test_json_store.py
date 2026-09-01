@@ -911,6 +911,59 @@ def test_a_verdict_on_a_row_the_operator_owns_is_a_bug(store: JsonStore) -> None
         )
 
 
+# ── 소멸 감지 (SPEC §4 gone 단계) ────────────────────────────────
+
+
+def test_gone_targets_carry_the_source_identity(store: JsonStore) -> None:
+    draft = _drafted(store, "25553")
+
+    (target,) = store.gone_targets(since=FIXED_NOW.date())
+
+    assert target.review_data_id == draft.id
+    assert (target.source_key, target.external_id) == ("YTUS", "25553")
+    assert target.posted_on == FIXED_NOW.date()
+    assert target.published_job_id is None  # PENDING — 내릴 곳은 없어도 관측 대상이다
+
+
+def test_a_rejected_draft_is_not_a_gone_target(store: JsonStore) -> None:
+    """거절된 행은 공개되지도 검수되지도 않는다 — 확인 요청만 낭비다."""
+    record = _structured(store, _source_data("1"))
+    store.upsert_review_data(
+        replace(
+            _review_data(record.id),
+            review_status=ReviewStatus.REJECTED,
+            reject_reason=RejectReason.OPERATOR,
+        )
+    )
+
+    assert store.gone_targets(since=FIXED_NOW.date()) == ()
+
+
+def test_a_posting_outside_the_window_is_not_a_gone_target(store: JsonStore) -> None:
+    """창 밖 공고는 목록을 그만큼 거슬러 훑을 수 없다 — 대상에 넣으면 전부 오판된다."""
+    _drafted(store, "1")
+
+    assert store.gone_targets(since=FIXED_NOW.date() + timedelta(days=1)) == ()
+
+
+def test_mark_gone_is_idempotent_and_skips_the_already_observed(store: JsonStore) -> None:
+    draft = _drafted(store, "1")
+
+    assert store.mark_gone([draft.id], at=FIXED_NOW) == 1
+    assert store.mark_gone([draft.id], at=FIXED_NOW + timedelta(days=1)) == 0  # 멱등
+
+    (candidate,) = store.dedup_candidates()
+    assert candidate.draft.source_gone_at == FIXED_NOW  # 첫 관측 시각이 남는다
+
+
+def test_an_observed_row_leaves_the_target_pool(store: JsonStore) -> None:
+    """관측한 행을 매일 다시 찔러보지 않는다 — 되살아나도 자동으로 다시 열지 않는다(ROADMAP)."""
+    draft = _drafted(store, "1")
+    store.mark_gone([draft.id], at=FIXED_NOW)
+
+    assert store.gone_targets(since=FIXED_NOW.date()) == ()
+
+
 # ── status 조회 (SPEC §7) — ⚠️ SupabaseStore 와 **같은 단정**을 쓴다 ────
 
 

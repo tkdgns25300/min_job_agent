@@ -644,6 +644,37 @@ def test_a_broken_row_is_skipped_in_batch_reads(
     assert len(corruption_log) == 1
 
 
+# ── 소멸 감지 (SPEC §4 gone 단계) ────────────────────────────────
+
+
+def test_gone_targets_join_the_draft_with_its_origin(
+    store: SupabaseStore, server: FakePostgrest
+) -> None:
+    origin = _source_data("25553")
+    draft = _review_data(origin.id)
+    server.seed("source_data", to_row(origin))
+    server.seed("review_data", to_row(draft))
+
+    (target,) = store.gone_targets(since=origin.posted_on)
+
+    assert target.review_data_id == draft.id
+    assert (target.source_key, target.external_id) == ("YTUS", "25553")
+
+
+def test_mark_gone_writes_one_column_and_is_idempotent(
+    store: SupabaseStore, server: FakePostgrest
+) -> None:
+    """관측은 한 칸(`source_gone_at`)만 쓴다 — 판정·내용 칸을 덮는 길이 코드에 없어야 한다."""
+    draft = _review_data(uuid4())
+    server.seed("review_data", to_row(draft))
+
+    assert store.mark_gone([draft.id], at=FIXED_NOW) == 1
+    body = json.loads(server.requests[-1].content)
+    assert set(body) == {"source_gone_at"}
+
+    assert store.mark_gone([draft.id], at=FIXED_NOW) == 0  # 이미 관측 — 멱등
+
+
 # ── 판정은 바뀌는 칸만 쓴다 (2026-08-22 · REVIEW_PAGE §6.5) ──────
 
 

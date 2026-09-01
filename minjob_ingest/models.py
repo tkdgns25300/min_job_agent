@@ -82,6 +82,9 @@ REVIEW_STATE_FIELDS: tuple[str, ...] = (
     "reviewed_at",
     "review_note",
     "poster_paths",
+    # ⚠️ 관측 사실이라 재구조화가 이어받는다(원문이 사라졌다는 사실은 초안을 다시 만들어도
+    #    그대로다) — 지워지면 삭제 감지가 그 행을 매일 다시 찔러본다.
+    "source_gone_at",
 )
 
 #: **크롤러가 스스로 내린 거절.** 규칙을 고치면 되돌릴 수 있어야 한다 — 이단 목록·마감 판정·
@@ -514,6 +517,11 @@ class ReviewData:
     #: ⚠️ 비어 있으면서 `source_data.image_urls`는 차 있으면 **그림을 못 받았다**는 뜻이다
     #: (바이트를 못 받으면 올릴 것도 없다). 그래서 등급 근거를 담는 별도 칸을 두지 않는다.
     poster_paths: tuple[str, ...] = ()
+    #: 원문이 게시판에서 사라진 것을 확인한 시각(SPEC §4 gone 단계). 비어 있음 = 살아 있다.
+    #: ⚠️ **판정이 아니라 관측 사실이다** — `review_status`는 건드리지 않고, 운영자 소유
+    #: 가드(`is_operator_owned`)도 이 칸에는 적용하지 않는다. 값이 있는 행은 삭제 감지가
+    #: 판정 대상에서 빼므로 되살아나도 자동으로 다시 열지 않는다(ROADMAP "되살아난 공고").
+    source_gone_at: datetime | None = None
     created_at: datetime = field(default_factory=kst_now)
 
     def __post_init__(self) -> None:
@@ -529,6 +537,8 @@ class ReviewData:
         _set(self, "created_at", ensure_kst(self.created_at))
         if self.reviewed_at is not None:
             _set(self, "reviewed_at", ensure_kst(self.reviewed_at))
+        if self.source_gone_at is not None:
+            _set(self, "source_gone_at", ensure_kst(self.source_gone_at))
         require_plain_date(self.posted_at)
         if self.deadline is not None:
             require_plain_date(self.deadline)

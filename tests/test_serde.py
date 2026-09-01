@@ -137,6 +137,7 @@ def _full_review_data() -> ReviewData:
         reviewed_at=FIXED_NOW,
         review_note="포스터에서 사례비를 읽기 어려워 추정했다",
         poster_paths=("YTUS/25553/0.jpg", "YTUS/25553/1.pdf"),
+        source_gone_at=FIXED_NOW,
         created_at=FIXED_NOW,
     )
 

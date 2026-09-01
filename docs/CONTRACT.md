@@ -78,6 +78,7 @@
 | `review_status` | `PENDING`/`APPROVED`/`REJECTED` (운영자 검토) |
 | `reject_reason` | `DUPLICATE`/`HERESY`/`CLOSED`/`OPERATOR` — `REJECTED`일 때만. 자동 거부(중복·이단)를 되짚는 통로이고 검수 화면의 탭을 가른다. 정본 SPEC §6 ② |
 | `confidence` | AI 구조화 신뢰도 (낮으면 운영자 우선 검토) |
+| `source_gone_at` | **원문이 게시판에서 사라진 것을 크롤러가 확인한 시각**(2026-09-01 · SPEC §4.4). 비어 있음 = 살아 있다. 값이 있으면 크롤러가 같은 실행에서 그 공고의 `jobs.status`를 `CLOSED`로 내렸다 — 검수 화면은 이 칸으로 "원문이 삭제된 공고" 표시를 만들 수 있다. ⚠️ 판정이 아니라 관측이라 `review_status`는 그대로다(공개된 행은 `APPROVED`인 채 남는다) |
 
 > **연락처 정책(갱신 2026-07-28)**: **지원용으로 명시된 연락처는 방법별 4컬럼(`contact_email`·`contact_tel`·`contact_link`·`contact_post`)으로 추출·공개**(2026-08-05 — 대표 문자열 하나였던 설계 철회)(SPEC §5.5 · min_job 완화). 지원과 무관한 제3자 개인정보는 추출하지 않는다. ⚠️ 개인정보·약관 관점은 **정식 오픈 전 법률 검토 항목**. ⚠️ `owner_id`는 min_job `jobs`에서 **제거됐다**(2026-08-06 · `church_id`로 충분). 크롤 공고는 `source=OPERATOR`. **전체 staging 스키마·판정은 SPEC §5·§6 정본**(아래 표는 크롤러 메타 요약).
 

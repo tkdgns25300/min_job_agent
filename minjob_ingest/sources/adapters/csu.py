@@ -58,6 +58,10 @@ SOURCE_KEY: Final = "CSU"
 NEEDS_DETAIL_REQUEST: Final = False
 
 _LIST_API: Final = "/api/user/board/getBoardContentSummaryList"
+#: 글 하나를 물어보는 API(삭제 확인 전용 · `gone_request`). 익명으로 동작한다(실측).
+_CONTENT_API: Final = "/api/board/getBoardContent"
+#: 삭제된 글에 오는 code — `"삭제된 게시물입니다."`가 함께 온다(실측 2026-08-30).
+_DELETED_CODE: Final = 42004
 #: 사역게시판(menu_id=1110). 취업게시판은 1111이고 이 리포 대상이 아니다.
 _BOARD_ID: Final = "178"
 _PER_PAGE: Final = 10
@@ -116,6 +120,32 @@ def list_request(source: SourceConfig, page: int) -> ListRequest:
             "parentBoardContentId": "-1",
         },
     )
+
+
+def gone_request(source: SourceConfig, external_id: str) -> ListRequest:
+    """삭제 확인 — 상세 API가 답을 직접 준다(모듈 docstring의 `getBoardContent` · 익명 동작).
+
+    상세 HTML로는 판정할 수 없다: 살아있는 글과 삭제된 글에 **똑같은 SPA 껍데기**가 온다
+    (실측 2026-08-30 · 62,885B 동일). API는 삭제된 글에 `code 42004 "삭제된 게시물입니다"`를,
+    살아있는 글에 `code 10000`을 준다.
+    """
+    return ListRequest(url=urljoin(source.list_url, _CONTENT_API), form={"id": external_id})
+
+
+def parse_gone(body: str) -> bool | None:
+    """상세 API 응답 → 삭제됐나. 모르는 code는 `None` — 모르면 내리지 않는다(SPEC §4)."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    code = data.get("code")
+    if code == _DELETED_CODE:
+        return True
+    if code == _SUCCESS_CODE:
+        return False
+    return None
 
 
 def parse_list(text: str, source: SourceConfig) -> tuple[PostingRef, ...]:

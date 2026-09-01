@@ -110,7 +110,7 @@ minjob_ingest/                 ★ 패키지 (= import 이름)
 ├── lib/gemini.py             Vertex 클라이언트 (재시도는 SDK 설정)
 └── pipeline/                collect·structure·extraction(프롬프트·스키마)·normalize(변환)·
                             verify(원문 대조)·denomination(교단 확정)·heresy(이단 대조)·confidence(등급)·
-                            dedup(같은 자리 묶기)·publish(jobs 공개·끌어올림)·
+                            dedup(같은 자리 묶기)·gone(원문 소멸 감지)·publish(jobs 공개·끌어올림)·
                             media(그림·PDF 바이트)·health·snapshot
 config/
 ├── sources.json              ★ 소스 레지스트리 (전송 정본 · 라이브 검증값)
@@ -157,6 +157,7 @@ actionlint .github/workflows/crawl.yml   # 컨텍스트 사용 규칙 + run 블�
 .venv/bin/minjob-ingest structure --all --workers 8   # 전량 (게시판 8곳씩 동시 · 게시판 안은 순차)
 .venv/bin/minjob-ingest dedup                  # 같은 자리 묶기 (무료 · structure 뒤 자동 실행됨)
 .venv/bin/minjob-ingest publish                # jobs 에 공개 + 끌어올림 (무료 · Supabase 전용)
+.venv/bin/minjob-ingest gone [--dry-run]       # 원문 삭제된 공고 내림 (게시판 요청 · 무료 · daily가 자동 실행)
 .venv/bin/minjob-ingest daily                  # 하루치 한 번에 (🌐 · 💰 상한 500 · cron 창구)
 .venv/bin/minjob-ingest status                 # 실행·게시판·남은 일 (무료 · 읽기만 · 종료코드가 판정)
 ```

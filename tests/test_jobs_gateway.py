@@ -423,6 +423,40 @@ def test_a_claimed_posting_is_left_alone(jobs: SupabaseJobs, server: FakePostgre
     assert server.rows["jobs"][0]["posted_at"] == "2026-01-01"
 
 
+# ── 소멸 감지: 내리기 (SPEC §4 gone 단계) ───────────────────────
+
+
+def test_closing_sends_only_the_status_column(jobs: SupabaseJobs, server: FakePostgrest) -> None:
+    """`bump_posted_at`과 같은 규율 — 제목·연락처·마감일을 덮는 길이 코드에 없어야 한다."""
+    row = _job()
+    server.seed("jobs", row)
+
+    assert jobs.close_job(UUID(str(row["id"]))) is True
+
+    body = json.loads(server.requests[-1].content)
+    assert set(body) == {"status"}
+    assert server.rows["jobs"][0]["status"] == "CLOSED"
+
+
+def test_a_claimed_posting_is_never_closed(jobs: SupabaseJobs, server: FakePostgrest) -> None:
+    """교회 것이 된 공고는 원문이 사라져도 그 교회가 정리한다(§8) — 크롤러는 손을 뗀다."""
+    row = _job(church_id=str(uuid4()))
+    server.seed("jobs", row)
+
+    assert jobs.close_job(UUID(str(row["id"]))) is False
+    assert server.rows["jobs"][0]["status"] == "OPEN"
+
+
+def test_closing_an_already_closed_job_is_a_quiet_no(
+    jobs: SupabaseJobs, server: FakePostgrest
+) -> None:
+    """운영자가 먼저 내렸어도 실패가 아니다 — 관측 기록(`source_gone_at`)은 그대로 남는다."""
+    row = _job(status="CLOSED")
+    server.seed("jobs", row)
+
+    assert jobs.close_job(UUID(str(row["id"]))) is False
+
+
 # ── 지워진 공고 복구 (SPEC §4.3) ────────────────────────────────
 
 

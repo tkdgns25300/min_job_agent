@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -94,6 +94,26 @@ class DedupUpdate:
     dedup_key: str
     dedup_state: DedupState
     verdict: DedupVerdict | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GoneTarget:
+    """삭제 감지의 판정 대상 한 건(SPEC §4 gone 단계) — 원장 신원 + 내릴 곳.
+
+    저장소는 **기계적 조건만** 거른다(창 안 · `source_gone_at IS NULL` · 공개됐거나 검수
+    대기) — 무엇을 삭제로 볼지는 `pipeline/gone`이 정한다(`dedup_candidates`와 같은 분업).
+    `source_gone_at`이 이미 있는 행을 빼는 것은 정책이 아니라 낭비 방지다: 이미 관측한
+    사실을 매일 다시 확인하지 않고, 되살아난 공고를 자동으로 다시 열지도 않는다(ROADMAP).
+    """
+
+    review_data_id: UUID
+    #: 공개된 공고면 그 `jobs` 행 — 삭제 확정 시 내릴 대상. 검수 대기면 `None`.
+    published_job_id: UUID | None
+    source_key: str
+    external_id: str
+    source_url: str
+    title: str
+    posted_on: date
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +291,34 @@ class Store(Protocol):
         """
         ...
 
+    # ── 소멸 감지 (SPEC §4 gone 단계) ────────────────────────────
+
+    def gone_targets(self, *, since: date) -> tuple[GoneTarget, ...]:
+        """삭제 감지의 판정 대상 — `since` 이후 게시 + 소멸 관측 없음 + 공개됐거나 검수 대기.
+
+        ⚠️ **`jobs`의 상태는 보지 않는다**(스테이징만으로 답한다). 운영자가 이미 내린 공고가
+        섞여도 관측 기록은 여전히 값어치가 있고("왜 내려갔나"의 근거), 내리기 자체는
+        `PublishTarget.close_job`의 조건(WHERE)이 걸러낸다 — 조인 하나를 없애는 값이다.
+        """
+        ...
+
+    def published_job_ids(self) -> frozenset[UUID]:
+        """우리가 공개한 `jobs` 행 전부. **우리 것 판별의 정본이다**(SPEC §8) — `jobs.source`
+        로는 알 수 없다(운영자 수동 등록도 `OPERATOR`다). 마감 정리가 남의 행을 닫지 않게
+        `close_job` 후보를 이 집합으로 좁힌다.
+        """
+        ...
+
+    def mark_gone(self, review_data_ids: Sequence[UUID], *, at: datetime) -> int:
+        """원문 소멸 관측을 기록하고 **새로 기록된 행 수**를 돌려준다(이미 기록된 행은 멱등).
+
+        ⚠️ **운영자 소유 가드를 지나지 않는다** — 판정이 아니라 게시판에서 본 사실이고,
+        사람이 교정한 값과 부딪히는 칸이 아니다(`is_operator_owned`는 판정·내용 칸을 지킨다).
+        ⚠️ 존재 검증은 하지 않는다 — 입력은 같은 실행의 `gone_targets`가 준 id뿐이고,
+        그 사이 행이 사라지는 경로가 없다(`review_data`는 삭제되지 않는다).
+        """
+        ...
+
     # ── 실행·상태 (SPEC §6 ③④) ──────────────────────────────────
 
     def start_run(self, mode: CrawlMode) -> CrawlRun:
@@ -443,6 +491,24 @@ class PublishTarget(Protocol):
 
         Returns: 갱신했으면 True. **교회가 claim했으면 False**(그 순간 소유권이 넘어가고
         크롤러는 손을 뗀다 · §8) — 실패가 아니라 정상적인 결말이다.
+        """
+        ...
+
+    def expired_job_ids(self, *, today: date) -> tuple[UUID, ...]:
+        """마감이 지났는데 아직 `OPEN`인 행(claim 안 된 것만). min_job은 화면에서 가리지만
+        DB 상태는 그대로 쌓인다(실측 2026-09-01: 57건) — `close_job`으로 정리할 후보다.
+
+        ⚠️ **`deadline`은 `jobs`의 값을 쓴다**(review_data가 아니라) — 운영자가 검수에서
+        고친 마감일이 정본이다(§8).
+        """
+        ...
+
+    def close_job(self, job_id: UUID) -> bool:
+        """원문이 사라진 공고를 내린다(SPEC §4 gone 단계) — `status` **한 칸만** 쓴다.
+
+        Returns: 내렸으면 True. **교회가 claim했거나 이미 OPEN이 아니면 False** — 둘 다
+        실패가 아니라 정상적인 결말이다(`bump_posted_at`과 같은 계약). 조건은 DB가 판정한다:
+        코드 규율로 두면 언젠가 어긴다(CLAUDE.md 저장소 규칙).
         """
         ...
 
