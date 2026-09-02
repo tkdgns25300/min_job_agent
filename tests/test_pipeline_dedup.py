@@ -119,6 +119,109 @@ def test_a_name_that_is_only_decoration_is_no_name() -> None:
     assert normalize_church_name(None) is None
 
 
+# ── 이름 표기가 갈린 자리 합치기 (SPEC §4.1 2) ──────────────────
+
+
+@pytest.mark.parametrize(
+    ("one", "other"),
+    [
+        ("남광교회", "광주남광교회"),
+        ("성원교회", "군산성원교회"),
+        ("한밭제일교회", "한밭제일장로교회"),
+        ("아름다운교회", "아름다운침례교회"),
+        ("영광", "김제영광교회"),
+    ],
+    ids=["앞에 지역", "앞에 지역2", "가운데 교단", "가운데 교단2", "꼬리까지 빠짐"],
+)
+def test_the_same_church_written_two_ways_is_one_seat(one: str, other: str) -> None:
+    """실측 2026-09-02 — 게시판마다 제목이 달라 공개 중이던 18곳이 두 번씩 떠 있었다."""
+    updates = plan([_candidate(church_name=one), _candidate(church_name=other)])
+
+    assert len({update.dedup_key for update in updates}) == 1
+    assert _states(updates).count(DedupState.DUPLICATE) == 1
+
+
+def test_the_longer_name_wins_the_key() -> None:
+    """짧은 이름일수록 남의 교회와 겹치기 쉽다 — 정보가 많은 쪽을 남긴다."""
+    updates = plan([_candidate(church_name="남광교회"), _candidate(church_name="광주남광교회")])
+
+    assert all(update.dedup_key.startswith("광주남광교회:") for update in updates)
+
+
+def test_three_spellings_collapse_into_one_seat() -> None:
+    """실측 `한길` / `한길교회` / `인천한길교회` — 사슬을 따라 하나로 모인다."""
+    updates = plan(
+        [
+            _candidate(church_name="한길"),
+            _candidate(church_name="한길교회"),
+            _candidate(church_name="인천한길교회"),
+        ]
+    )
+
+    assert len({update.dedup_key for update in updates}) == 1
+    assert _states(updates).count(DedupState.DUPLICATE) == 2
+
+
+def test_a_different_church_with_a_shared_prefix_is_never_merged() -> None:
+    """⚠️ 이름이 포함 관계여도 **접수 메일함이 겹치지 않으면 합치지 않는다** —
+    `중앙교회`와 `광주중앙교회`를 붙이는 것은 다른 교회를 합치는 것이고 되돌릴 수 없다."""
+    updates = plan(
+        [
+            _candidate(church_name="중앙교회", contact_email="one@example.kr"),
+            _candidate(church_name="광주중앙교회", contact_email="other@example.kr"),
+        ]
+    )
+
+    assert len({update.dedup_key for update in updates}) == 2
+    assert DedupState.DUPLICATE not in _states(updates)
+
+
+def test_a_variant_without_a_mailbox_is_never_merged() -> None:
+    """접수 메일이 아예 없으면 근거가 없다 — **갈린 채로 두는 쪽이 안전하다**."""
+    updates = plan(
+        [
+            _candidate(church_name="중앙교회", contact_email=None),
+            _candidate(church_name="광주중앙교회", contact_email=None),
+        ]
+    )
+
+    assert len({update.dedup_key for update in updates}) == 2
+
+
+def test_a_variant_in_another_region_is_never_merged() -> None:
+    """지역이 다르면 애초에 견주지 않는다 — 자물쇠의 나머지 둘은 enum이라 안 흔들린다."""
+    updates = plan(
+        [
+            _candidate(church_name="남광교회", region=Region.GWANGJU),
+            _candidate(church_name="광주남광교회", region=Region.JEONNAM),
+        ]
+    )
+
+    assert len({update.dedup_key for update in updates}) == 2
+
+
+def test_a_variant_for_another_position_is_never_merged() -> None:
+    """같은 교회라도 뽑는 직분이 다르면 다른 자리다."""
+    updates = plan(
+        [
+            _candidate(church_name="남광교회", position=(Position.SENIOR_PASTOR,)),
+            _candidate(church_name="광주남광교회", position=(Position.EVANGELIST,)),
+        ]
+    )
+
+    assert len({update.dedup_key for update in updates}) == 2
+
+
+def test_merging_keeps_the_published_row_as_master() -> None:
+    """이름이 갈린 채 이미 공개된 자리도 합쳐진다 — 그게 이 규칙이 막으려던 사고다."""
+    published = _candidate(church_name="성산교회", published_job_id=new_id())
+    fresh = _candidate(church_name="마포성산교회")
+
+    updates = _by_id(plan([published, fresh]))
+
+    assert updates[str(fresh.draft.id)].dedup_state is DedupState.DUPLICATE
+
+
 # ── 자물쇠 셋 ─────────────────────────────────────────────────────
 
 

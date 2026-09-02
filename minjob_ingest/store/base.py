@@ -385,7 +385,7 @@ class JobAnchor:
     role: str | None
     department: Department | None
     posted_at: date
-    #: 접수 이메일. ⚠️ **자리를 가르는 유일한 연락처다**(SPEC §4.1 4단계) — 앵커에 이 값이
+    #: 접수 이메일. ⚠️ **자리를 가르는 유일한 연락처다**(SPEC §4.1 5단계) — 앵커에 이 값이
     #: 없으면 메일함이 다른 다른 자리를 자동으로 거절하게 되고, 그때 **우리 공고가 사라진다**.
     contact_email: str | None = None
 

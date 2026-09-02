@@ -94,6 +94,10 @@ _ROLE_PREFIX: Final = "ROLE:"
 #: (실측 `apply@x.org, office@x.org`). 그래서 조각으로 쪼개 **겹치는지**를 본다.
 _MAIL_TOKEN: Final = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
+#: 이름 변형을 견줄 때 떼는 꼬리. `한밭제일교회`/`한밭제일장로교회`처럼 **가운데에 끼어드는**
+#: 말이 있어 접미를 떼야 포함 관계가 보인다(`한밭제일` ⊂ `한밭제일장로`).
+_CHURCH_TAIL: Final = re.compile(r"교회$")
+
 #: 주소 판정에 필요한 **아는 주소**의 최소 개수. 하나로는 견줄 상대가 없다.
 _PLACES_TO_JUDGE: Final = 2
 
@@ -134,9 +138,9 @@ class _Member:
     #: 라운드 경계의 기준. 초안은 원문 게시일(불변), 앵커는 `jobs.posted_at`.
     posted_on: date
     department: Department | None
-    #: 접수 이메일 조각. 자리를 가르는 유일한 연락처다(SPEC §4.1 4단계).
+    #: 접수 이메일 조각. 자리를 가르는 유일한 연락처다(SPEC §4.1 5단계).
     mailboxes: frozenset[str]
-    #: 교회가 어디인가 — (도시, 주소)를 견줄 꼴로. **메일함이 갈렸을 때만** 쓴다(§4.1 4단계).
+    #: 교회가 어디인가 — (도시, 주소)를 견줄 꼴로. **메일함이 갈렸을 때만** 쓴다(§4.1 5b단계).
     #: 앵커(`jobs`)는 주소를 읽지 않아 비어 있고, 그때는 판정하지 않는다.
     place: tuple[str, str]
     #: 크롤러가 판정을 덮어선 안 되는 자리인가 — **대표 순위 1번**.
@@ -290,9 +294,10 @@ def plan(
             continue
         seats[seat].append(_member_of_anchor(anchor))
 
+    merged = _merge_name_variants(seats)
     updates: list[DedupUpdate] = []
-    for seat in sorted(seats):
-        for number, members in enumerate(_rounds(seats[seat]), start=1):
+    for seat in sorted(merged):
+        for number, members in enumerate(_rounds(merged[seat]), start=1):
             updates.extend(_judge(seat, number, members))
     return tuple(updates)
 
@@ -333,6 +338,83 @@ def seat_of(draft: SeatSource) -> Seat | None:
     return (church, draft.region.value, role)
 
 
+def _merge_name_variants(seats: Mapping[Seat, list[_Member]]) -> dict[Seat, list[_Member]]:
+    """이름 표기만 다른 자리를 하나로 합친다(SPEC §4.1 2단계).
+
+    게시판마다 제목을 달리 써서(`남광교회` / `광주남광교회`) 같은 청빙이 다른 자리로 갈린다 —
+    실측 2026-09-02: **공개 중이던 18곳**이 그래서 min_job에 두 번씩 떠 있었다(`한길`/`한길교회`/
+    `인천한길교회`처럼 셋으로 갈린 곳도 있다). 자물쇠의 나머지 둘(지역·직분)은 enum이라 안
+    흔들리므로, 갈리는 것은 언제나 교회명이다.
+
+    ⚠️ **접수 메일함이 겹칠 때만 합친다.** 이름이 포함 관계라는 것만으로 합치면 `중앙교회`와
+    `광주중앙교회`가 붙는데, 그건 **다른 교회를 합치는 것**이고 되돌릴 수 없다(`seat_of`와 같은
+    판단: 중복이 남는 쪽이 안전하다). 실측 28건은 전부 같은 교회였고 다른 교회가 섞인 사례가
+    하나도 없었다 — 메일함이 그 안전장치다.
+
+    ⚠️ **`seat_of`(키 계산)는 건드리지 않는다.** 키를 바꾸면 이미 판정된 수천 건이 전부 다시
+    판정된다(`normalize_church_name` 참조). 여기서는 **판정 직전에 묶음만** 합치고, 남는 키는
+    **가장 긴 이름**의 것이다 — 정보가 가장 많고, 짧은 이름일수록 남의 교회와 겹치기 쉽다.
+    """
+    groups: dict[tuple[str, str], list[Seat]] = defaultdict(list)
+    for seat in seats:
+        _, region, role = seat
+        groups[(region, role)].append(seat)
+
+    winner: dict[Seat, Seat] = {}
+    for peers in groups.values():
+        for one, other in combinations(sorted(peers), 2):
+            if not _is_name_variant(one[0], other[0]):
+                continue
+            if not _share_a_mailbox(seats[one], seats[other]):
+                continue
+            loser, keep = sorted((_resolve(winner, one), _resolve(winner, other)), key=_name_rank)
+            if loser != keep:
+                winner[loser] = keep
+
+    merged: dict[Seat, list[_Member]] = defaultdict(list)
+    for seat, members in seats.items():
+        merged[_resolve(winner, seat)].extend(members)
+    return dict(merged)
+
+
+def _resolve(winner: Mapping[Seat, Seat], seat: Seat) -> Seat:
+    """합쳐진 자리의 최종 대표. 사슬을 따라간다(`한길` → `한길교회` → `인천한길교회`).
+
+    맴돌지 않는다 — 이어붙일 때 **순위가 낮은 쪽만** 높은 쪽을 가리키므로(`_name_rank`)
+    사슬을 따라갈수록 순위가 오르고, 순위는 유한하다.
+    """
+    while seat in winner:
+        seat = winner[seat]
+    return seat
+
+
+def _name_rank(seat: Seat) -> tuple[int, Seat]:
+    """대표 자리 고르기 — 이름이 긴 쪽. 같으면 자리 자체로 정해 **결과가 안 흔들린다**."""
+    return (len(seat[0]), seat)
+
+
+def _is_name_variant(one: str, other: str) -> bool:
+    """같은 교회의 다른 표기인가 — 꼬리(`교회`)를 떼고 한쪽이 다른 쪽을 품는가.
+
+    실측에 두 모양이 다 있다: 앞에 지역이 붙거나(`남광` ⊂ `광주남광`), 가운데에 교단이
+    끼거나(`한밭제일` ⊂ `한밭제일장로`). 접미를 떼면 둘 다 포함 관계가 된다.
+    """
+    left, right = _CHURCH_TAIL.sub("", one), _CHURCH_TAIL.sub("", other)
+    if not left or not right or left == right:
+        return False
+    return left in right or right in left
+
+
+def _share_a_mailbox(one: Sequence[_Member], other: Sequence[_Member]) -> bool:
+    """두 자리가 접수 메일함을 나눠 쓰는가 — 같은 교회라는 **유일한 근거**다.
+
+    ⚠️ 전화·링크·우편은 보지 않는다(`_mailboxes_differ`와 같은 이유) — 대표번호·홈페이지는
+    교회가 같아도 게시판마다 다르게 적히고, 반대로 겹쳐도 자리를 가르는 정보가 없다.
+    """
+    ours = {box for member in one for box in member.mailboxes}
+    return any(box in ours for member in other for box in member.mailboxes)
+
+
 def dedup_key(seat: Seat, department: Department | None, *, round_number: int) -> str:
     """`개복교회:JEONBUK:ASSOCIATE_PASTOR:-:R1` — 사람이 읽을 수 있게 둔다.
 
@@ -364,7 +446,7 @@ def _ordering(member: _Member) -> tuple[date, str]:
 
 
 def _judge(seat: Seat, number: int, members: Sequence[_Member]) -> list[DedupUpdate]:
-    """한 라운드를 부서로 가른다(SPEC §4.1 3단계)."""
+    """한 라운드를 부서로 가른다(SPEC §4.1 4단계)."""
     by_department: dict[Department | None, list[_Member]] = defaultdict(list)
     for member in members:
         by_department[member.department].append(member)
@@ -396,9 +478,9 @@ def _department_order(department: Department | None) -> str:
 def _judge_one_seat(
     seat: Seat, number: int, department: Department | None, members: Sequence[_Member]
 ) -> list[DedupUpdate]:
-    """한 자리로 볼 후보들 — **접수 이메일이 뒤집지 않으면** 같은 자리다(SPEC §4.1 4단계).
+    """한 자리로 볼 후보들 — **접수 이메일이 뒤집지 않으면** 같은 자리다(SPEC §4.1 5단계).
 
-    ⚠️ `department`는 이 자리의 부서이고, 부서를 **말하지 않은 글도 함께 받는다**(3단계에서
+    ⚠️ `department`는 이 자리의 부서이고, 부서를 **말하지 않은 글도 함께 받는다**(4단계에서
     침묵을 그 부서로 읽는다) — 그래서 "부서가 같은 것끼리"가 아니라 "한 자리"다.
     """
     key = dedup_key(seat, department, round_number=number)
