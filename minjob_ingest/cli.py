@@ -1407,7 +1407,7 @@ def _print_dedup_report(console: Console, report: DedupReport, *, dry_run: bool)
         console.field(
             "이미 결론",
             f"{report.settled}건",
-            note="이단·마감·운영자 거절·원문 소멸 — 건드리지 않는다",
+            note="이단·마감·운영자 거절 · 원문 소멸 · 마감 지남 — 건드리지 않는다",
         )
     console.field(
         "저장",

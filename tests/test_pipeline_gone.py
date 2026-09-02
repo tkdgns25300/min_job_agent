@@ -518,3 +518,42 @@ def test_a_gone_row_counts_as_settled_not_as_human_work(tmp_path: Path) -> None:
     report = dedup_all(store, None, dry_run=True)
 
     assert (report.settled, report.unjudged) == (1, 0)
+
+
+def test_an_expired_row_counts_as_settled_not_as_human_work(tmp_path: Path) -> None:
+    """마감이 지난 행도 다툼에서 빠진다(SPEC §4.1 · 2026-09-02) — 소멸 행과 같이 "이미 결론"에
+    세어야 한다. 사람 몫에 세면 마감이 쌓일수록 숫자가 부풀어 검수자가 헛짚는다."""
+    store = JsonStore(tmp_path / "data")
+    origin = SourceData(
+        source_key="YTUS",
+        external_id="1",
+        source_url="https://www.ytus.ac.kr/post/1",
+        title="공고 1",
+        posted_on=_INSIDE,
+        run_id=uuid4(),
+        fetched_at=datetime(2026, 8, 20, 9, 0, tzinfo=UTC),
+        raw_text="본문",
+    )
+    store.save_source_data(origin)
+    done = origin.with_verdict_recorded()
+    store.update_structure_state(done)
+    draft = ReviewData(
+        posted_at=_INSIDE,
+        source_url=origin.source_url,
+        source_data_id=done.id,
+        run_id=uuid4(),
+        is_church_recruitment=IsChurchRecruitment.YES,
+        confidence=Confidence.HIGH,
+        denomination_source=DenominationSource.UNKNOWN,
+        church_name="오천중앙교회",
+        region=Region.GYEONGBUK,
+        job_kind=(JobKind.MINISTRY,),
+        position=(Position.ASSOCIATE_PASTOR,),
+        published_job_id=uuid4(),
+        deadline=date(2026, 1, 1),  # 오래전에 지났다 — 벽시계가 어디 있어도 판정이 같다
+    )
+    store.upsert_review_data(draft)
+
+    report = dedup_all(store, None, dry_run=True)
+
+    assert (report.settled, report.unjudged) == (1, 0)
