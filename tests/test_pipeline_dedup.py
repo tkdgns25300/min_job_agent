@@ -404,18 +404,27 @@ def test_name_and_position_may_drift_at_the_same_time() -> None:
     }
 
 
-def test_the_master_names_its_positions_before_it_fills_its_blanks() -> None:
-    """운영자 결정 2026-09-02 — 직분 창구가 `기타`와 `전도사`를 한 자리로 묶은 뒤, 빈 칸 수로만
-    대표를 고르면 사례비 한 칸 더 채운 `기타` 쪽이 남는다. 지원자가 거르는 칸이 앞이다."""
-    fuller_but_vague = _candidate(
-        position=(Position.ETC,), pay_note="월 100만원", benefit_note="사택"
-    )
+def test_the_master_fills_its_blanks_before_it_names_its_positions() -> None:
+    """⚠️ 실측 2026-09-02 분당서광교회 — 직분을 칸 수보다 앞세우니 **본문 18자 포스터 공고가
+    본문 863자 공고를 이겼다**(사례비·복리후생·근무시간·마감이 전부 빈 행이 대표). 지원자가
+    직분으로 거르는 것보다 열어 봤을 때 내용이 없는 것이 나쁘다."""
+    named_but_empty = _candidate(position=(Position.ASSOCIATE_PASTOR,))
+    full = _candidate(position=(Position.ETC,), benefit_note="사택 지원", work_days="화~금")
+
+    updates = _by_id(_plan([named_but_empty, full]))
+
+    assert updates[str(full.draft.id)].dedup_state is DedupState.MASTER
+    assert updates[str(named_but_empty.draft.id)].dedup_state is DedupState.DUPLICATE
+
+
+def test_the_named_position_wins_when_the_rows_are_equally_full() -> None:
+    """칸 수가 같으면 직분이 가른다 — 지원자가 거르는 칸이라 `기타`보다 낫다."""
+    vague = _candidate(position=(Position.ETC,))
     named = _candidate(position=(Position.EVANGELIST,))
 
-    updates = _by_id(_plan([fuller_but_vague, named]))
+    updates = _by_id(_plan([vague, named]))
 
     assert updates[str(named.draft.id)].dedup_state is DedupState.MASTER
-    assert updates[str(fuller_but_vague.draft.id)].dedup_state is DedupState.DUPLICATE
 
 
 # ── 마감 지난 글은 다툼에서 빠진다 (2026-09-02) ──────────────────────
@@ -481,6 +490,28 @@ def test_a_cross_post_made_before_the_deadline_dies_with_it() -> None:
 
     assert planned.updates == ()
     assert str(cross_post.draft.id) in planned.expired
+
+
+def test_a_published_cross_post_is_never_dropped_by_someone_elses_deadline() -> None:
+    """⚠️ 실측 2026-09-02 순천제일교회 — 남의 마감을 근거로 빼면 **그 행의 `jobs`는 닫히지 않는다**
+    (마감이 없어 만료되지 않는다). 빼는 순간 목록에는 남은 채 판정에서 사라져, 살아남은 재공고가
+    그 옆에 두 번째로 공개됐다."""
+    closed = _candidate(
+        on=date(2026, 7, 20),
+        posted_at=date(2026, 7, 20),
+        deadline=date(2026, 7, 27),
+        published_job_id=new_id(),
+    )
+    published_cross_post = _candidate(
+        on=date(2026, 7, 22), posted_at=date(2026, 7, 22), published_job_id=new_id()
+    )
+    repost = _candidate(on=date(2026, 8, 1), posted_at=date(2026, 8, 1))
+
+    planned = plan([closed, published_cross_post, repost], today=_TODAY)
+    updates = _by_id(planned.updates)
+
+    assert str(published_cross_post.draft.id) not in planned.expired
+    assert updates[str(repost.draft.id)].dedup_state is DedupState.DUPLICATE
 
 
 def test_a_repost_after_the_deadline_takes_the_seat() -> None:

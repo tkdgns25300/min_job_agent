@@ -367,7 +367,12 @@ def _still_open(members: Sequence[_Member], *, today: date) -> tuple[list[_Membe
     — 같은 청빙을 다른 게시판에 마감 없이 올린 교차게시다. 그것을 대표로 세우면 **닫힌 청빙이
     되살아난다.** 그래서 마감 없는 글은 **가장 늦은 마감보다 뒤에 올라왔을 때만** 산다.
     ⚠️ 제 마감이 아직 안 지난 글은 게시일과 상관없이 산다 — 교회가 살아 있다고 말한 글이다.
-    ⚠️ 앵커(`jobs` 행)는 늘 산다 — `visible_anchors`가 보이는 행만 주고, 빠뜨리면 그 자리의
+    ⚠️⚠️ **이미 공개된 행·사람이 손댄 행은 마감 없이는 빼지 않는다**(2026-09-02 · 실데이터가
+    바로 잡았다). 남의 마감을 근거로 빼는 것이라 **그 행의 `jobs`는 닫히지 않는다**(마감이 없어
+    만료되지 않는다) — 빼면 라벨도 판정도 못 받는데 목록에는 남아, 살아남은 재공고가 그 옆에
+    **또 공개된다**(순천제일교회: 08-19 공개분이 빠져 08-29가 두 번째로 나갔다). 제 마감이 지난
+    행은 반대다 — 그 `jobs`는 만료로 이미 닫혔으니 빼도 중복이 생기지 않는다.
+    ⚠️ 앵커(`jobs` 행)도 늘 산다 — `visible_anchors`가 보이는 행만 주고, 빠뜨리면 그 자리의
     재공고가 앵커 옆에 또 공개된다.
     ⚠️ 경계는 `deadline < today`다 — 마감 당일은 산다(min_job 노출 규칙·`expired_job_ids`와 같다).
     ⚠️ 거절도 내림도 아니다 — **견주는 자리에서 빠지기만** 한다. 살아 있는 글이 없으면 그 자리는
@@ -388,8 +393,8 @@ def _still_open(members: Sequence[_Member], *, today: date) -> tuple[list[_Membe
             closed.append(member)  # 제 마감이 지났다
         elif member.deadline is not None:
             alive.append(member)  # 제 마감이 아직 남았다 — 교회가 살아 있다고 말했다
-        elif member.posted_on <= closed_on:
-            closed.append(member)  # 마감 없이 마감 전에 올라왔다 — 같은 공고의 교차게시
+        elif member.posted_on <= closed_on and not member.is_owned:
+            closed.append(member)  # 마감 없이 마감 전에 올라온 **미공개** 글 — 같은 공고의 교차게시
         else:
             alive.append(member)  # 마감 뒤에 올라왔다 — 재공고
     return alive, closed
@@ -853,14 +858,16 @@ def _posted_at_of(member: _Member) -> date:
 
 
 def _master_priority(member: _Member) -> tuple[bool, bool, int, int, date, str]:
-    """대표 순위: **사람이 확인한 것** > 자동 승인된 것 > **직분을 자세히 적은 것** > 빈 칸 적은 것
+    """대표 순위: **사람이 확인한 것** > 자동 승인된 것 > 빈 칸 적은 것 > **직분을 자세히 적은 것**
     > 최신 > id.
 
     ⚠️ "가장 충실한 것"이 최신보다 앞이다(운영자 결정 2026-08-17). 교차게시는 같은 날 여러
     게시판에 올라와 날짜가 자주 동점이고, 포스터 공고가 대표가 되면 사람이 볼 건수가 늘어난다.
-    ⚠️ **직분이 빈 칸 수보다 앞이다**(운영자 결정 2026-09-02). 직분 창구(§4.1 2단계)가 `기타`와
-    `전도사`를 한 자리로 묶은 뒤로, 빈 칸 수로만 고르면 사례비 한 칸 더 채운 `기타` 쪽이 남아
-    지원자가 직분으로 거를 때 못 본다 — 지원자가 거르는 칸이 앞이다.
+    ⚠️⚠️ **직분은 빈 칸 수 뒤다** — 처음엔 앞에 뒀다가 같은 날 실데이터에서 되돌렸다(2026-09-02).
+    직분 창구가 `기타`와 `부목사`를 한 자리로 묶은 뒤 직분을 앞세우니 **본문이 18자뿐인 포스터
+    공고가 본문 863자 공고를 이겼다**(분당서광교회 · 사례비·복리후생·근무시간·마감이 전부 빈
+    행이 대표가 됐다). 지원자가 직분으로 거르는 것보다 **열어 봤을 때 내용이 없는 것**이 나쁘다 —
+    직분이 `기타`여도 목록과 본문에서는 보인다. 그래서 칸 수가 같을 때만 직분이 가른다.
     ⚠️ 마지막이 식별자인 이유: 여기까지 동점이면 **무엇이든 고정된 순서**여야 한다(멱등).
     ⚠️ **앵커는 첫 기준에서 이긴다** — 이미 공개된 자리를 새 공고가 밀어내지 않는다(SPEC §4.2).
     """
@@ -868,8 +875,8 @@ def _master_priority(member: _Member) -> tuple[bool, bool, int, int, date, str]:
     return (
         member.is_owned,
         draft is not None and draft.confidence is Confidence.HIGH,
-        _named_positions(draft),
         member.completeness,
+        _named_positions(draft),
         member.posted_on,
         member.identity,
     )
