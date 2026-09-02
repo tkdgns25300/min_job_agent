@@ -351,6 +351,9 @@ def _merge_name_variants(seats: Mapping[Seat, list[_Member]]) -> dict[Seat, list
     판단: 중복이 남는 쪽이 안전하다). 실측 28건은 전부 같은 교회였고 다른 교회가 섞인 사례가
     하나도 없었다 — 메일함이 그 안전장치다.
 
+    ⚠️ **주소가 어긋나면 합치지 않는다.** 메일함 하나가 겹쳐도 짧은 이름 쪽에 동명이교회가
+    섞여 있으면 다른 교회가 함께 끌려온다(아래).
+
     ⚠️ **`seat_of`(키 계산)는 건드리지 않는다.** 키를 바꾸면 이미 판정된 수천 건이 전부 다시
     판정된다(`normalize_church_name` 참조). 여기서는 **판정 직전에 묶음만** 합치고, 남는 키는
     **가장 긴 이름**의 것이다 — 정보가 가장 많고, 짧은 이름일수록 남의 교회와 겹치기 쉽다.
@@ -366,6 +369,14 @@ def _merge_name_variants(seats: Mapping[Seat, list[_Member]]) -> dict[Seat, list
             if not _is_name_variant(one[0], other[0]):
                 continue
             if not _share_a_mailbox(seats[one], seats[other]):
+                continue
+            if _same_place([*seats[one], *seats[other]]) is False:
+                # ⚠️ **이름이 짧은 쪽에는 동명이교회가 섞여 있을 수 있다** — 자물쇠는 지역을
+                #    광역까지만 보므로 `예수로교회` 한 자리에 남양주(묵현로)와 성남(금빛로)이
+                #    함께 들어 있었다(실측 2026-09-02). 그 자리를 통째로 합치면 **다른 교회가
+                #    끌려 들어오고**, 부서가 섞여 §4.1 5b(주소)를 볼 차례가 오지 않는다.
+                #    주소가 어긋나면 합치지 않는다 — 5b와 같은 방향이다(주소가 다르면 애초에
+                #    같은 교회가 아니다). 주소를 모르면(해외 교회) 막지 않는다: 메일함이 근거다.
                 continue
             loser, keep = sorted((_resolve(winner, one), _resolve(winner, other)), key=_name_rank)
             if loser != keep:

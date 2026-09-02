@@ -176,6 +176,42 @@ def test_a_different_church_with_a_shared_prefix_is_never_merged() -> None:
     assert DedupState.DUPLICATE not in _states(updates)
 
 
+def test_a_short_name_holding_two_churches_is_never_merged() -> None:
+    """⚠️ 실측 2026-09-02 `예수로교회` — 경기도에 남양주와 성남 두 곳이 있어 **한 자리에 두
+    교회가 들어 있었다**. 통째로 합치면 성남 쪽 메일 하나가 겹치는 것만으로 남양주가 끌려온다.
+
+    기존 파이프라인은 이 자리를 주소로 갈라(§4.1 5b) 둘 다 공개하고 있었다 — 합쳐 놓으면
+    부서가 섞여 그 차례가 오지 않는다.
+    """
+    updates = plan(
+        [
+            _candidate(  # 남양주 예수로교회
+                church_name="예수로교회",
+                city="남양주시",
+                address="묵현로 11-1",
+                contact_email="one@example.kr",
+            ),
+            _candidate(  # 성남 예수로교회
+                church_name="예수로교회",
+                city="성남시 중원구",
+                address="금빛로 85",
+                contact_email="other@example.kr",
+            ),
+            _candidate(
+                church_name="성남 예수로교회",
+                city="성남시 중원구",
+                address="금빛로 85",
+                contact_email="other@example.kr",
+            ),
+        ]
+    )
+
+    assert {update.dedup_key.split(":")[0] for update in updates} == {
+        "예수로교회",
+        "성남예수로교회",
+    }
+
+
 def test_a_variant_without_a_mailbox_is_never_merged() -> None:
     """접수 메일이 아예 없으면 근거가 없다 — **갈린 채로 두는 쪽이 안전하다**."""
     updates = plan(
