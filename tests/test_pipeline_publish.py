@@ -101,7 +101,7 @@ def server() -> FakePostgrest:
     }
     # ⚠️ `jobs`의 DB DEFAULT를 흉내낸다 — 우리는 이 칸들을 빼고 INSERT하므로, 가짜가 안 채우면
     #    공개한 행이 앵커 조회(`status=eq.OPEN`)에 안 걸려 그 경로가 검증되지 않는다.
-    fake.defaults = {"jobs": {"status": "OPEN", "pay_period": "MONTH", "featured_tier": "NONE"}}
+    fake.defaults = {"jobs": {"status": "OPEN", "pay_period": "MONTH"}}
     return fake
 
 

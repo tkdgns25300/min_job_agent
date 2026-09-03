@@ -11,6 +11,15 @@ UPDATE할 경로를 갖지 않는 것**이다. 다른 칸을 고치는 메서드
 
 ⚠️ **`jobs`는 min_job 소유다**(DATA.md 정본). 컬럼이 늘면 깨지는 곳이 공개 테이블이므로
 `check_jobs_columns()`를 INSERT **전에** 부른다.
+
+⚠️⚠️ **이 경계에 이제 돈이 걸려 있다**(min_job 전달 2026-09-03). 유료 노출이 `jobs`의 캐시
+컬럼에서 `job_promotions` 원장으로 옮겨갔고 그 `job_id`는 `ON DELETE CASCADE`다 — **`jobs`
+행을 지우면 결제·환불 이력이 함께 사라진다.** 그래서 둘을 지킨다:
+
+  ① `jobs`에 DELETE 경로를 만들지 않는다. 내리는 것은 `close_job`이다
+     (`test_the_gateway_has_no_way_to_delete_a_job`이 소스에서 확인한다).
+  ② 쓰기에서 `church_id is null` 필터를 빼지 않는다. 유료 광고는 인증 교회의 claim된 행에만
+     걸리므로 그 필터가 곧 "돈 받고 나가는 광고를 크롤러가 내리지 않는다"는 보장이다.
 """
 
 from __future__ import annotations

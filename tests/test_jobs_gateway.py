@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import fields, replace
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Final
 from uuid import UUID, uuid4
 
@@ -34,6 +35,7 @@ from minjob_ingest.domain import (
 from minjob_ingest.models import ReviewData
 from minjob_ingest.pipeline.dedup import seat_of
 from minjob_ingest.settings import SupabaseSettings
+from minjob_ingest.store import jobs_gateway
 from minjob_ingest.store.base import StoreError
 from minjob_ingest.store.jobs_gateway import ALWAYS_OPEN_MAX_DAYS, SupabaseJobs
 from minjob_ingest.store.postgrest import PostgrestClient
@@ -82,8 +84,6 @@ _JOBS_COLUMNS: Final = {
     "optional_docs",
     "process_steps",
     "description",
-    "featured_tier",
-    "featured_until",
     "posted_at",
     "deadline",
     "created_at",
@@ -436,6 +436,17 @@ def test_closing_sends_only_the_status_column(jobs: SupabaseJobs, server: FakePo
     body = json.loads(server.requests[-1].content)
     assert set(body) == {"status"}
     assert server.rows["jobs"][0]["status"] == "CLOSED"
+
+
+def test_the_gateway_has_no_way_to_delete_a_job() -> None:
+    """⚠️⚠️ **`jobs` 행을 지우면 결제·환불 이력이 함께 사라진다**(min_job 전달 2026-09-03).
+    유료 노출이 원장(`job_promotions`)으로 옮겨갔고 그 `job_id`가 `ON DELETE CASCADE`라,
+    한 행을 지우는 순간 정산 근거가 없어진다. 지우는 경로를 **만들지 않는 것**이 유일한
+    방어다 — 중복 정리나 재구조화에서 유혹이 생겨도 그렇다(그때 쓰는 것은 `close_job`이다).
+    """
+    source = Path(jobs_gateway.__file__).read_text(encoding="utf-8")
+
+    assert ".delete(" not in source
 
 
 def test_a_claimed_posting_is_never_closed(jobs: SupabaseJobs, server: FakePostgrest) -> None:

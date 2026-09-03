@@ -343,7 +343,7 @@ crawled job
 | 본문 | `title` · `description`(요약) · `source_url` · `posted_at` · `deadline`(75%) | |
 | 메타 | `dedup_key` · `confidence` · `heresy_flag` | 우리 계산 |
 
-min_job이 채우는 것: `source=OPERATOR` · `owner_id=NULL` · `status` · `featured_tier` · `created_at`
+min_job이 채우는 것: `source=OPERATOR` · `owner_id=NULL` · `status` · `created_at`
 
 비어도 되는 것: `denomination`(명시 2.8%) · `deadline` · `pay_*` · `housing_*` ·
 `employment_type` — ⚠️ **DEFAULT로 값을 지어내지 않는다**("언급 없음"을 "미제공"으로 바꾸면

@@ -747,7 +747,7 @@ NULL이면 JOIN이 죽는다). 우리는 `review_data.denomination`을 그대로
 없다. 미상은 `NULL`로 간다(min_job도 `NULL=미상`이다).
 
 **나머지 칸**: `id`(⚠️ **우리가 만들어 넣는다** — §4.3 크래시 안전) · `status`(⚠️ **칸을 아예 보내지 않는다** — DB 기본값이 `'OPEN'`이고 우리는 확인이 끝난 초안만 공개한다(§5.7). 보내지 않으면 컬럼 단위 GRANT에서도 INSERT 권한이 필요 없다) ·
-`source`(OPERATOR) · `featured_tier`(NONE) · `created_at` · `updated_at`은 DB 기본값·고정값이다.
+`source`(OPERATOR) · `created_at` · `updated_at`은 DB 기본값·고정값이다.
 ⚠️ `owner_id`는 **컬럼에서 제거됐다**(2026-08-06 · `church_id`로 충분).
 
 **승격 게이트 = 필수 5 + CHECK 2** (min_job DATA.md §3 정본 · `confidence`가 이미 검사한다 · §5.7): `church_name`·`title`·`job_kind`·
