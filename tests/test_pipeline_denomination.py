@@ -338,12 +338,47 @@ def test_a_poster_only_posting_confirms_from_the_board_field() -> None:
     assert confirm("예장합동", record)[0] is Denomination.HAPDONG
 
 
-def test_a_poster_with_no_denomination_anywhere_is_refused() -> None:
-    """⚠️ 나머지 109건(`PCKWORLD` 60 전부 · `CALVIN` 25 …)은 확정되지 않는다.
+def test_a_conference_names_the_methodist_church() -> None:
+    """`연회`는 감리교 고유 조직이다(장로교=노회 · 성결교·침례회=지방회). 교회가 교단 대신
+    소속 연회만 적는 일이 흔하다 — 실측 2026-09-03 미상 36건이 전부 이 모양이었고, 원장
+    전수에서 `연회`가 든 표기가 다른 교단으로 확정된 적은 0건이다."""
+    assert confirmed("중앙연회 성남지방")[:2] == (Denomination.GAMLI, DenominationSource.STATED)
 
-    포스터에서 읽은 값이 맞는지 코드가 확인할 방법이 없다. 원표기만 남기고 운영자에게
-    넘긴다 — **빈 칸이 틀린 교단보다 낫다.**
+
+def test_our_own_denomination_is_not_a_school_list() -> None:
+    """⚠️ 자격 줄이어도 `본교단`이면 그 교회의 소속이다 — 받아주는 신대원 목록이 아니라
+    글쓴이를 가리키는 말이다. 실측 2026-09-03: 자격 줄에 막힌 13건 중 6건이 이 모양."""
+    record = _record("*지원자격 : 본교단(통합) 신대원 졸업 후 목사안수 받으신 분")
+
+    assert confirm("통합", record)[:2] == (Denomination.TONGHAP, DenominationSource.STATED)
+
+
+def test_a_school_list_without_that_word_is_still_refused() -> None:
+    """`본교단`이 없으면 예전 그대로 — `고신 등 졸업자 지원 가능`은 그 교회 교단이 아니다."""
+    record = _record("지원자격 : 기타 교단 정규 신대원 졸업자(장신, 침신, 고신 등)")
+
+    assert confirm("고신", record)[0] is Denomination.UNKNOWN
+
+
+def test_a_poster_confirms_what_the_model_read_from_it() -> None:
+    """⚠️ **대조할 원문이 없는 것과 원문에 없는 것은 다르다**(2026-09-03에 뒤집은 결정).
+
+    앞은 확인할 방법이 없는 것이고 뒤는 근거가 없는 것이다. 본문이 그림뿐인 공고에서
+    `verify`는 이미 **어느 칸도 비우지 않고**(SPEC §5.5b) 그 공고는 `media_sent`로
+    `medium`이 되어 반드시 사람이 본다 — 교단만 다르게 취급할 이유가 없다.
+    실측 2026-09-03: 이 가지에 38건(`CALVIN` 21 · `PCKWORLD` 14 …).
     """
     record = _record("", list_title="담임목사청빙(평강교회)")
+
+    assert confirm("예장합동", record) == (
+        Denomination.HAPDONG,
+        DenominationSource.STATED,
+        "예장합동",
+    )
+
+
+def test_text_that_does_not_mention_it_still_refuses() -> None:
+    """⚠️ 위 예외는 **원문이 없을 때만**이다 — 본문이 있는데 그 표기가 없으면 근거가 없다."""
+    record = _record("사역자를 모십니다. 문의는 아래로.", list_title="청빙")
 
     assert confirm("예장합동", record)[0] is Denomination.UNKNOWN

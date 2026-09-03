@@ -80,6 +80,11 @@ _ALIASES: Final[tuple[tuple[str, Denomination], ...]] = (
     ("예수교대한감리회", Denomination.GAMLI),
     ("기감", Denomination.GAMLI),
     ("감리", Denomination.GAMLI),
+    # `연회`는 감리교 고유 조직이다(장로교=노회 · 성결교=지방회 · 침례회=지방회). 교회가
+    # 교단 대신 소속 연회만 적는 일이 흔하다 — 실측 2026-09-03: `중앙연회 성남지방`처럼
+    # 연회만 적힌 36건이 미상이었고, 전부 감리교 신학대 게시판(MTU 26·UHS 7·MOKWON 3)이다.
+    # ⚠️ 원장 전수에서 `연회`가 든 표기가 **다른 교단으로 확정된 적은 0건**이다.
+    ("연회", Denomination.GAMLI),
     ("여의도순복음", Denomination.SUNBOK),
     ("하나님의성회", Denomination.SUNBOK),
     ("순복음", Denomination.SUNBOK),
@@ -146,8 +151,7 @@ _MATCHERS: Final[tuple[tuple[re.Pattern[str], str, Denomination], ...]] = (
 )
 
 #: 이 낱말이 있는 줄은 **자격 요건**이다 — 거기 적힌 교단 이름은 받아주는 신대원 목록이지
-#: 그 교회의 교단이 아니다. `본 교단(예장합동) 신대원 졸업자`처럼 진짜 교단이 자격 줄에만
-#: 있는 공고도 함께 놓치지만, 그때 답은 빈 칸이지 틀린 교단이 아니다.
+#: 그 교회의 교단이 아니다. ⚠️ 단 `본교단`이 함께 있으면 예외다(`_OWN_DENOMINATION`).
 #:
 #: ⚠️ **낱말마다 실측 근거가 있다**(2026-08-15 · 원장 3,188건 · 자격 줄에만 교단 표기가
 #: 있는 298건 기준). 두 가지를 함께 본다 — 그 낱말만이 막고 있는 수(빼면 되살아나는 수)와
@@ -176,6 +180,12 @@ _QUALIFICATION_WORDS: Final = (
 #: 붙어 끝나지 않고, 실제로 `연합`은 `한국독립교회선교연합회`를 제 이름 때문에 막았다.
 #: 종결어미와 마침표는 78가지 표기 중 **딱 이 두 값과 `..`(원래 UNKNOWN)** 에만 있다.
 _SENTENCE: Final = re.compile(r"니다|\.")
+
+#: 그 줄이 **글쓴 교회 자신**을 가리키나. `본교단(통합) 신대원 졸업 후 목사안수`는 자격 줄이지만
+#: 거기 적힌 교단은 받아주는 신대원 목록이 아니라 **그 교회의 소속**이다 — `본교단`이라는 말
+#: 자체가 글쓴이를 가리킨다. 실측 2026-09-03: 자격 줄에만 있어 막힌 13건 중 6건이 이 모양이고,
+#: 자격 줄이 그 교단의 신대원을 요구하는 것이라도 답은 같다(그 교회의 교단이다).
+_OWN_DENOMINATION: Final = re.compile(r"본\s*교단")
 
 #: 근거가 없을 때의 답. 세 값이 한 몸이라 따로 만들지 않는다.
 _UNKNOWN: Final = (Denomination.UNKNOWN, DenominationSource.UNKNOWN, None)
@@ -212,6 +222,15 @@ def confirm(
         # 남은 표기는 전부 같은 key다 — 원문이 뒷받침하는 것 하나를 근거로 삼는다.
         if _confirms_this_church(pattern, record):
             return key, DenominationSource.STATED, alias
+    if not record.raw_text.strip():
+        # ⚠️ **본문이 그림뿐이면 대조를 요구하지 않는다**(2026-09-03). 대조할 원문이 없는 것과
+        #    원문에 없는 것은 다르다 — 앞은 확인할 방법이 없는 것이고 뒤는 근거가 없는 것이다.
+        #    `verify`가 그림을 보낸 공고에서 **어느 칸도 비우지 않는** 것과 같은 판단이며
+        #    (SPEC §5.5b), 그 공고는 `media_sent`로 `medium`이 되어 **반드시 사람이 본다**.
+        #    실측 2026-09-03: 이 가지에 38건(`CALVIN` 21 · `PCKWORLD` 14 …).
+        # ⚠️ 게시판 메타(`raw_meta`)는 여전히 대조에 쓴다 — 교단이 게시판 칸에 있는 보드가
+        #    있고(`CSU`), 그 68건은 이 가지에 오기 전에 위에서 확정된다.
+        return key, DenominationSource.STATED, alias
     return _UNKNOWN
 
 
@@ -228,7 +247,12 @@ def _confirms_this_church(pattern: re.Pattern[str], record: SourceData) -> bool:
 
 
 def _is_a_qualification_line(line: str) -> bool:
-    """그 줄이 **지원 자격**을 적고 있나 — 거기 적힌 교단은 받아주는 신대원 목록이다."""
+    """그 줄이 **지원 자격**을 적고 있나 — 거기 적힌 교단은 받아주는 신대원 목록이다.
+
+    ⚠️ `본교단`이 있으면 아니다 — 그 말이 글쓴 교회를 가리킨다(`_OWN_DENOMINATION`).
+    """
+    if _OWN_DENOMINATION.search(line):
+        return False
     return any(word in line for word in _QUALIFICATION_WORDS)
 
 
