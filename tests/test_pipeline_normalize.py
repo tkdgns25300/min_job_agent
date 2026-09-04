@@ -12,10 +12,12 @@ import pytest
 from minjob_ingest.domain import Region, StipendPeriod
 from minjob_ingest.models import JsonValue
 from minjob_ingest.pipeline.normalize import (
+    MAIL_TOKEN,
     address_or_none,
     city_without_region,
     clean_title,
     closed_by_board,
+    emails_only,
     pay_note_of,
     pay_of,
     period_of,
@@ -729,6 +731,51 @@ def test_nothing_to_strip_is_left_alone() -> None:
     assert city_without_region(None, Region.SEOUL) is None
     assert city_without_region("송파구", None) == "송파구"
     assert city_without_region("송파구", Region.SEOUL) == "송파구"
+
+
+# ── 접수 이메일 (2026-09-04 실측 2,722건 중 37건) ──────────────────
+
+
+def test_the_contact_name_leaves_the_email_field() -> None:
+    """프롬프트가 원문 조각을 그대로 옮기라고 시켜 담당자 이름이 붙어 온다 — 그대로 두면
+    min_job이 `mailto:`로 쓸 때 깨진다. 이름은 원문과 지원 절차 칸에 남는다."""
+    assert emails_only("sunkuk47@gmail.com (행정목사 전선국)") == "sunkuk47@gmail.com"
+    assert emails_only("seokh903@naver.com(서강훈 전도사)") == "seokh903@naver.com"
+
+
+def test_two_mailboxes_both_survive() -> None:
+    """⚠️ 실측 37건 중 **15건이 주소 둘**이다 — 교회가 두 곳으로 받는다는 뜻이라
+    하나만 남기면 정보를 버리는 것이다. 구분자만 통일한다."""
+    assert (
+        emails_only("KKT59123@daum.net / KYL0021@daum.net") == "KKT59123@daum.net, KYL0021@daum.net"
+    )
+    assert (
+        emails_only("jsbaek911@gmail.com, newvision21kr@hanmail.net")
+        == "jsbaek911@gmail.com, newvision21kr@hanmail.net"
+    )
+
+
+def test_the_same_mailbox_twice_is_kept_once() -> None:
+    assert emails_only("a@b.kr 문의: a@b.kr") == "a@b.kr"
+
+
+def test_a_typo_is_left_alone() -> None:
+    """⚠️ 실측 1건(`hanmail,net` — 교회가 점 대신 쉼표를 적었다). 비우면 그 공고는 연락처가
+    없어져 승격 게이트에 걸린다. 오타를 고치는 것은 지어내는 것이라 여기서 할 일이 아니다."""
+    assert emails_only("holyland22@hanmail,net") == "holyland22@hanmail,net"
+
+
+def test_dedup_splits_mailboxes_with_the_same_pattern() -> None:
+    """⚠️ 사본을 두면 여기서 남긴 주소를 dedup이 못 뽑아 같은 자리가 갈린다
+    (`NAME_BRACKETS`가 `dedup`·`heresy`에서 같은 것을 쓰는 이유와 같다)."""
+    from minjob_ingest.pipeline import dedup
+
+    assert dedup._MAIL_TOKEN is MAIL_TOKEN
+
+
+def test_a_plain_address_is_untouched() -> None:
+    assert emails_only("shoutlord@hanmail.net") == "shoutlord@hanmail.net"
+    assert emails_only(None) is None
 
 
 # ── 담임목사 ──────────────────────────────────────────────────────

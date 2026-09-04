@@ -69,7 +69,7 @@ from minjob_ingest.domain import (
 )
 from minjob_ingest.models import REVIEW_STATE_FIELDS, ReviewData
 from minjob_ingest.pipeline.confidence import review_status_for
-from minjob_ingest.pipeline.normalize import NAME_BRACKETS, NAME_NOISE
+from minjob_ingest.pipeline.normalize import MAIL_TOKEN, NAME_BRACKETS, NAME_NOISE
 from minjob_ingest.store.base import (
     DedupCandidate,
     DedupUpdate,
@@ -99,7 +99,9 @@ _SILENT_ROLE: Final = frozenset({Position.ETC.value})
 
 #: 한 칸에 **여러 곳이 들어간다** — 연락처는 조립 칸이라 원문에 둘이 적혀 있으면 둘 다 담긴다
 #: (실측 `apply@x.org, office@x.org`). 그래서 조각으로 쪼개 **겹치는지**를 본다.
-_MAIL_TOKEN: Final = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+#: ⚠️ `normalize`가 그 칸을 정리할 때 쓰는 것과 **같은 정규식이어야 한다** — 사본을 두면
+#:    거기서 남긴 주소를 여기서 못 뽑아 같은 자리가 갈린다(`NAME_BRACKETS`와 같은 이유).
+_MAIL_TOKEN: Final = MAIL_TOKEN
 
 #: 이름 변형을 견줄 때 떼는 꼬리. `한밭제일교회`/`한밭제일장로교회`처럼 **가운데에 끼어드는**
 #: 말이 있어 접미를 떼야 포함 관계가 보인다(`한밭제일` ⊂ `한밭제일장로`).

@@ -57,6 +57,7 @@ from minjob_ingest.pipeline.normalize import (
     city_without_region,
     clean_title,
     closed_by_board,
+    emails_only,
     senior_pastor_of,
 )
 from minjob_ingest.pipeline.verify import VerifyReport, verify
@@ -550,7 +551,9 @@ def build_draft(
         city=city_without_region(extraction.city, extraction.region),
         address=extraction.address,
         raw_denomination=extraction.raw_denomination,
-        contact_email=extraction.contact_email,
+        # ⚠️ 담당자 이름이 붙어 오는 것을 여기서 뗀다(실측 37건) — 모델은 원문 그대로 쓴
+        #    것이고, 그대로 두면 min_job이 `mailto:`로 쓸 때 깨진다.
+        contact_email=emails_only(extraction.contact_email),
         contact_tel=extraction.contact_tel,
         contact_link=extraction.contact_link,
         contact_post=extraction.contact_post,

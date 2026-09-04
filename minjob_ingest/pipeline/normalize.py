@@ -378,6 +378,44 @@ _METRO_NAMES: Final[Mapping[Region, str]] = {
 _METRO_SUFFIXES: Final = ("특별시", "광역시", "시", "")
 
 
+#: 접수 이메일 한 개. **`dedup`(자물쇠를 가르는 메일함)이 같은 정규식을 쓴다** — 사본을 두면
+#: 여기서 남긴 주소를 그쪽이 못 뽑아 같은 자리가 갈린다(`NAME_BRACKETS`와 같은 이유).
+#: ⚠️ `verify._EMAIL_TOKEN`은 **일부러 더 느슨하다** — 그쪽은 "원문에 이 조각이 있나"를 찾는
+#:    쪽이라 좁히면 있는 것을 못 찾는다. 여기는 반대로 **주소가 아닌 글자를 버리는** 쪽이다.
+MAIL_TOKEN: Final = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
+#: 주소가 여럿일 때 잇는 글자. 원문은 `/`·`,`·공백으로 제각각 적는다(실측).
+_EMAIL_JOINER: Final = ", "
+
+
+def emails_only(value: str | None) -> str | None:
+    """접수 이메일에서 **주소만** 남긴다. 여럿이면 여럿 다 남긴다.
+
+    ⚠️ **모델이 틀린 것이 아니다** — 프롬프트가 원문 조각을 그대로 옮기라고 시켰고 원문이
+    `메일주소: sunkuk47@gmail.com (행정목사 전선국)`이면 그렇게 쓰는 것이 맞다. `verify.email`도
+    같은 이유로 주소만 견준다("이름을 떼지 말라고 시킨 것이 프롬프트다"). **글자만 보면 되는
+    변환은 코드 몫**이다(CLAUDE.md · `city_without_region`과 같은 자리).
+
+    ⚠️ 이름이 붙은 채로 두면 **min_job이 `mailto:`로 쓸 때 깨진다** — 실측 2026-09-04:
+    이메일이 있는 2,722건 중 37건이 순수 주소가 아니었고 그중 11건이 이미 공개돼 있었다.
+
+    ⚠️⚠️ **주소가 여럿이면 버리지 않는다**(실측 37건 중 **15건**). `KKT59123@daum.net /
+    KYL0021@daum.net`은 교회가 두 곳으로 받는다는 뜻이라 하나만 남기면 정보를 버리는 것이다.
+    구분자만 통일한다.
+
+    ⚠️⚠️ **하나도 못 뽑으면 원래 값을 그대로 둔다**(실측 1건 · `holyland22@hanmail,net` —
+    교회가 점 대신 쉼표를 적었다). 비우면 그 공고는 연락처가 없어져 승격 게이트에 걸린다.
+    오타를 고치는 것은 지어내는 것이고, 여기서 할 일이 아니다.
+
+    ⚠️ 담당자 이름은 이 칸에서만 사라진다 — 원문(`source_data.raw_text` · write-once)과
+    지원 절차(`process_steps`)에 남는다.
+    """
+    if value is None:
+        return None
+    found = MAIL_TOKEN.findall(value)
+    return _EMAIL_JOINER.join(dict.fromkeys(found)) if found else value
+
+
 def city_without_region(city: str | None, region: Region | None) -> str | None:
     """`city` 앞에 겹쳐 온 광역 이름을 뗀다. 뗄 것이 없으면 그대로.
 
